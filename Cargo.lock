@@ -46,12 +46,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "anyhow"
-version = "1.0.98"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e16d2d3311acee920a9eb8d33b8cbc1787ce4a264e85f964c2404b969bdcd487"
-
-[[package]]
 name = "arrayvec"
 version = "0.7.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -492,21 +486,6 @@ checksum = "7cd915d99f24784cdc19fd37ef22b97e3ff0ae756c7e492e9fbfe897d61e2aec"
 dependencies = [
  "indenter",
  "once_cell",
-]
-
-[[package]]
-name = "fftui"
-version = "0.1.0"
-dependencies = [
- "color-eyre",
- "crossbeam",
- "crossterm 0.29.0",
- "ratatui",
- "ratatui-explorer",
- "rodio",
- "spectrum-analyzer",
- "symphonia",
- "widgetui",
 ]
 
 [[package]]
@@ -1177,6 +1156,20 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "67b1b7a3b5fe4f1376887184045fcf45c69e92af734b7aaddc05fb777b6fbd03"
 
 [[package]]
+name = "soundscope"
+version = "0.1.0"
+dependencies = [
+ "color-eyre",
+ "crossbeam",
+ "crossterm 0.29.0",
+ "ratatui",
+ "ratatui-explorer",
+ "rodio",
+ "spectrum-analyzer",
+ "symphonia",
+]
+
+[[package]]
 name = "spectrum-analyzer"
 version = "1.7.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1493,16 +1486,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "tui-helper-proc-macro"
-version = "0.7.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "acb8c7334ae43c8429a531f8b5fbc19d11d6a54d290fecc988cc33c0081d1896"
-dependencies = [
- "quote",
- "syn",
-]
-
-[[package]]
 name = "unicode-ident"
 version = "1.0.18"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1638,19 +1621,6 @@ checksum = "33b6dd2ef9186f1f2072e409e99cd22a975331a6b3591b12c764e0e55c60d5d2"
 dependencies = [
  "js-sys",
  "wasm-bindgen",
-]
-
-[[package]]
-name = "widgetui"
-version = "0.7.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c6baa2b33019d3290be6c9ee2575856f8a82c6396cfdafa33cfb7d91847fff83"
-dependencies = [
- "anyhow",
- "crossterm 0.28.1",
- "ratatui",
- "thiserror",
- "tui-helper-proc-macro",
 ]
 
 [[package]]

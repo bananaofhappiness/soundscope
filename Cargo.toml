@@ -1,5 +1,5 @@
 [package]
-name = "fftui"
+name = "soundscope"
 version = "0.1.0"
 edition = "2024"
 
@@ -12,4 +12,3 @@ ratatui-explorer = "0.2.1"
 rodio = "0.21.1"
 spectrum-analyzer = "1.7.0"
 symphonia = { version = "0.5.4", features = ["mp3"] }
-widgetui = "0.7.1"
