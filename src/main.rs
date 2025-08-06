@@ -5,9 +5,9 @@ mod file_reader;
 mod tui;
 use crate::audio_player::{AudioFile, AudioReader, PlayerCommand};
 use color_eyre::Result;
-use crossbeam::channel::{Receiver, Sender, bounded};
+use crossbeam::channel::bounded;
 use std::{
-    sync::{Arc, Mutex, mpsc},
+    sync::{Arc, Mutex},
     thread,
 };
 

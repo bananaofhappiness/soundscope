@@ -10,12 +10,12 @@ use ratatui::{
     crossterm::event::{Event, KeyCode, read},
     layout::Flex,
     prelude::*,
-    widgets::{Axis, Block, Borders, Chart, Clear, Dataset, Paragraph},
+    widgets::{Axis, Block, Chart, Clear, Dataset},
 };
 use ratatui_explorer::{FileExplorer, Theme};
 
 use crate::{
-    audio_player::{self, AudioFile, AudioReader, PlayerCommand},
+    audio_player::{AudioFile, AudioReader, PlayerCommand},
     file_reader,
 };
 

@@ -1,18 +1,14 @@
 use std::fs::File;
 
-use color_eyre::owo_colors::OwoColorize;
 use rodio::Decoder;
-use rodio::cpal::SampleFormat;
 use symphonia::core::audio::SampleBuffer;
 
-use symphonia::core::codecs::{CODEC_TYPE_NULL, DecoderOptions};
-use symphonia::core::conv::IntoSample;
+use symphonia::core::codecs::DecoderOptions;
 use symphonia::core::errors::Error;
 use symphonia::core::formats::FormatOptions;
 use symphonia::core::io::MediaSourceStream;
 use symphonia::core::meta::MetadataOptions;
 use symphonia::core::probe::Hint;
-use symphonia::core::sample;
 
 use crate::fft;
 
@@ -47,7 +43,7 @@ pub fn read_file(path: &str) -> Vec<(f64, f64)> {
     // Store the track identifier, we'll use it to filter packets.
     let track_id = track.id;
 
-    let mut sample_count = 0;
+    let sample_count = 0;
     let mut sample_buf = None;
 
     let mut x = 0;

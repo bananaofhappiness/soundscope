@@ -1,6 +1,6 @@
 use color_eyre::Result;
 use crossbeam::channel::Receiver;
-use rodio::{Decoder, Source};
+use rodio::Source;
 // use color_eyre::eyre::Error;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use symphonia::core::audio::{Channels, SampleBuffer};

@@ -1,4 +1,4 @@
-use std::sync::mpsc::{Receiver, Sender};
+use std::sync::mpsc::Sender;
 use std::sync::{Arc, Mutex};
 
 #[derive(Debug, Clone)]

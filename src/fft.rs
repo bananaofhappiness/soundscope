@@ -1,6 +1,4 @@
-use spectrum_analyzer::scaling::{
-    divide_by_N, divide_by_N_sqrt, scale_20_times_log10, scale_to_zero_to_one,
-};
+use spectrum_analyzer::scaling::divide_by_N;
 use spectrum_analyzer::windows::hann_window;
 use spectrum_analyzer::{FrequencyLimit, samples_fft_to_spectrum};
 
