@@ -1,0 +1,15 @@
+[package]
+name = "fftui"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+color-eyre = "0.6.5"
+crossbeam = "0.8.4"
+crossterm = "0.29.0"
+ratatui = "0.29.0"
+ratatui-explorer = "0.2.1"
+rodio = "0.21.1"
+spectrum-analyzer = "1.7.0"
+symphonia = { version = "0.5.4", features = ["mp3"] }
+widgetui = "0.7.1"
