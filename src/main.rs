@@ -7,23 +7,27 @@ use crate::audio_player::{AudioFile, AudioPlayer, PlayerCommand};
 use color_eyre::Result;
 use crossbeam::channel::bounded;
 use std::{
-    sync::{Arc, Mutex},
+    sync::{Arc, Mutex, atomic::AtomicUsize},
     thread,
     time::Duration,
 };
 
 fn main() -> Result<()> {
     color_eyre::install()?;
-    // create an audio file and its readers
-    let audio_file = Arc::new(Mutex::new(AudioFile::new()?));
-    let tui_reader = AudioPlayer::from_file(Arc::clone(&audio_file))?;
-    let player_reader = AudioPlayer::from_file(Arc::clone(&audio_file))?;
-    let analyzer_reader = AudioPlayer::from_file(Arc::clone(&audio_file))?;
-
     // create a tui sender that sends signals when the file is stopped, selected etc.
-    let (tui_tx, rx) = bounded::<PlayerCommand>(3);
-    let audio_player_rx = rx.clone();
+    let (tui_tx, audio_player_rx) = bounded::<PlayerCommand>(1);
+
+    //create a audio player sender that sends signals to the analyzer when its time to analyze
+    let (audio_tx, analyzer_rx) = bounded::<usize>(1);
+    // create an audio file
+    let audio_file = AudioFile::new(audio_tx)?;
+    // copy an audio_file to analyzer so it can use its samples to analyze
+    let analyzer_audio_fyle = audio_file.clone();
+
+    let mut player = AudioPlayer::from_file(audio_file)?;
+
     // thread::spawn(|| tui::run(tui_reader, tui_tx));
-    thread::spawn(move || player_reader.run(audio_player_rx));
-    tui::run(tui_reader, tui_tx)
+    thread::spawn(move || player.run(audio_player_rx));
+    // thread::spawn(analyzer.run());
+    tui::run(tui_tx)
 }

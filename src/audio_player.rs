@@ -1,5 +1,5 @@
 use color_eyre::Result;
-use crossbeam::channel::Receiver;
+use crossbeam::channel::{Receiver, Sender};
 use rodio::Source;
 // use color_eyre::eyre::Error;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
@@ -17,6 +17,7 @@ use symphonia::core::probe::Hint;
 // Samples of the whole file
 pub type Samples = Arc<Vec<f32>>;
 pub type SampleRate = u32;
+type PlaybackPosition = usize;
 
 pub enum PlayerCommand {
     SelectFile(String),
@@ -31,12 +32,11 @@ pub struct AudioFile {
     file_path: Option<String>,
     samples: Samples,
     sample_rate: u32,
+    // channels of the file (mono, stereo, etc.)
     channels: Channels,
-    // duration: Duration,
-
-    // Global state
-    playback_position: Arc<AtomicUsize>, // Index of the Samples vec
-                                         // is_playing: Arc<AtomicBool>,
+    // Global state and the sender of it
+    playback_position: PlaybackPosition, // Index of the Samples vec
+    audio_tx: Sender<PlaybackPosition>,
 }
 
 impl Iterator for AudioFile {
@@ -51,8 +51,11 @@ impl Iterator for AudioFile {
         // } else {
         //     None
         // }
-        let pos = self.playback_position.fetch_add(1, Ordering::SeqCst);
+        let pos = self.playback_position;
         if pos < self.samples.len() {
+            if pos % 1024 == 0 {
+                self.audio_tx.send(pos);
+            }
             Some(self.samples[pos])
         } else {
             None
@@ -79,15 +82,14 @@ impl Source for AudioFile {
 }
 
 impl AudioFile {
-    pub fn new() -> Result<Self> {
+    pub fn new(audio_tx: Sender<PlaybackPosition>) -> Result<Self> {
         let af = AudioFile {
             file_path: None,
             samples: Arc::new(vec![0.; 0]),
             sample_rate: 44100,
             channels: Channels::all(),
-            // duration: Duration::from_secs(1),
-            playback_position: Arc::new(AtomicUsize::new(0)),
-            // is_playing: Arc::new(AtomicBool::new(true)),
+            playback_position: 0,
+            audio_tx,
         };
         Ok(af)
     }
@@ -212,24 +214,22 @@ pub enum PlaybackState {
 }
 
 pub struct AudioPlayer {
-    audio_file: Arc<Mutex<AudioFile>>,
-    stream_handle: rodio::OutputStream,
-    state: Arc<Mutex<PlaybackState>>,
-    // _stream: rodio::OutputStream,
+    audio_file: AudioFile,
+    _stream_handle: rodio::OutputStream,
+    state: PlaybackState,
     sink: rodio::Sink,
 }
 
 impl AudioPlayer {
-    pub fn from_file(audio_file: Arc<Mutex<AudioFile>>) -> Result<Self> {
-        let stream_handle =
+    pub fn from_file(audio_file: AudioFile) -> Result<Self> {
+        let _stream_handle =
             rodio::OutputStreamBuilder::open_default_stream().expect("open default audio stream");
-        let sink = rodio::Sink::connect_new(&stream_handle.mixer());
+        let sink = rodio::Sink::connect_new(&_stream_handle.mixer());
         // sink.pause();
         Ok(Self {
             audio_file,
-            stream_handle,
-            state: Arc::new(Mutex::new(PlaybackState::Paused)),
-            // _stream,
+            _stream_handle,
+            state: PlaybackState::Paused,
             sink,
         })
     }
@@ -255,46 +255,41 @@ impl AudioPlayer {
     //     self.audio_file
     // }
 
-    pub fn run(&self, audio_player_rx: Receiver<PlayerCommand>) -> Result<()> {
+    pub fn run(&mut self, audio_player_rx: Receiver<PlayerCommand>) -> Result<()> {
         loop {
             if let Ok(cmd) = audio_player_rx.try_recv() {
                 match cmd {
                     PlayerCommand::SelectFile(path) => {
-                        let mut audio_file = self.audio_file.lock().unwrap();
-                        if let Err(err) = audio_file.load_file(&path) {
+                        if let Err(err) = self.audio_file.load_file(&path) {
                             println!("Error loading file: {}", err);
                             continue;
                             // todo: show a ratatui paragraph with error message
                         }
                         // playback position <- 0
-                        audio_file.playback_position.store(0, Ordering::SeqCst);
+                        self.audio_file.playback_position = 0;
 
                         // clear the sink and append new file
                         self.sink.stop();
                         self.sink.clear();
-                        self.sink.append(audio_file.clone());
+                        self.sink.append(self.audio_file.clone());
 
-                        *self.state.lock().unwrap() = PlaybackState::Paused;
+                        self.state = PlaybackState::Paused;
                     }
 
                     PlayerCommand::ChangeState => {
-                        if *self.state.lock().unwrap() == PlaybackState::Playing {
+                        if self.state == PlaybackState::Playing {
                             self.sink.pause();
-                            *self.state.lock().unwrap() = PlaybackState::Paused;
+                            self.state = PlaybackState::Paused;
                         } else {
                             self.sink.play();
-                            *self.state.lock().unwrap() = PlaybackState::Playing;
+                            self.state = PlaybackState::Playing;
                         }
                     }
                     PlayerCommand::Stop => {
                         self.sink.stop();
                         self.sink.clear();
-                        self.audio_file
-                            .lock()
-                            .unwrap()
-                            .playback_position
-                            .store(0, Ordering::SeqCst);
-                        *self.state.lock().unwrap() = PlaybackState::Paused;
+                        self.audio_file.playback_position = 0;
+                        self.state = PlaybackState::Paused;
                     }
                 }
             }

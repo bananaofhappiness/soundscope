@@ -84,7 +84,7 @@ impl App {
         if self.selected_file.is_none() {
             return;
         }
-        self.data1 = file_reader::read_file("VIRUS.mp3");
+        self.data1 = vec![(0., 0.); 0];
         // println!("{:?}", self.data1);
 
         // let x_labels = vec![
@@ -182,7 +182,7 @@ impl App {
     }
 }
 
-pub fn run(tui_player: AudioPlayer, tui_tx: Sender<PlayerCommand>) -> Result<()> {
+pub fn run(tui_tx: Sender<PlayerCommand>) -> Result<()> {
     // let audio_file = tui_player.audio_file;
     let terminal = ratatui::init();
     let theme = Theme::default()
