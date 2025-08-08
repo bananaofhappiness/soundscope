@@ -20,8 +20,7 @@ pub type SampleRate = u32;
 
 pub enum PlayerCommand {
     SelectFile(String),
-    Play,
-    Pause,
+    ChangeState,
     Stop,
 }
 
@@ -37,7 +36,7 @@ pub struct AudioFile {
 
     // Global state
     playback_position: Arc<AtomicUsize>, // Index of the Samples vec
-    is_playing: Arc<AtomicBool>,
+                                         // is_playing: Arc<AtomicBool>,
 }
 
 impl Iterator for AudioFile {
@@ -88,7 +87,7 @@ impl AudioFile {
             channels: Channels::all(),
             // duration: Duration::from_secs(1),
             playback_position: Arc::new(AtomicUsize::new(0)),
-            is_playing: Arc::new(AtomicBool::new(true)),
+            // is_playing: Arc::new(AtomicBool::new(true)),
         };
         Ok(af)
     }
@@ -204,49 +203,102 @@ impl AudioFile {
             }
         }
     }
+}
 
-    fn play_audio(&self) {
-        // Get an output stream handle to the default physical sound device.
-        // Note that the playback stops when the stream_handle is dropped.//!
+#[derive(PartialEq)]
+pub enum PlaybackState {
+    Playing,
+    Paused,
+}
+
+pub struct AudioPlayer {
+    audio_file: Arc<Mutex<AudioFile>>,
+    stream_handle: rodio::OutputStream,
+    state: Arc<Mutex<PlaybackState>>,
+    // _stream: rodio::OutputStream,
+    sink: rodio::Sink,
+}
+
+impl AudioPlayer {
+    pub fn from_file(audio_file: Arc<Mutex<AudioFile>>) -> Result<Self> {
         let stream_handle =
             rodio::OutputStreamBuilder::open_default_stream().expect("open default audio stream");
         let sink = rodio::Sink::connect_new(&stream_handle.mixer());
-        // Decode that sound file into a source
-        self.is_playing.store(true, Ordering::Release);
-        let source = self.clone();
-        sink.append(source);
-        sink.sleep_until_end();
+        // sink.pause();
+        Ok(Self {
+            audio_file,
+            stream_handle,
+            state: Arc::new(Mutex::new(PlaybackState::Paused)),
+            // _stream,
+            sink,
+        })
     }
 
-    fn pause_audio() {
-        todo!()
-    }
-}
+    // fn play_audio(&self) {
+    //     // Get an output stream handle to the default physical sound device.
+    //     // Note that the playback stops when the stream_handle is dropped.//!
+    //     let stream_handle =
+    //         rodio::OutputStreamBuilder::open_default_stream().expect("open default audio stream");
+    //     let sink = rodio::Sink::connect_new(&stream_handle.mixer());
+    //     // Decode that sound file into a source
+    //     self.is_playing.store(true, Ordering::Release);
+    //     let source = self.clone();
+    //     sink.append(source);
+    //     sink.sleep_until_end();
+    // }
 
-pub struct AudioReader {
-    audio_file: Arc<Mutex<AudioFile>>,
-}
+    // fn pause_audio() {
+    //     todo!()
+    // }
 
-impl AudioReader {
-    pub fn from_file(audio_file: Arc<Mutex<AudioFile>>) -> Result<Self> {
-        Ok(Self { audio_file })
-    }
+    // pub fn get_file(self) -> Arc<Mutex<AudioFile>> {
+    //     self.audio_file
+    // }
 
-    pub fn get_file(self) -> Arc<Mutex<AudioFile>> {
-        self.audio_file
-    }
-}
+    pub fn run(&self, audio_player_rx: Receiver<PlayerCommand>) -> Result<()> {
+        loop {
+            if let Ok(cmd) = audio_player_rx.try_recv() {
+                match cmd {
+                    PlayerCommand::SelectFile(path) => {
+                        let mut audio_file = self.audio_file.lock().unwrap();
+                        if let Err(err) = audio_file.load_file(&path) {
+                            println!("Error loading file: {}", err);
+                            continue;
+                            // todo: show a ratatui paragraph with error message
+                        }
+                        // playback position <- 0
+                        audio_file.playback_position.store(0, Ordering::SeqCst);
 
-pub fn run(audio_reader: AudioReader, audio_player_rx: Receiver<PlayerCommand>) -> Result<()> {
-    let audio_file = audio_reader.get_file();
-    loop {
-        if let Ok(cmd) = audio_player_rx.recv() {
-            match cmd {
-                PlayerCommand::SelectFile(path) => audio_file.lock().unwrap().load_file(&path)?,
-                PlayerCommand::Play => audio_file.lock().unwrap().play_audio(),
-                _ => (),
+                        // clear the sink and append new file
+                        self.sink.stop();
+                        self.sink.clear();
+                        self.sink.append(audio_file.clone());
+
+                        *self.state.lock().unwrap() = PlaybackState::Paused;
+                    }
+
+                    PlayerCommand::ChangeState => {
+                        if *self.state.lock().unwrap() == PlaybackState::Playing {
+                            self.sink.pause();
+                            *self.state.lock().unwrap() = PlaybackState::Paused;
+                        } else {
+                            self.sink.play();
+                            *self.state.lock().unwrap() = PlaybackState::Playing;
+                        }
+                    }
+                    PlayerCommand::Stop => {
+                        self.sink.stop();
+                        self.sink.clear();
+                        self.audio_file
+                            .lock()
+                            .unwrap()
+                            .playback_position
+                            .store(0, Ordering::SeqCst);
+                        *self.state.lock().unwrap() = PlaybackState::Paused;
+                    }
+                }
             }
         }
+        // Ok(())
     }
-    // Ok(())
 }

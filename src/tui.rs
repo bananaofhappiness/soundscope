@@ -1,5 +1,6 @@
 use std::{
     fmt,
+    os::unix::fs::FileTypeExt,
     sync::{Arc, Mutex},
 };
 
@@ -15,7 +16,7 @@ use ratatui::{
 use ratatui_explorer::{FileExplorer, Theme};
 
 use crate::{
-    audio_player::{AudioFile, AudioReader, PlayerCommand},
+    audio_player::{AudioFile, AudioPlayer, PlayerCommand},
     file_reader,
 };
 
@@ -34,16 +35,32 @@ impl fmt::Display for Error {
 
 impl std::error::Error for Error {}
 
-#[derive(Default)]
 struct App {
+    explorer: FileExplorer,
+    // audio_file: Arc<Mutex<AudioFile>>,
+    tui_tx: Sender<PlayerCommand>,
     show_explorer: bool,
     selected_file: Option<String>,
     data1: Vec<(f64, f64)>,
-    window: [f64; 2],
 }
 
 impl App {
-    fn draw(&mut self, f: &mut Frame, explorer: &FileExplorer) {
+    fn new(
+        explorer: FileExplorer,
+        // audio_file: Arc<Mutex<AudioFile>>,
+        tui_tx: Sender<PlayerCommand>,
+    ) -> Self {
+        Self {
+            explorer,
+            // audio_file,
+            tui_tx,
+            show_explorer: false,
+            selected_file: None,
+            data1: vec![(0., 0.); 0],
+        }
+    }
+
+    fn draw(&mut self, f: &mut Frame) {
         let area = f.area();
 
         //get filename and render it
@@ -59,7 +76,7 @@ impl App {
         if self.show_explorer {
             let area = Self::popup_area(area, 50, 70);
             f.render_widget(Clear, area);
-            f.render_widget(&explorer.widget(), area);
+            f.render_widget(&self.explorer.widget(), area);
         }
     }
 
@@ -111,14 +128,9 @@ impl App {
         frame.render_widget(chart, area);
     }
 
-    fn run(
-        mut self,
-        mut terminal: DefaultTerminal,
-        mut explorer: FileExplorer,
-        audio_file: Arc<Mutex<AudioFile>>,
-    ) -> Result<()> {
+    fn run(mut self, mut terminal: DefaultTerminal) -> Result<()> {
         loop {
-            terminal.draw(|f| self.draw(f, &explorer))?;
+            terminal.draw(|f| self.draw(f));
 
             //event reader
             let event = read()?;
@@ -131,34 +143,34 @@ impl App {
                         }
                         self.show_explorer = !self.show_explorer
                     }
-                    KeyCode::Enter => {
-                        if let Err(err) = self.select_file(&explorer, &audio_file) {
-                            //todo error handling
+                    KeyCode::Enter => self.select_file(),
+                    KeyCode::Char(' ') => {
+                        if let Err(err) = self.tui_tx.send(PlayerCommand::ChangeState) {
+                            //do smth idk
                         }
                     }
                     _ => (),
                 }
             }
             if self.show_explorer {
-                explorer.handle(&event)?;
+                self.explorer.handle(&event)?;
             }
         }
     }
 
-    fn select_file(
-        &mut self,
-        explorer: &FileExplorer,
-        audio_file: &Arc<Mutex<AudioFile>>,
-    ) -> Result<()> {
-        let file = explorer.current();
-        let file_name = explorer.current().name();
-        let file_path = explorer.current().path().to_str().unwrap().to_owned();
+    fn select_file(&mut self) {
+        let file = self.explorer.current();
+        let file_name = self.explorer.current().name();
+        let file_path = self.explorer.current().path().to_str().unwrap().to_owned();
         if !file.is_file() {
-            return Err(Error::NotAFile(file_path).into());
+            return;
         }
-        audio_file.lock().unwrap().load_file(&file_path)?;
+        // audio_file.lock().unwrap().load_file(&file_path)?;
         self.show_explorer = false;
-        Ok(())
+        if let Err(err) = self.tui_tx.send(PlayerCommand::SelectFile(file_path)) {
+            //do smth idk
+        }
+        // Ok(())
     }
 
     fn popup_area(area: Rect, percent_x: u16, percent_y: u16) -> Rect {
@@ -170,14 +182,14 @@ impl App {
     }
 }
 
-pub fn run(tui_reader: AudioReader, tui_tx: Sender<PlayerCommand>) -> Result<()> {
-    let audio_file = tui_reader.get_file();
+pub fn run(tui_player: AudioPlayer, tui_tx: Sender<PlayerCommand>) -> Result<()> {
+    // let audio_file = tui_player.audio_file;
     let terminal = ratatui::init();
     let theme = Theme::default()
         .add_default_title()
         .with_item_style(Style::default().fg(Color::Black));
     let file_explorer = FileExplorer::with_theme(theme)?;
-    let app_result = App::default().run(terminal, file_explorer, audio_file);
+    let app_result = App::new(file_explorer, tui_tx).run(terminal);
     ratatui::restore();
     app_result
 }
