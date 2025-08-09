@@ -1,2 +1,0 @@
-Sample rate: 44100
-Channels: 2
