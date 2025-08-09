@@ -1,23 +1,19 @@
-use std::{
-    fmt,
-    os::unix::fs::FileTypeExt,
-    sync::{Arc, Mutex},
-};
-
-use color_eyre::{Result, eyre::Ok};
-use crossbeam::channel::Sender;
+use color_eyre::Result;
+use crossbeam::channel::{Receiver, Sender};
 use ratatui::{
     DefaultTerminal,
-    crossterm::event::{Event, KeyCode, read},
+    crossterm::event::{Event, KeyCode, poll, read},
     layout::Flex,
     prelude::*,
-    widgets::{Axis, Block, Chart, Clear, Dataset},
+    widgets::{Axis, Block, Chart, Clear, Dataset, GraphType},
 };
 use ratatui_explorer::{FileExplorer, Theme};
+use std::{fmt, time::Duration, usize::MAX};
+use symphonia::core::sample::Sample;
 
 use crate::{
-    audio_player::{AudioFile, AudioPlayer, PlayerCommand},
-    file_reader,
+    analyzer,
+    audio_player::{AudioFile, PlayerCommand, Samples},
 };
 
 #[derive(Debug, Clone, PartialEq)]
@@ -37,39 +33,32 @@ impl std::error::Error for Error {}
 
 struct App {
     explorer: FileExplorer,
-    // audio_file: Arc<Mutex<AudioFile>>,
+    samples: Samples,
     tui_tx: Sender<PlayerCommand>,
+    analyzer_rx: Receiver<usize>,
     show_explorer: bool,
-    selected_file: Option<String>,
-    data1: Vec<(f64, f64)>,
+    fft_vec: Vec<(f64, f64)>,
 }
 
 impl App {
     fn new(
         explorer: FileExplorer,
-        // audio_file: Arc<Mutex<AudioFile>>,
         tui_tx: Sender<PlayerCommand>,
+        samples: Samples,
+        analyzer_rx: Receiver<usize>,
     ) -> Self {
         Self {
             explorer,
-            // audio_file,
+            samples,
             tui_tx,
+            analyzer_rx,
             show_explorer: false,
-            selected_file: None,
-            data1: vec![(0., 0.); 0],
+            fft_vec: vec![(0., 0.); 0],
         }
     }
 
     fn draw(&mut self, f: &mut Frame) {
         let area = f.area();
-
-        //get filename and render it
-        // let file_name = self.selected_file.get_or_insert("".to_string());
-        // f.render_widget(
-        //     Paragraph::new(file_name.to_owned()).block(Block::default().borders(Borders::all())),
-        //     // Chart::new().block(Block::default().borders(Borders::all())),
-        //     area,
-        // );
 
         self.render_animated_chart(f, area);
         // render explorer
@@ -81,10 +70,6 @@ impl App {
     }
 
     fn render_animated_chart(&mut self, frame: &mut Frame, area: Rect) {
-        if self.selected_file.is_none() {
-            return;
-        }
-        self.data1 = vec![(0., 0.); 0];
         // println!("{:?}", self.data1);
 
         // let x_labels = vec![
@@ -102,8 +87,9 @@ impl App {
             Dataset::default()
                 .name("data")
                 .marker(symbols::Marker::Braille)
+                .graph_type(GraphType::Line)
                 .style(Style::default().fg(Color::Black))
-                .data(&self.data1),
+                .data(&self.fft_vec),
             // .data(&[(0., 0.)]),
         ];
 
@@ -111,56 +97,72 @@ impl App {
             .block(Block::bordered())
             .x_axis(
                 Axis::default()
-                    .title("X Axis")
+                    .title("Hz")
                     .style(Style::default().fg(Color::Black))
                     // .labels(x_labels)
-                    .labels(["0".bold(), "0".into(), "20000".bold()])
                     .bounds([0., 22050.]),
             )
             .y_axis(
                 Axis::default()
-                    .title("Y Axis")
+                    .title("Db")
                     .style(Style::default().fg(Color::Black))
-                    .labels(["0".bold(), "0".into(), "10".bold()])
-                    .bounds([0., 500.]),
+                    .bounds([-150., 50.]),
             );
 
         frame.render_widget(chart, area);
     }
 
     fn run(mut self, mut terminal: DefaultTerminal) -> Result<()> {
+        // self.tui_tx
+        //     .send(PlayerCommand::SelectFile("VIRUS.mp3".to_string()));
+        // self.tui_tx.send(PlayerCommand::ChangeState);
         loop {
-            terminal.draw(|f| self.draw(f));
+            terminal.draw(|f| self.draw(f))?;
 
-            //event reader
-            let event = read()?;
-            if let Event::Key(key) = event {
-                match key.code {
-                    KeyCode::Char('q') => return Ok(()),
-                    KeyCode::Char('e') => {
-                        if !self.show_explorer {
-                            self.selected_file = None;
-                        }
-                        self.show_explorer = !self.show_explorer
-                    }
-                    KeyCode::Enter => self.select_file(),
-                    KeyCode::Char(' ') => {
-                        if let Err(err) = self.tui_tx.send(PlayerCommand::ChangeState) {
-                            //do smth idk
-                        }
-                    }
-                    _ => (),
+            // receive playback position
+            if let Ok(pos) = self.analyzer_rx.try_recv() {
+                let left_bound = pos.saturating_sub(1024);
+                if left_bound != 0 {
+                    //get every 2nd elem of it
+                    // let samples = &self
+                    //     .samples
+                    //     .read()
+                    //     .unwrap()
+                    //     .iter()
+                    //     .step_by(2)
+                    //     .cloned()
+                    //     .collect::<Vec<f32>>()[left_bound..pos];
+                    let samples = &self.samples.read().unwrap()[left_bound..pos];
+                    self.fft_vec = analyzer::get_fft(samples);
                 }
             }
-            if self.show_explorer {
-                self.explorer.handle(&event)?;
+
+            // event reader
+            if poll(Duration::from_micros(1))? {
+                let event = read()?;
+                if let Event::Key(key) = event {
+                    match key.code {
+                        KeyCode::Char('q') => return Ok(()),
+                        KeyCode::Char('e') => self.show_explorer = !self.show_explorer,
+                        KeyCode::Enter => self.select_file(),
+                        KeyCode::Char(' ') => {
+                            if let Err(err) = self.tui_tx.send(PlayerCommand::ChangeState) {
+                                //do smth idk
+                            }
+                        }
+                        _ => (),
+                    }
+                }
+                if self.show_explorer {
+                    self.explorer.handle(&event)?;
+                }
             }
         }
     }
 
     fn select_file(&mut self) {
         let file = self.explorer.current();
-        let file_name = self.explorer.current().name();
+        // let file_name = self.explorer.current().name();
         let file_path = self.explorer.current().path().to_str().unwrap().to_owned();
         if !file.is_file() {
             return;
@@ -182,14 +184,17 @@ impl App {
     }
 }
 
-pub fn run(tui_tx: Sender<PlayerCommand>) -> Result<()> {
-    // let audio_file = tui_player.audio_file;
+pub fn run(
+    tui_tx: Sender<PlayerCommand>,
+    analyzer_rx: Receiver<usize>,
+    samples: Samples,
+) -> Result<()> {
     let terminal = ratatui::init();
     let theme = Theme::default()
         .add_default_title()
         .with_item_style(Style::default().fg(Color::Black));
     let file_explorer = FileExplorer::with_theme(theme)?;
-    let app_result = App::new(file_explorer, tui_tx).run(terminal);
+    let app_result = App::new(file_explorer, tui_tx, samples, analyzer_rx).run(terminal);
     ratatui::restore();
     app_result
 }

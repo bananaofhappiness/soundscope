@@ -1,11 +1,12 @@
 use color_eyre::Result;
+use color_eyre::eyre::eyre;
 use crossbeam::channel::{Receiver, Sender};
 use rodio::Source;
 // use color_eyre::eyre::Error;
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicUsize, Ordering};
 use symphonia::core::audio::{Channels, SampleBuffer};
 // use color_eyre::eyre::Error;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, RwLock};
 use std::time::Duration;
 use symphonia::core::codecs::{CODEC_TYPE_NULL, DecoderOptions};
 use symphonia::core::errors::Error;
@@ -15,9 +16,9 @@ use symphonia::core::meta::MetadataOptions;
 use symphonia::core::probe::Hint;
 
 // Samples of the whole file
-pub type Samples = Arc<Vec<f32>>;
+pub type Samples = Arc<RwLock<Vec<f32>>>;
+// pub type Samples = Vec<f32>;
 pub type SampleRate = u32;
-type PlaybackPosition = usize;
 
 pub enum PlayerCommand {
     SelectFile(String),
@@ -30,36 +31,35 @@ pub enum PlayerCommand {
 #[derive(Clone)]
 pub struct AudioFile {
     file_path: Option<String>,
-    samples: Samples,
-    sample_rate: u32,
+    pub samples: Samples,
+    sample_rate: SampleRate,
     // channels of the file (mono, stereo, etc.)
     channels: Channels,
     // Global state and the sender of it
-    playback_position: PlaybackPosition, // Index of the Samples vec
-    audio_tx: Sender<PlaybackPosition>,
+    playback_position: usize, // Index of the Samples vec
+    audio_tx: Sender<usize>,
 }
 
 impl Iterator for AudioFile {
     type Item = f32;
 
     fn next(&mut self) -> Option<Self::Item> {
-        // let mut playback_position = self.playback_position;
-        // if playback_position < self.samples.len() {
-        //     let sample = self.samples[playback_position];
-        //     playback_position += 1;
-        //     Some(sample)
-        // } else {
-        //     None
-        // }
         let pos = self.playback_position;
-        if pos < self.samples.len() {
-            if pos % 1024 == 0 {
-                self.audio_tx.send(pos);
-            }
-            Some(self.samples[pos])
+        let res = if pos < self.samples.read().unwrap().len() {
+            Some(self.samples.read().unwrap()[pos])
         } else {
             None
+        };
+        if pos % 4096 == 0 {
+            if let Err(err) = self.audio_tx.send(pos) {
+                eyre!(err);
+            }
+            // if let Ok(_) = self.audio_tx.send(pos) {
+            //     println!("{pos:}");
+            // }
         }
+        self.playback_position += 1;
+        res
     }
 }
 
@@ -82,10 +82,11 @@ impl Source for AudioFile {
 }
 
 impl AudioFile {
-    pub fn new(audio_tx: Sender<PlaybackPosition>) -> Result<Self> {
+    pub fn new(audio_tx: Sender<usize>) -> Result<Self> {
         let af = AudioFile {
             file_path: None,
-            samples: Arc::new(vec![0.; 0]),
+            samples: Arc::new(RwLock::new(Vec::new())),
+            // samples: vec![0.; 0],
             sample_rate: 44100,
             channels: Channels::all(),
             playback_position: 0,
@@ -97,13 +98,15 @@ impl AudioFile {
     pub fn load_file(&mut self, path: &str) -> Result<()> {
         let (samples, sample_rate, channels) = Self::decode_file(path)?;
         self.file_path = Some(path.to_string());
-        self.samples = samples;
+        let mut vec = self.samples.write().unwrap();
+        *vec = samples;
         self.sample_rate = sample_rate;
         self.channels = channels;
+        self.playback_position = 0;
         Ok(())
     }
 
-    fn decode_file(path: &str) -> Result<(Samples, SampleRate, Channels)> {
+    fn decode_file(path: &str) -> Result<(Vec<f32>, SampleRate, Channels)> {
         // Open the media source.
         let src = std::fs::File::open(path).expect("failed to open media");
         // Create the media source stream.
@@ -118,27 +121,26 @@ impl AudioFile {
         let fmt_opts: FormatOptions = Default::default();
 
         // Probe the media source.
-        let probed = symphonia::default::get_probe()
-            .format(&hint, mss, &fmt_opts, &meta_opts)
-            .expect("unsupported format");
+        let probed = symphonia::default::get_probe().format(&hint, mss, &fmt_opts, &meta_opts)?;
 
         // Get the instantiated format reader.
         let mut format = probed.format;
 
         // Find the first audio track with a known (decodeable) codec.
-        let track = format
+        let track = match format
             .tracks()
             .iter()
             .find(|t| t.codec_params.codec != CODEC_TYPE_NULL)
-            .expect("no supported audio tracks");
+        {
+            Some(track) => track,
+            None => return Err(color_eyre::eyre::eyre!("No supported audio tracks found")),
+        };
 
         // Use the default options for the decoder.
         let dec_opts: DecoderOptions = Default::default();
 
         // Create a decoder for the track.
-        let mut decoder = symphonia::default::get_codecs()
-            .make(&track.codec_params, &dec_opts)
-            .expect("unsupported codec");
+        let mut decoder = symphonia::default::get_codecs().make(&track.codec_params, &dec_opts)?;
 
         // Store the track identifier, it will be used to filter packets.
         let track_id = track.id;
@@ -158,7 +160,7 @@ impl AudioFile {
                 Ok(packet) => packet,
                 Err(Error::IoError(_)) => {
                     // End of stream - return Ok to indicate successful completion
-                    return Ok((Arc::new(all_samples), sample_rate, channels));
+                    return Ok((all_samples, sample_rate, channels));
                 }
                 Err(err) => {
                     return Err(err.into());
@@ -207,7 +209,7 @@ impl AudioFile {
     }
 }
 
-#[derive(PartialEq)]
+#[derive(Debug, PartialEq)]
 pub enum PlaybackState {
     Playing,
     Paused,
@@ -234,27 +236,6 @@ impl AudioPlayer {
         })
     }
 
-    // fn play_audio(&self) {
-    //     // Get an output stream handle to the default physical sound device.
-    //     // Note that the playback stops when the stream_handle is dropped.//!
-    //     let stream_handle =
-    //         rodio::OutputStreamBuilder::open_default_stream().expect("open default audio stream");
-    //     let sink = rodio::Sink::connect_new(&stream_handle.mixer());
-    //     // Decode that sound file into a source
-    //     self.is_playing.store(true, Ordering::Release);
-    //     let source = self.clone();
-    //     sink.append(source);
-    //     sink.sleep_until_end();
-    // }
-
-    // fn pause_audio() {
-    //     todo!()
-    // }
-
-    // pub fn get_file(self) -> Arc<Mutex<AudioFile>> {
-    //     self.audio_file
-    // }
-
     pub fn run(&mut self, audio_player_rx: Receiver<PlayerCommand>) -> Result<()> {
         loop {
             if let Ok(cmd) = audio_player_rx.try_recv() {
@@ -265,7 +246,6 @@ impl AudioPlayer {
                             continue;
                             // todo: show a ratatui paragraph with error message
                         }
-                        // playback position <- 0
                         self.audio_file.playback_position = 0;
 
                         // clear the sink and append new file
@@ -293,6 +273,7 @@ impl AudioPlayer {
                     }
                 }
             }
+            std::thread::sleep(Duration::from_millis(10));
         }
         // Ok(())
     }
