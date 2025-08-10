@@ -12,7 +12,7 @@ pub fn get_fft(samples: &[f32]) -> Vec<(f64, f64)> {
         &hann_window,
         // sampling rate
         44100,
-        FrequencyLimit::All,
+        FrequencyLimit::Range(20.0, 20000.0),
         // optional scale
         // Some(&scale_to_zero_to_one),
         Some(&scale_20_times_log10),
@@ -21,10 +21,35 @@ pub fn get_fft(samples: &[f32]) -> Vec<(f64, f64)> {
     )
     .unwrap();
 
-    let mut vec = Vec::new();
-    for (fr, fr_val) in spectrum_hann_window.data().iter() {
-        // move +120 up if chart is with graphtype::bar so it better
-        vec.push((fr.val() as f64, fr_val.val() as f64));
-    }
-    vec
+    spectrum_hann_window
+        .data()
+        .into_iter()
+        // convert OrderaleF32 to f64
+        .map(|(x, y)| (x.val() as f64, y.val() as f64))
+        .collect()
+}
+
+pub fn transform_to_log_scale(
+    fft_data: &[(f64, f64)],
+    x_bounds: [f64; 2],
+    freq_range: [f64; 2],
+) -> Vec<(f64, f64)> {
+    let min_freq_log = freq_range[0].log10();
+    let max_freq_log = freq_range[1].log10();
+    let log_range = max_freq_log - min_freq_log;
+    let chart_width = x_bounds[1] - x_bounds[0];
+
+    fft_data
+        .iter()
+        .map(|(freq, val)| {
+            let log_freq = freq.log10();
+            // Нормализуем позицию частоты в логарифмическом диапазоне (от 0.0 до 1.0)
+            let normalized_pos = (log_freq - min_freq_log) / log_range;
+            // Масштабируем нормализованную позицию до ширины чарта
+            let chart_x = x_bounds[0] + normalized_pos * chart_width;
+
+            // up 150 so bar chart looks better
+            (chart_x, *val + 150.)
+        })
+        .collect()
 }

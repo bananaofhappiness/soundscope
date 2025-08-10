@@ -70,27 +70,18 @@ impl App {
     }
 
     fn render_animated_chart(&mut self, frame: &mut Frame, area: Rect) {
-        // println!("{:?}", self.data1);
-
-        // let x_labels = vec![
-        //     Span::styled(
-        //         format!("{}", self.window[0]),
-        //         Style::default().add_modifier(Modifier::BOLD),
-        //     ),
-        //     Span::raw(format!("{}", (self.window[0] + self.window[1]) / 2.0)),
-        //     Span::styled(
-        //         format!("{}", self.window[1]),
-        //         Style::default().add_modifier(Modifier::BOLD),
-        //     ),
-        // ];
+        let x_labels = vec![
+            Span::styled("20Hz", Style::default().add_modifier(Modifier::BOLD)),
+            Span::raw("632Hz"),
+            Span::styled("20kHz", Style::default().add_modifier(Modifier::BOLD)),
+        ];
         let datasets = vec![
             Dataset::default()
-                .name("data")
+                .name("Frequency")
                 .marker(symbols::Marker::Braille)
                 .graph_type(GraphType::Line)
                 .style(Style::default().fg(Color::Black))
                 .data(&self.fft_vec),
-            // .data(&[(0., 0.)]),
         ];
 
         let chart = Chart::new(datasets)
@@ -99,41 +90,37 @@ impl App {
                 Axis::default()
                     .title("Hz")
                     .style(Style::default().fg(Color::Black))
-                    // .labels(x_labels)
-                    .bounds([0., 22050.]),
+                    .labels(x_labels)
+                    .bounds([0., 100.]),
             )
             .y_axis(
                 Axis::default()
                     .title("Db")
                     .style(Style::default().fg(Color::Black))
-                    .bounds([-150., 50.]),
+                    .labels(vec![Span::raw("idk"), Span::raw("some db")])
+                    .bounds([0., 250.]),
             );
 
         frame.render_widget(chart, area);
     }
 
     fn run(mut self, mut terminal: DefaultTerminal) -> Result<()> {
-        // self.tui_tx
-        //     .send(PlayerCommand::SelectFile("VIRUS.mp3".to_string()));
-        // self.tui_tx.send(PlayerCommand::ChangeState);
         loop {
             terminal.draw(|f| self.draw(f))?;
 
             // receive playback position
             if let Ok(pos) = self.analyzer_rx.try_recv() {
-                let left_bound = pos.saturating_sub(1024);
+                let left_bound = pos.saturating_sub(16384);
                 if left_bound != 0 {
-                    //get every 2nd elem of it
-                    // let samples = &self
-                    //     .samples
-                    //     .read()
-                    //     .unwrap()
-                    //     .iter()
-                    //     .step_by(2)
-                    //     .cloned()
-                    //     .collect::<Vec<f32>>()[left_bound..pos];
                     let samples = &self.samples.read().unwrap()[left_bound..pos];
+
+                    // get fft
                     self.fft_vec = analyzer::get_fft(samples);
+                    self.fft_vec = analyzer::transform_to_log_scale(
+                        &self.fft_vec,
+                        [0.0, 100.0],
+                        [20.0, 20000.0],
+                    );
                 }
             }
 
