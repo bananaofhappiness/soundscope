@@ -36,9 +36,13 @@ struct App {
     samples: Samples,
     tui_tx: Sender<PlayerCommand>,
     analyzer_rx: Receiver<usize>,
-    show_explorer: bool,
     mid_fft_vec: Vec<(f64, f64)>,
     side_fft_vec: Vec<(f64, f64)>,
+
+    // show ui elements
+    show_side_fft_vec: bool,
+    show_mid_fft_vec: bool,
+    show_explorer: bool,
 }
 
 impl App {
@@ -53,9 +57,11 @@ impl App {
             samples,
             tui_tx,
             analyzer_rx,
-            show_explorer: false,
             mid_fft_vec: vec![(0., 0.); 0],
             side_fft_vec: vec![(0., 0.); 0],
+            show_side_fft_vec: false,
+            show_mid_fft_vec: true,
+            show_explorer: false,
         }
     }
 
@@ -77,20 +83,28 @@ impl App {
             Span::raw("632Hz"),
             Span::styled("20kHz", Style::default().add_modifier(Modifier::BOLD)),
         ];
-        let datasets = vec![
-            Dataset::default()
-                .name("Mid Frequency")
-                .marker(symbols::Marker::Braille)
-                .graph_type(GraphType::Line)
-                .style(Style::default().fg(Color::Green))
-                .data(&self.mid_fft_vec),
-            Dataset::default()
-                .name("Side Frequency")
-                .marker(symbols::Marker::Braille)
-                .graph_type(GraphType::Line)
-                .style(Style::default().fg(Color::Yellow))
-                .data(&self.side_fft_vec),
-        ];
+
+        let mut datasets = Vec::new();
+        if self.show_mid_fft_vec {
+            datasets.push(
+                Dataset::default()
+                    .name("Mid Frequency")
+                    .marker(symbols::Marker::Braille)
+                    .graph_type(GraphType::Line)
+                    .style(Style::default().fg(Color::Green))
+                    .data(&self.mid_fft_vec),
+            );
+        }
+        if self.show_side_fft_vec {
+            datasets.push(
+                Dataset::default()
+                    .name("Side Frequency")
+                    .marker(symbols::Marker::Braille)
+                    .graph_type(GraphType::Line)
+                    .style(Style::default().fg(Color::Red))
+                    .data(&self.side_fft_vec),
+            );
+        }
 
         let chart = Chart::new(datasets)
             .block(Block::bordered())
@@ -135,6 +149,8 @@ impl App {
                         KeyCode::Char('q') => return Ok(()),
                         KeyCode::Char('e') => self.show_explorer = !self.show_explorer,
                         KeyCode::Enter => self.select_file(),
+                        KeyCode::Char('s') => self.show_side_fft_vec = !self.show_side_fft_vec,
+                        KeyCode::Char('m') => self.show_mid_fft_vec = !self.show_mid_fft_vec,
                         KeyCode::Char(' ') => {
                             if let Err(err) = self.tui_tx.send(PlayerCommand::ChangeState) {
                                 //do smth idk
