@@ -12,7 +12,7 @@ use std::{fmt, time::Duration, usize::MAX};
 use symphonia::core::sample::Sample;
 
 use crate::{
-    analyzer::{self, get_fft},
+    analyzer::{self, get_fft, get_waveform},
     audio_player::{AudioFile, PlayerCommand, Samples},
 };
 
@@ -39,6 +39,24 @@ struct FFTData {
     side_fft: Vec<(f64, f64)>,
 }
 
+struct WaveForm {
+    window: [f64; 2],
+    chart: Vec<(f64, f64)>,
+    at_zero: bool,
+    playhead: usize,
+}
+
+impl Default for WaveForm {
+    fn default() -> Self {
+        Self {
+            window: [0., 0.],
+            chart: vec![(0., 0.)],
+            at_zero: true,
+            playhead: 0,
+        }
+    }
+}
+
 /// `App` contains the necessary components for the application like tx, rx, UI settings.
 struct App {
     /// Audio file which is loaded into the player.
@@ -52,6 +70,8 @@ struct App {
     playback_position_rx: Receiver<usize>,
     // Charts data
     fft_data: FFTData,
+    waveform: WaveForm,
+    //UI
     explorer: FileExplorer,
     ui_settings: UISettings,
 }
@@ -70,6 +90,7 @@ impl App {
             player_command_tx,
             playback_position_rx,
             fft_data: FFTData::default(),
+            waveform: WaveForm::default(),
             explorer,
             ui_settings: UISettings::default(),
         }
@@ -79,10 +100,11 @@ impl App {
         let area = f.area();
         let layout = Layout::default()
             .direction(Direction::Vertical)
-            .constraints([Constraint::Percentage(20), Constraint::Percentage(80)].as_ref())
+            .constraints([Constraint::Percentage(30), Constraint::Percentage(70)].as_ref())
             .split(area);
 
-        self.render_fft(f, layout[1]);
+        self.render_waveform(f, layout[0]);
+        self.render_fft_chart(f, layout[1]);
         // render explorer
         if self.ui_settings.show_explorer {
             let area = Self::popup_area(area, 50, 70);
@@ -91,7 +113,64 @@ impl App {
         }
     }
 
-    fn render_fft(&mut self, frame: &mut Frame, area: Rect) {
+    fn render_waveform(&mut self, frame: &mut Frame, area: Rect) {
+        let playhead_chart = [
+            (self.waveform.playhead as f64 / 44., 1.),
+            (self.waveform.playhead as f64 / 44. + 0.01, -1.),
+        ];
+
+        // get current playback time
+        let playhead_position_in_milis =
+            Duration::from_millis((self.waveform.playhead as f64 / 44100. * 1000.) as u64);
+        let secs = playhead_position_in_milis.as_secs() as f64;
+        let millis = playhead_position_in_milis.subsec_millis() as f64;
+        let current_time = secs + millis / 1000.0;
+
+        let secs = self.audio_file.duration.as_secs() as f64;
+        let millis = self.audio_file.duration.subsec_millis() as f64;
+        let total_time = secs + millis / 1000.0;
+
+        let x_labels = vec![
+            Span::styled(
+                format!("{}", self.waveform.window[0]),
+                Style::default().add_modifier(Modifier::BOLD),
+            ),
+            Span::raw(format!(
+                "{}",
+                (self.waveform.window[0] + self.waveform.window[1]) / 2.0
+            )),
+            Span::styled(
+                format!("{:?}", self.audio_file.duration),
+                Style::default().add_modifier(Modifier::BOLD),
+            ),
+        ];
+        let datasets = vec![
+            Dataset::default()
+                .marker(symbols::Marker::Braille)
+                .graph_type(GraphType::Line)
+                .style(Style::default().fg(Color::Black))
+                .data(&self.waveform.chart),
+            Dataset::default()
+                .marker(symbols::Marker::Braille)
+                .graph_type(GraphType::Line)
+                .style(Style::default().fg(Color::Red))
+                .data(&playhead_chart),
+        ];
+
+        let chart = Chart::new(datasets)
+            .block(
+                Block::bordered()
+                    .title_bottom(Line::from("0").left_aligned())
+                    .title_bottom(Line::from(format!("{:.2}s", current_time)).centered())
+                    .title_bottom(Line::from(format!("{:.2}s", total_time)).right_aligned()),
+            )
+            .x_axis(Axis::default().bounds([0., 15. * 1000.]))
+            .y_axis(Axis::default().bounds([-1., 1.]));
+
+        frame.render_widget(chart, area);
+    }
+
+    fn render_fft_chart(&mut self, frame: &mut Frame, area: Rect) {
         let x_labels = vec![
             Span::styled("20Hz", Style::default().add_modifier(Modifier::BOLD)),
             Span::raw("632Hz"),
@@ -151,15 +230,33 @@ impl App {
 
             // receive playback position
             if let Ok(pos) = self.playback_position_rx.try_recv() {
-                let left_bound = pos.saturating_sub(16384);
-                if left_bound != 0 {
+                // if using mid side we must divide the position by 2
+                let pos = pos / 2;
+                // get fft
+                let fft_left_bound = pos.saturating_sub(16384);
+                if fft_left_bound != 0 {
                     let audio_file = &self.audio_file;
-                    let mid_samples = &audio_file.mid_samples[left_bound..pos];
-                    let side_samples = &audio_file.side_samples[left_bound..pos];
+                    let mid_samples = &audio_file.mid_samples[fft_left_bound..pos];
+                    let side_samples = &audio_file.side_samples[fft_left_bound..pos];
 
-                    // get fft
                     self.fft_data.mid_fft = get_fft(mid_samples);
                     self.fft_data.side_fft = get_fft(side_samples);
+                }
+
+                //get waveform
+                if self.waveform.at_zero {
+                    let waveform_samples = &self.audio_file.mid_samples[0..15 * 44100];
+                    self.waveform.chart = get_waveform(waveform_samples);
+                    self.waveform.playhead = pos;
+                }
+                let waveform_left_bound = pos.saturating_sub((7.5 * 44100.) as usize);
+                let waveform_right_bound = pos.saturating_add((7.5 * 44100.) as usize);
+
+                if waveform_left_bound != 0 {
+                    self.waveform.at_zero = false;
+                    let waveform_samples =
+                        &self.audio_file.mid_samples[waveform_left_bound..waveform_right_bound];
+                    self.waveform.chart = get_waveform(waveform_samples);
                 }
             }
 
@@ -205,6 +302,7 @@ impl App {
         }
         // audio_file.lock().unwrap().load_file(&file_path)?;
         self.ui_settings.show_explorer = false;
+        self.waveform.at_zero = true;
         if let Err(err) = self
             .player_command_tx
             .send(PlayerCommand::SelectFile(file_path))

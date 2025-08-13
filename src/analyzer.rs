@@ -55,3 +55,18 @@ pub fn transform_to_log_scale(fft_data: &[(f64, f64)]) -> Vec<(f64, f64)> {
         })
         .collect()
 }
+
+pub fn get_waveform(samples: &[f32]) -> Vec<(f64, f64)> {
+    // 44100 = 1000
+    // 1 = 1000/44100 = 0.02
+    // 50 = 1
+    let iter = samples.iter().step_by(44).map(|x| *x as f64);
+    (0..15 * 1000)
+        .map(|x| x as f64)
+        .zip(iter)
+        .collect::<Vec<(f64, f64)>>()
+    // (0..=6 * 44100)
+    //     .map(|x| x as f64)
+    //     .zip(samples.iter().map(|x| *x as f64))
+    //     .collect::<Vec<(f64, f64)>>()
+}

@@ -37,6 +37,7 @@ pub struct AudioFile {
     pub mid_samples: Samples,
     pub side_samples: Samples,
     pub sample_rate: SampleRate,
+    pub duration: Duration,
     // channels of the file (mono, stereo, etc.)
     pub channels: Channels,
     // Global state and the sender of it
@@ -91,8 +92,8 @@ impl AudioFile {
             samples: Vec::new(),
             mid_samples: Vec::new(),
             side_samples: Vec::new(),
-            // samples: vec![0.; 0],
             sample_rate: 44100,
+            duration: Duration::from_millis(0),
             channels: Channels::all(),
             playback_position: 0,
             playback_position_tx,
@@ -119,11 +120,14 @@ impl AudioFile {
             .zip(right_samples.iter())
             .map(|(l, r)| (l - r) / 2.)
             .collect::<Vec<f32>>();
+
+        let duration = mid_samples.len() as f64 / sample_rate as f64 * 1000.;
         Ok(AudioFile {
             samples,
             mid_samples,
             side_samples,
             sample_rate,
+            duration: Duration::from_millis(duration as u64),
             channels,
             playback_position: 0,
             playback_position_tx,

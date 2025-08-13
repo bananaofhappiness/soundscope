@@ -1,5 +1,4 @@
 mod analyzer;
-mod app;
 mod audio_player;
 mod tui;
 use crate::audio_player::{AudioFile, AudioPlayer, PlaybackPosition, PlayerCommand};
