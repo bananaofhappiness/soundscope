@@ -37,7 +37,8 @@ struct App {
     tui_tx: Sender<PlayerCommand>,
     analyzer_rx: Receiver<usize>,
     show_explorer: bool,
-    fft_vec: Vec<(f64, f64)>,
+    mid_fft_vec: Vec<(f64, f64)>,
+    side_fft_vec: Vec<(f64, f64)>,
 }
 
 impl App {
@@ -53,7 +54,8 @@ impl App {
             tui_tx,
             analyzer_rx,
             show_explorer: false,
-            fft_vec: vec![(0., 0.); 0],
+            mid_fft_vec: vec![(0., 0.); 0],
+            side_fft_vec: vec![(0., 0.); 0],
         }
     }
 
@@ -77,11 +79,17 @@ impl App {
         ];
         let datasets = vec![
             Dataset::default()
-                .name("Frequency")
+                .name("Mid Frequency")
                 .marker(symbols::Marker::Braille)
                 .graph_type(GraphType::Line)
-                .style(Style::default().fg(Color::Black))
-                .data(&self.fft_vec),
+                .style(Style::default().fg(Color::Green))
+                .data(&self.mid_fft_vec),
+            Dataset::default()
+                .name("Side Frequency")
+                .marker(symbols::Marker::Braille)
+                .graph_type(GraphType::Line)
+                .style(Style::default().fg(Color::Yellow))
+                .data(&self.side_fft_vec),
         ];
 
         let chart = Chart::new(datasets)
@@ -115,12 +123,7 @@ impl App {
                     let samples = &self.samples.read().unwrap()[left_bound..pos];
 
                     // get fft
-                    self.fft_vec = analyzer::get_fft(samples);
-                    self.fft_vec = analyzer::transform_to_log_scale(
-                        &self.fft_vec,
-                        [0.0, 100.0],
-                        [20.0, 20000.0],
-                    );
+                    (self.mid_fft_vec, self.side_fft_vec) = analyzer::get_fft(samples);
                 }
             }
 
