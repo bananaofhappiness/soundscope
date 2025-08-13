@@ -16,9 +16,10 @@ use symphonia::core::meta::MetadataOptions;
 use symphonia::core::probe::Hint;
 
 // Samples of the whole file
-pub type Samples = Arc<RwLock<Vec<f32>>>;
+pub type Samples = Vec<f32>;
 // pub type Samples = Vec<f32>;
 pub type SampleRate = u32;
+pub type PlaybackPosition = usize;
 
 pub enum PlayerCommand {
     SelectFile(String),
@@ -28,16 +29,19 @@ pub enum PlayerCommand {
 
 // TODO: introduce streaming
 // stream the first portion of the track while the whole track loading in the background
+/// `AudioFile` represents a loaded audio file with its samples, sample rate, and channels.
+/// It implements [`Source`] and [`Iterator`] for playback.
 #[derive(Clone)]
 pub struct AudioFile {
-    file_path: Option<String>,
     pub samples: Samples,
-    sample_rate: SampleRate,
+    pub mid_samples: Samples,
+    pub side_samples: Samples,
+    pub sample_rate: SampleRate,
     // channels of the file (mono, stereo, etc.)
-    channels: Channels,
+    pub channels: Channels,
     // Global state and the sender of it
     playback_position: usize, // Index of the Samples vec
-    audio_tx: Sender<usize>,
+    playback_position_tx: Sender<usize>,
 }
 
 impl Iterator for AudioFile {
@@ -45,13 +49,13 @@ impl Iterator for AudioFile {
 
     fn next(&mut self) -> Option<Self::Item> {
         let pos = self.playback_position;
-        let res = if pos < self.samples.read().unwrap().len() {
-            Some(self.samples.read().unwrap()[pos])
+        let res = if pos < self.samples.len() {
+            Some(self.samples[pos])
         } else {
             None
         };
         if pos % 4096 == 0 {
-            if let Err(err) = self.audio_tx.send(pos) {
+            if let Err(err) = self.playback_position_tx.send(pos) {
                 eyre!(err);
             }
             // if let Ok(_) = self.audio_tx.send(pos) {
@@ -82,31 +86,52 @@ impl Source for AudioFile {
 }
 
 impl AudioFile {
-    pub fn new(audio_tx: Sender<usize>) -> Result<Self> {
-        let af = AudioFile {
-            file_path: None,
-            samples: Arc::new(RwLock::new(Vec::new())),
+    pub fn new(playback_position_tx: Sender<usize>) -> Self {
+        AudioFile {
+            samples: Vec::new(),
+            mid_samples: Vec::new(),
+            side_samples: Vec::new(),
             // samples: vec![0.; 0],
             sample_rate: 44100,
             channels: Channels::all(),
             playback_position: 0,
-            audio_tx,
-        };
-        Ok(af)
+            playback_position_tx,
+        }
     }
 
-    pub fn load_file(&mut self, path: &str) -> Result<()> {
+    fn from_file(path: &str, playback_position_tx: Sender<usize>) -> Result<Self> {
         let (samples, sample_rate, channels) = Self::decode_file(path)?;
-        self.file_path = Some(path.to_string());
-        let mut vec = self.samples.write().unwrap();
-        *vec = samples;
-        self.sample_rate = sample_rate;
-        self.channels = channels;
-        self.playback_position = 0;
-        Ok(())
+        // TODO: other channels, not only stereo sound.
+        let left_samples = samples.iter().step_by(2).cloned().collect::<Vec<f32>>();
+        let right_samples = samples
+            .iter()
+            .skip(1)
+            .step_by(2)
+            .cloned()
+            .collect::<Vec<f32>>();
+        let mid_samples = left_samples
+            .iter()
+            .zip(right_samples.iter())
+            .map(|(l, r)| (l + r) / 2.)
+            .collect::<Vec<f32>>();
+        let side_samples = left_samples
+            .iter()
+            .zip(right_samples.iter())
+            .map(|(l, r)| (l - r) / 2.)
+            .collect::<Vec<f32>>();
+        Ok(AudioFile {
+            samples,
+            mid_samples,
+            side_samples,
+            sample_rate,
+            channels,
+            playback_position: 0,
+            playback_position_tx,
+        })
     }
 
-    fn decode_file(path: &str) -> Result<(Vec<f32>, SampleRate, Channels)> {
+    /// Decodes file and returns its [`Samples`], [`SampleRate`] and [`Channels`]
+    fn decode_file(path: &str) -> Result<(Samples, SampleRate, Channels)> {
         // Open the media source.
         let src = std::fs::File::open(path).expect("failed to open media");
         // Create the media source stream.
@@ -216,6 +241,8 @@ pub enum PlaybackState {
 }
 
 pub struct AudioPlayer {
+    // sends playback position
+    playback_position_tx: Sender<usize>,
     audio_file: AudioFile,
     _stream_handle: rodio::OutputStream,
     state: PlaybackState,
@@ -223,12 +250,14 @@ pub struct AudioPlayer {
 }
 
 impl AudioPlayer {
-    pub fn from_file(audio_file: AudioFile) -> Result<Self> {
+    pub fn new(playback_position_tx: Sender<usize>) -> Result<Self> {
         let _stream_handle =
             rodio::OutputStreamBuilder::open_default_stream().expect("open default audio stream");
         let sink = rodio::Sink::connect_new(&_stream_handle.mixer());
+        let audio_file = AudioFile::new(playback_position_tx.clone());
         // sink.pause();
         Ok(Self {
+            playback_position_tx,
             audio_file,
             _stream_handle,
             state: PlaybackState::Paused,
@@ -236,24 +265,35 @@ impl AudioPlayer {
         })
     }
 
-    pub fn run(&mut self, audio_player_rx: Receiver<PlayerCommand>) -> Result<()> {
+    pub fn run(
+        &mut self,
+        player_command_rx: Receiver<PlayerCommand>,
+        audio_file_tx: Sender<AudioFile>,
+    ) -> Result<()> {
         loop {
-            if let Ok(cmd) = audio_player_rx.try_recv() {
+            if let Ok(cmd) = player_command_rx.try_recv() {
                 match cmd {
                     PlayerCommand::SelectFile(path) => {
-                        if let Err(err) = self.audio_file.load_file(&path) {
-                            println!("Error loading file: {}", err);
-                            continue;
-                            // todo: show a ratatui paragraph with error message
-                        }
+                        match AudioFile::from_file(&path, self.playback_position_tx.clone()) {
+                            Err(err) => {
+                                println!("Error loading file: {}", err);
+                                continue;
+                                // TODO: show a ratatui paragraph with error message
+                            }
+                            Ok(af) => {
+                                self.audio_file = af.clone();
+                                if let Err(err) = audio_file_tx.send(af) {
+                                    // TODO: show a ratatui paragraph with error message
+                                }
+                            }
+                        };
                         self.audio_file.playback_position = 0;
+                        self.state = PlaybackState::Paused;
 
                         // clear the sink and append new file
                         self.sink.stop();
                         self.sink.clear();
                         self.sink.append(self.audio_file.clone());
-
-                        self.state = PlaybackState::Paused;
                     }
 
                     PlayerCommand::ChangeState => {
