@@ -8,7 +8,7 @@ use ratatui::{
     widgets::{Axis, Block, Chart, Clear, Dataset, GraphType},
 };
 use ratatui_explorer::{FileExplorer, Theme};
-use std::{fmt, time::Duration, usize::MAX};
+use std::{cmp, fmt, time::Duration, usize::MAX};
 use symphonia::core::sample::Sample;
 
 use crate::{
@@ -42,8 +42,9 @@ struct FFTData {
 struct WaveForm {
     window: [f64; 2],
     chart: Vec<(f64, f64)>,
-    at_zero: bool,
     playhead: usize,
+    at_zero: bool,
+    at_end: bool,
 }
 
 impl Default for WaveForm {
@@ -51,8 +52,9 @@ impl Default for WaveForm {
         Self {
             window: [0., 0.],
             chart: vec![(0., 0.)],
-            at_zero: true,
             playhead: 0,
+            at_zero: true,
+            at_end: false,
         }
     }
 }
@@ -69,7 +71,9 @@ struct App {
     /// Gets playback position for an analyzer to know what samples to analyze.
     playback_position_rx: Receiver<usize>,
     // Charts data
+    /// Data used to render FFT chart
     fft_data: FFTData,
+    /// Data used to render waveform
     waveform: WaveForm,
     //UI
     explorer: FileExplorer,
@@ -114,10 +118,58 @@ impl App {
     }
 
     fn render_waveform(&mut self, frame: &mut Frame, area: Rect) {
-        let playhead_chart = [
+        let mut playhead_chart = [
             (self.waveform.playhead as f64 / 44., 1.),
             (self.waveform.playhead as f64 / 44. + 0.01, -1.),
         ];
+        if self.waveform.at_end {
+            // If at the end, the playhead moves from the middle to the end of the chart.
+            // The chart displays the last 15 seconds of the audio.
+            // The playhead starts moving from the middle of the chart (7.5s mark) when
+            // the playback enters the last 7.5 seconds of the audio.
+            let total_samples = self.audio_file.mid_samples.len();
+            let chart_duration_seconds = 15.0; // Corresponds to X-axis bounds [0., 15. * 1000.]
+            let chart_middle_seconds = chart_duration_seconds / 2.0; // 7.5 seconds
+
+            // Calculate the absolute sample position where the playhead starts scrolling
+            // from the middle of the chart to the end. This is when playback enters the
+            // last `chart_middle_seconds` (7.5s) of the total audio duration.
+            let scroll_start_absolute_samples =
+                total_samples.saturating_sub((chart_middle_seconds * 44100.0) as usize);
+
+            // Calculate playhead's position relative to the start of this scroll phase.
+            // `self.waveform.playhead` is the absolute current playback position.
+            // The `at_end` condition in `run` ensures `self.waveform.playhead` is
+            // greater than or equal to `scroll_start_absolute_samples`.
+            let relative_samples_in_scroll_phase = self
+                .waveform
+                .playhead
+                .saturating_sub(scroll_start_absolute_samples);
+
+            // Map this relative sample position to the chart's X-axis range for the playhead.
+            // The playhead should start at `chart_middle_seconds * 1000.` (7500 on the chart)
+            // and move up to `chart_duration_seconds * 1000.` (15000 on the chart).
+            // The conversion from samples to chart units (milliseconds) uses the same 1/44. scale
+            // as other playhead positions in this function.
+            let mut chart_x_position =
+                (chart_middle_seconds * 1000.) + (relative_samples_in_scroll_phase as f64 / 44.);
+
+            // Ensure the playhead does not exceed the chart's upper bound.
+            chart_x_position = f64::min(chart_x_position, chart_duration_seconds * 1000.);
+
+            playhead_chart = [(chart_x_position, 1.), (chart_x_position + 0.01, -1.)];
+        } else if !self.waveform.at_zero {
+            playhead_chart = [
+                (
+                    f64::min(self.waveform.playhead as f64 / 44., 1000. * 7.5),
+                    1.,
+                ),
+                (
+                    f64::min(self.waveform.playhead as f64 / 44., 1000. * 7.5) + 0.01,
+                    -1.,
+                ),
+            ];
+        }
 
         // get current playback time
         let playhead_position_in_milis =
@@ -130,20 +182,6 @@ impl App {
         let millis = self.audio_file.duration.subsec_millis() as f64;
         let total_time = secs + millis / 1000.0;
 
-        let x_labels = vec![
-            Span::styled(
-                format!("{}", self.waveform.window[0]),
-                Style::default().add_modifier(Modifier::BOLD),
-            ),
-            Span::raw(format!(
-                "{}",
-                (self.waveform.window[0] + self.waveform.window[1]) / 2.0
-            )),
-            Span::styled(
-                format!("{:?}", self.audio_file.duration),
-                Style::default().add_modifier(Modifier::BOLD),
-            ),
-        ];
         let datasets = vec![
             Dataset::default()
                 .marker(symbols::Marker::Braille)
@@ -172,8 +210,24 @@ impl App {
 
     fn render_fft_chart(&mut self, frame: &mut Frame, area: Rect) {
         let x_labels = vec![
+            // frequencies are commented because their positions are off.
+            // they are not rendered where the corresponding frequencies are.
             Span::styled("20Hz", Style::default().add_modifier(Modifier::BOLD)),
-            Span::raw("632Hz"),
+            // Span::raw("20Hz"),
+            // Span::raw(""),
+            // Span::raw(""),
+            // Span::raw("112.47"),
+            // Span::raw(""),
+            // Span::raw(""),
+            // Span::raw(""),
+            Span::raw("632.46Hz"),
+            // Span::raw(""),
+            // Span::raw(""),
+            // Span::raw(" "),
+            // Span::raw("3556.57"),
+            // Span::raw(""),
+            // Span::raw(""),
+            // Span::raw("20000Hz"),
             Span::styled("20kHz", Style::default().add_modifier(Modifier::BOLD)),
         ];
 
@@ -212,7 +266,7 @@ impl App {
                 Axis::default()
                     .title("Db")
                     .style(Style::default().fg(Color::Black))
-                    .labels(vec![Span::raw("idk"), Span::raw("some db")])
+                    .labels(vec![Span::raw("-nDb"), Span::raw("0Db")])
                     .bounds([0., 250.]),
             );
 
@@ -221,8 +275,6 @@ impl App {
 
     fn run(mut self, mut terminal: DefaultTerminal) -> Result<()> {
         loop {
-            terminal.draw(|f| self.draw(f))?;
-
             // receive audio file
             if let Ok(af) = self.audio_file_rx.try_recv() {
                 self.audio_file = af;
@@ -244,15 +296,22 @@ impl App {
                 }
 
                 //get waveform
+                let mid_samples_len = self.audio_file.mid_samples.len();
+                self.waveform.playhead = pos;
                 if self.waveform.at_zero {
                     let waveform_samples = &self.audio_file.mid_samples[0..15 * 44100];
                     self.waveform.chart = get_waveform(waveform_samples);
-                    self.waveform.playhead = pos;
                 }
                 let waveform_left_bound = pos.saturating_sub((7.5 * 44100.) as usize);
-                let waveform_right_bound = pos.saturating_add((7.5 * 44100.) as usize);
+                let waveform_right_bound =
+                    usize::min(pos + (7.5 * 44100.) as usize, mid_samples_len);
 
-                if waveform_left_bound != 0 {
+                if waveform_right_bound == mid_samples_len {
+                    self.waveform.at_end = true;
+                    let waveform_samples =
+                        &self.audio_file.mid_samples[mid_samples_len - 15 * 44100..mid_samples_len];
+                    self.waveform.chart = get_waveform(waveform_samples);
+                } else if waveform_left_bound != 0 {
                     self.waveform.at_zero = false;
                     let waveform_samples =
                         &self.audio_file.mid_samples[waveform_left_bound..waveform_right_bound];
@@ -290,6 +349,7 @@ impl App {
                     self.explorer.handle(&event)?;
                 }
             }
+            terminal.draw(|f| self.draw(f))?;
         }
     }
 
@@ -303,6 +363,7 @@ impl App {
         // audio_file.lock().unwrap().load_file(&file_path)?;
         self.ui_settings.show_explorer = false;
         self.waveform.at_zero = true;
+        self.waveform.at_end = false;
         if let Err(err) = self
             .player_command_tx
             .send(PlayerCommand::SelectFile(file_path))
