@@ -25,6 +25,8 @@ pub enum PlayerCommand {
     SelectFile(String),
     ChangeState,
     Stop,
+    MoveRight,
+    MoveLeft,
 }
 
 // TODO: introduce streaming
@@ -82,7 +84,26 @@ impl Source for AudioFile {
     }
 
     fn total_duration(&self) -> Option<Duration> {
-        None
+        Some(self.duration)
+    }
+
+    fn try_seek(&mut self, pos: Duration) -> Result<(), rodio::source::SeekError> {
+        // TODO: other channels, see https://docs.rs/rodio/latest/src/rodio/buffer.rs.html#88-105
+        let curr_channel = self.playback_position % self.channels() as usize;
+        let new_pos = pos.as_secs_f32() * self.sample_rate() as f32 * self.channels() as f32;
+        // saturate pos at the end of the source
+        let new_pos = new_pos as usize;
+        let new_pos = new_pos.min(self.samples.len());
+        // make sure the next sample is for the right channel
+        let new_pos = new_pos.next_multiple_of(self.channels() as usize);
+        let new_pos = new_pos - curr_channel;
+
+        self.playback_position = new_pos;
+        // send position again so the charts update even when the audio is paused.
+        if let Err(err) = self.playback_position_tx.send(new_pos) {
+            eyre!(err);
+        }
+        Ok(())
     }
 }
 
@@ -238,18 +259,11 @@ impl AudioFile {
     }
 }
 
-#[derive(Debug, PartialEq)]
-pub enum PlaybackState {
-    Playing,
-    Paused,
-}
-
 pub struct AudioPlayer {
     // sends playback position
     playback_position_tx: Sender<usize>,
     audio_file: AudioFile,
     _stream_handle: rodio::OutputStream,
-    state: PlaybackState,
     sink: rodio::Sink,
 }
 
@@ -264,7 +278,6 @@ impl AudioPlayer {
             playback_position_tx,
             audio_file,
             _stream_handle,
-            state: PlaybackState::Paused,
             sink,
         })
     }
@@ -291,29 +304,46 @@ impl AudioPlayer {
                                 }
                             }
                         };
-                        self.audio_file.playback_position = 0;
-                        self.state = PlaybackState::Paused;
 
                         // clear the sink and append new file
                         self.sink.stop();
                         self.sink.clear();
                         self.sink.append(self.audio_file.clone());
+                        self.audio_file.playback_position = 0;
+                        if let Err(err) = self.playback_position_tx.send(0) {
+                            eyre!(err);
+                        }
                     }
 
                     PlayerCommand::ChangeState => {
-                        if self.state == PlaybackState::Playing {
-                            self.sink.pause();
-                            self.state = PlaybackState::Paused;
-                        } else {
+                        if self.sink.is_paused() {
                             self.sink.play();
-                            self.state = PlaybackState::Playing;
+                        } else {
+                            self.sink.pause();
                         }
                     }
                     PlayerCommand::Stop => {
                         self.sink.stop();
                         self.sink.clear();
                         self.audio_file.playback_position = 0;
-                        self.state = PlaybackState::Paused;
+                    }
+                    PlayerCommand::MoveRight => {
+                        let pos = self.sink.get_pos();
+                        println!("Current position: {:?}", pos);
+                        if let Err(err) = self.sink.try_seek(pos + Duration::from_secs(5)) {
+                            println!("Error seeking: {:?}", err);
+                            // TODO: error handling
+                        }
+                    }
+                    PlayerCommand::MoveLeft => {
+                        let pos = self.sink.get_pos();
+                        println!("Current position: {:?}", pos);
+                        if let Err(err) = self
+                            .sink
+                            .try_seek(pos.saturating_sub(Duration::from_secs(5)))
+                        {
+                            // TODO: error handling
+                        }
                     }
                 }
             }

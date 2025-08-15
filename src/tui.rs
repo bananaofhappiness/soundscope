@@ -316,6 +316,8 @@ impl App {
                     let waveform_samples =
                         &self.audio_file.mid_samples[waveform_left_bound..waveform_right_bound];
                     self.waveform.chart = get_waveform(waveform_samples);
+                } else {
+                    self.waveform.at_zero = true;
                 }
             }
 
@@ -342,6 +344,17 @@ impl App {
                                 //do smth idk
                             }
                         }
+                        KeyCode::Right => {
+                            if let Err(err) = self.player_command_tx.send(PlayerCommand::MoveRight)
+                            {
+                                //do smth idk
+                            }
+                        }
+                        KeyCode::Left => {
+                            if let Err(err) = self.player_command_tx.send(PlayerCommand::MoveLeft) {
+                                //do smth idk
+                            }
+                        }
                         _ => (),
                     }
                 }
@@ -362,6 +375,9 @@ impl App {
         }
         // audio_file.lock().unwrap().load_file(&file_path)?;
         self.ui_settings.show_explorer = false;
+        self.fft_data.mid_fft.clear();
+        self.fft_data.side_fft.clear();
+        self.waveform.chart.clear();
         self.waveform.at_zero = true;
         self.waveform.at_end = false;
         if let Err(err) = self
