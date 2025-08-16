@@ -1,18 +1,21 @@
-use color_eyre::Result;
+use color_eyre::{Result, owo_colors::OwoColorize};
 use crossbeam::channel::{Receiver, Sender};
 use ratatui::{
     DefaultTerminal,
     crossterm::event::{Event, KeyCode, poll, read},
     layout::Flex,
     prelude::*,
-    widgets::{Axis, Block, Chart, Clear, Dataset, GraphType},
+    style::{Color, Modifier, Style, Stylize},
+    text::{Line, Span},
+    widgets::{Axis, Block, Chart, Clear, Dataset, GraphType, Padding, Paragraph},
 };
 use ratatui_explorer::{FileExplorer, Theme};
+use rodio::Source;
 use std::{cmp, fmt, time::Duration, usize::MAX};
 use symphonia::core::sample::Sample;
 
 use crate::{
-    analyzer::{self, get_fft, get_waveform},
+    analyzer::{self, Analyzer},
     audio_player::{AudioFile, PlayerCommand, Samples},
 };
 
@@ -21,6 +24,7 @@ struct UISettings {
     show_explorer: bool,
     show_mid_fft: bool,
     show_side_fft: bool,
+    show_lufs: bool,
 }
 
 impl Default for UISettings {
@@ -29,6 +33,7 @@ impl Default for UISettings {
             show_explorer: false,
             show_mid_fft: true,
             show_side_fft: false,
+            show_lufs: false,
         }
     }
 }
@@ -70,11 +75,13 @@ struct App {
     player_command_tx: Sender<PlayerCommand>,
     /// Gets playback position for an analyzer to know what samples to analyze.
     playback_position_rx: Receiver<usize>,
+    analyzer: Analyzer,
     // Charts data
     /// Data used to render FFT chart
     fft_data: FFTData,
     /// Data used to render waveform
     waveform: WaveForm,
+    lufs: [f64; 300],
     //UI
     explorer: FileExplorer,
     ui_settings: UISettings,
@@ -93,8 +100,10 @@ impl App {
             audio_file_rx,
             player_command_tx,
             playback_position_rx,
+            analyzer: Analyzer::default(),
             fft_data: FFTData::default(),
             waveform: WaveForm::default(),
+            lufs: [-50.; 300],
             explorer,
             ui_settings: UISettings::default(),
         }
@@ -108,7 +117,12 @@ impl App {
             .split(area);
 
         self.render_waveform(f, layout[0]);
-        self.render_fft_chart(f, layout[1]);
+        if self.ui_settings.show_lufs {
+            self.render_lufs(f, layout[1]);
+        } else {
+            self.render_fft_chart(f, layout[1]);
+        }
+
         // render explorer
         if self.ui_settings.show_explorer {
             let area = Self::popup_area(area, 50, 70);
@@ -273,6 +287,46 @@ impl App {
         frame.render_widget(chart, area);
     }
 
+    fn render_lufs(&self, f: &mut Frame, area: Rect) {
+        let layout = Layout::default()
+            .direction(Direction::Horizontal)
+            .constraints([Constraint::Percentage(20), Constraint::Percentage(80)].as_ref())
+            .split(area);
+        let data = self
+            .lufs
+            .iter()
+            .enumerate()
+            .map(|(x, &y)| (x as f64, y))
+            .collect::<Vec<(f64, f64)>>();
+
+        let paragraph_layout = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([Constraint::Ratio(1, 3), Constraint::Ratio(1, 3)])
+            .split(layout[0]);
+
+        let lufs_immediate = Paragraph::new(format!("Lufs: {:.2}", self.lufs[299]))
+            .block(Block::bordered())
+            .alignment(Alignment::Center);
+
+        let dataset = vec![
+            Dataset::default()
+                .marker(symbols::Marker::Braille)
+                .graph_type(GraphType::Line)
+                .style(Style::default().fg(Color::Red))
+                .data(&data),
+        ];
+        let chart = Chart::new(dataset)
+            .block(Block::bordered())
+            .x_axis(Axis::default().bounds([0., 300.]))
+            .y_axis(
+                Axis::default()
+                    .bounds([-50., 0.])
+                    .labels(["-50".bold(), "0".bold()]),
+            );
+        f.render_widget(lufs_immediate, paragraph_layout[0]);
+        f.render_widget(chart, layout[1]);
+    }
+
     fn run(mut self, mut terminal: DefaultTerminal) -> Result<()> {
         loop {
             // receive audio file
@@ -291,8 +345,8 @@ impl App {
                     let mid_samples = &audio_file.mid_samples[fft_left_bound..pos];
                     let side_samples = &audio_file.side_samples[fft_left_bound..pos];
 
-                    self.fft_data.mid_fft = get_fft(mid_samples);
-                    self.fft_data.side_fft = get_fft(side_samples);
+                    self.fft_data.mid_fft = Analyzer::get_fft(mid_samples);
+                    self.fft_data.side_fft = Analyzer::get_fft(side_samples);
                 }
 
                 //get waveform
@@ -300,7 +354,7 @@ impl App {
                 self.waveform.playhead = pos;
                 if self.waveform.at_zero {
                     let waveform_samples = &self.audio_file.mid_samples[0..15 * 44100];
-                    self.waveform.chart = get_waveform(waveform_samples);
+                    self.waveform.chart = Analyzer::get_waveform(waveform_samples);
                 }
                 let waveform_left_bound = pos.saturating_sub((7.5 * 44100.) as usize);
                 let waveform_right_bound =
@@ -310,14 +364,25 @@ impl App {
                     self.waveform.at_end = true;
                     let waveform_samples =
                         &self.audio_file.mid_samples[mid_samples_len - 15 * 44100..mid_samples_len];
-                    self.waveform.chart = get_waveform(waveform_samples);
+                    self.waveform.chart = Analyzer::get_waveform(waveform_samples);
                 } else if waveform_left_bound != 0 {
                     self.waveform.at_zero = false;
                     let waveform_samples =
                         &self.audio_file.mid_samples[waveform_left_bound..waveform_right_bound];
-                    self.waveform.chart = get_waveform(waveform_samples);
+                    self.waveform.chart = Analyzer::get_waveform(waveform_samples);
                 } else {
                     self.waveform.at_zero = true;
+                }
+
+                // get lufs
+                let lufs_left_bound = pos.saturating_sub(16384);
+                if lufs_left_bound != 0 {
+                    for i in 0..self.lufs.len() - 1 {
+                        self.lufs[i] = self.lufs[i + 1];
+                    }
+                    self.lufs[299] = self
+                        .analyzer
+                        .get_momentary_lufs(&self.audio_file.mid_samples[lufs_left_bound..pos])?;
                 }
             }
 
@@ -355,6 +420,9 @@ impl App {
                                 //do smth idk
                             }
                         }
+                        KeyCode::Char('l') => {
+                            self.ui_settings.show_lufs = !self.ui_settings.show_lufs
+                        }
                         _ => (),
                     }
                 }
@@ -374,12 +442,21 @@ impl App {
             return;
         }
         // audio_file.lock().unwrap().load_file(&file_path)?;
+        self.analyzer
+            .new(
+                // self.audio_file.channels() as u32,
+                2,
+                self.audio_file.sample_rate(),
+            )
+            .unwrap();
         self.ui_settings.show_explorer = false;
         self.fft_data.mid_fft.clear();
         self.fft_data.side_fft.clear();
         self.waveform.chart.clear();
         self.waveform.at_zero = true;
         self.waveform.at_end = false;
+        self.lufs = [-50.; 300];
+
         if let Err(err) = self
             .player_command_tx
             .send(PlayerCommand::SelectFile(file_path))

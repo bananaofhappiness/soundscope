@@ -329,7 +329,6 @@ impl AudioPlayer {
                     }
                     PlayerCommand::MoveRight => {
                         let pos = self.sink.get_pos();
-                        println!("Current position: {:?}", pos);
                         if let Err(err) = self.sink.try_seek(pos + Duration::from_secs(5)) {
                             println!("Error seeking: {:?}", err);
                             // TODO: error handling
@@ -337,7 +336,6 @@ impl AudioPlayer {
                     }
                     PlayerCommand::MoveLeft => {
                         let pos = self.sink.get_pos();
-                        println!("Current position: {:?}", pos);
                         if let Err(err) = self
                             .sink
                             .try_seek(pos.saturating_sub(Duration::from_secs(5)))
