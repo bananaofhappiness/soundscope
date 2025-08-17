@@ -6,6 +6,7 @@ use ratatui::{
     layout::Flex,
     prelude::*,
     style::{Color, Modifier, Style, Stylize},
+    symbols::block::HALF,
     text::{Line, Span},
     widgets::{Axis, Block, Chart, Clear, Dataset, GraphType, Padding, Paragraph},
 };
@@ -287,7 +288,7 @@ impl App {
         frame.render_widget(chart, area);
     }
 
-    fn render_lufs(&self, f: &mut Frame, area: Rect) {
+    fn render_lufs(&mut self, f: &mut Frame, area: Rect) {
         let layout = Layout::default()
             .direction(Direction::Horizontal)
             .constraints([Constraint::Percentage(20), Constraint::Percentage(80)].as_ref())
@@ -299,13 +300,24 @@ impl App {
             .map(|(x, &y)| (x as f64, y))
             .collect::<Vec<(f64, f64)>>();
 
+        let integrated_lufs = self.analyzer.get_integrated_lufs().unwrap();
         let paragraph_layout = Layout::default()
             .direction(Direction::Vertical)
             .constraints([Constraint::Ratio(1, 3), Constraint::Ratio(1, 3)])
             .split(layout[0]);
-
-        let lufs_immediate = Paragraph::new(format!("Lufs: {:.2}", self.lufs[299]))
-            .block(Block::bordered())
+        let short_term_lufs_text = vec![
+            "Short term LUFS:".bold().into(),
+            format!("{:.2}", self.lufs[299]).into(),
+        ];
+        let integrated_lufs_text = vec![
+            "Integrated LUFS:".bold().into(),
+            format!("{:.2}", integrated_lufs).into(),
+        ];
+        let short_term_paragraph = Paragraph::new(short_term_lufs_text)
+            .block(Block::bordered().padding(Padding::top(paragraph_layout[0].height / 2)))
+            .alignment(Alignment::Center);
+        let integrated_paragraph = Paragraph::new(integrated_lufs_text)
+            .block(Block::bordered().padding(Padding::top(paragraph_layout[1].height / 2)))
             .alignment(Alignment::Center);
 
         let dataset = vec![
@@ -323,7 +335,8 @@ impl App {
                     .bounds([-50., 0.])
                     .labels(["-50".bold(), "0".bold()]),
             );
-        f.render_widget(lufs_immediate, paragraph_layout[0]);
+        f.render_widget(short_term_paragraph, paragraph_layout[0]);
+        f.render_widget(integrated_paragraph, paragraph_layout[1]);
         f.render_widget(chart, layout[1]);
     }
 
@@ -338,6 +351,7 @@ impl App {
             if let Ok(pos) = self.playback_position_rx.try_recv() {
                 // if using mid side we must divide the position by 2
                 let pos = pos / 2;
+                let sr = self.audio_file.sample_rate as usize;
                 // get fft
                 let fft_left_bound = pos.saturating_sub(16384);
                 if fft_left_bound != 0 {
@@ -353,17 +367,17 @@ impl App {
                 let mid_samples_len = self.audio_file.mid_samples.len();
                 self.waveform.playhead = pos;
                 if self.waveform.at_zero {
-                    let waveform_samples = &self.audio_file.mid_samples[0..15 * 44100];
+                    let waveform_samples = &self.audio_file.mid_samples[0..15 * sr];
                     self.waveform.chart = Analyzer::get_waveform(waveform_samples);
                 }
-                let waveform_left_bound = pos.saturating_sub((7.5 * 44100.) as usize);
+                let waveform_left_bound = pos.saturating_sub((7.5 * sr as f64) as usize);
                 let waveform_right_bound =
                     usize::min(pos + (7.5 * 44100.) as usize, mid_samples_len);
 
                 if waveform_right_bound == mid_samples_len {
                     self.waveform.at_end = true;
                     let waveform_samples =
-                        &self.audio_file.mid_samples[mid_samples_len - 15 * 44100..mid_samples_len];
+                        &self.audio_file.mid_samples[mid_samples_len - 15 * sr..mid_samples_len];
                     self.waveform.chart = Analyzer::get_waveform(waveform_samples);
                 } else if waveform_left_bound != 0 {
                     self.waveform.at_zero = false;
@@ -375,14 +389,15 @@ impl App {
                 }
 
                 // get lufs
+                let pos = pos * 2;
                 let lufs_left_bound = pos.saturating_sub(16384);
                 if lufs_left_bound != 0 {
                     for i in 0..self.lufs.len() - 1 {
                         self.lufs[i] = self.lufs[i + 1];
                     }
-                    self.lufs[299] = self
-                        .analyzer
-                        .get_momentary_lufs(&self.audio_file.mid_samples[lufs_left_bound..pos])?;
+                    self.analyzer
+                        .add_samples(&self.audio_file.samples[lufs_left_bound..pos]);
+                    self.lufs[299] = self.analyzer.get_shortterm_lufs()?;
                 }
             }
 

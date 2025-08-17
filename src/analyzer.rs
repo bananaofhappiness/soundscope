@@ -85,8 +85,15 @@ impl Analyzer {
             .collect::<Vec<(f64, f64)>>()
     }
 
-    pub fn get_momentary_lufs(&mut self, samples: &[f32]) -> Result<f64, ebur128::Error> {
-        self.loudness_meter.add_frames_f32(samples)?;
-        self.loudness_meter.loudness_momentary()
+    pub fn add_samples(&mut self, samples: &[f32]) {
+        self.loudness_meter.add_frames_f32(samples);
+    }
+
+    pub fn get_shortterm_lufs(&mut self) -> Result<f64, ebur128::Error> {
+        self.loudness_meter.loudness_shortterm()
+    }
+
+    pub fn get_integrated_lufs(&mut self) -> Result<f64, ebur128::Error> {
+        self.loudness_meter.loudness_global()
     }
 }
