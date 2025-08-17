@@ -1,4 +1,4 @@
-use color_eyre::{Result, owo_colors::OwoColorize};
+use color_eyre::Result;
 use crossbeam::channel::{Receiver, Sender};
 use ratatui::{
     DefaultTerminal,
@@ -6,18 +6,16 @@ use ratatui::{
     layout::Flex,
     prelude::*,
     style::{Color, Modifier, Style, Stylize},
-    symbols::block::HALF,
     text::{Line, Span},
     widgets::{Axis, Block, Chart, Clear, Dataset, GraphType, Padding, Paragraph},
 };
 use ratatui_explorer::{FileExplorer, Theme};
 use rodio::Source;
-use std::{cmp, fmt, time::Duration, usize::MAX};
-use symphonia::core::sample::Sample;
+use std::time::Duration;
 
 use crate::{
-    analyzer::{self, Analyzer},
-    audio_player::{AudioFile, PlayerCommand, Samples},
+    analyzer::Analyzer,
+    audio_player::{AudioFile, PlayerCommand},
 };
 
 /// Settings like showing/hiding UI elements
@@ -46,7 +44,6 @@ struct FFTData {
 }
 
 struct WaveForm {
-    window: [f64; 2],
     chart: Vec<(f64, f64)>,
     playhead: usize,
     at_zero: bool,
@@ -56,7 +53,6 @@ struct WaveForm {
 impl Default for WaveForm {
     fn default() -> Self {
         Self {
-            window: [0., 0.],
             chart: vec![(0., 0.)],
             playhead: 0,
             at_zero: true,
@@ -82,6 +78,7 @@ struct App {
     fft_data: FFTData,
     /// Data used to render waveform
     waveform: WaveForm,
+    /// LUFS chart
     lufs: [f64; 300],
     //UI
     explorer: FileExplorer,
@@ -142,7 +139,7 @@ impl App {
             // The chart displays the last 15 seconds of the audio.
             // The playhead starts moving from the middle of the chart (7.5s mark) when
             // the playback enters the last 7.5 seconds of the audio.
-            let total_samples = self.audio_file.mid_samples.len();
+            let total_samples = self.audio_file.mid_samples().len();
             let chart_duration_seconds = 15.0; // Corresponds to X-axis bounds [0., 15. * 1000.]
             let chart_middle_seconds = chart_duration_seconds / 2.0; // 7.5 seconds
 
@@ -193,8 +190,8 @@ impl App {
         let millis = playhead_position_in_milis.subsec_millis() as f64;
         let current_time = secs + millis / 1000.0;
 
-        let secs = self.audio_file.duration.as_secs() as f64;
-        let millis = self.audio_file.duration.subsec_millis() as f64;
+        let secs = self.audio_file.duration().as_secs() as f64;
+        let millis = self.audio_file.duration().subsec_millis() as f64;
         let total_time = secs + millis / 1000.0;
 
         let datasets = vec![
@@ -213,6 +210,7 @@ impl App {
         let chart = Chart::new(datasets)
             .block(
                 Block::bordered()
+                    .title(self.audio_file.title())
                     .title_bottom(Line::from("0").left_aligned())
                     .title_bottom(Line::from(format!("{:.2}s", current_time)).centered())
                     .title_bottom(Line::from(format!("{:.2}s", total_time)).right_aligned()),
@@ -301,25 +299,38 @@ impl App {
             .collect::<Vec<(f64, f64)>>();
 
         let integrated_lufs = self.analyzer.get_integrated_lufs().unwrap();
+
+        // text section
         let paragraph_layout = Layout::default()
             .direction(Direction::Vertical)
-            .constraints([Constraint::Ratio(1, 3), Constraint::Ratio(1, 3)])
+            .constraints([
+                Constraint::Ratio(1, 5),
+                Constraint::Ratio(1, 5),
+                Constraint::Ratio(1, 5),
+            ])
             .split(layout[0]);
-        let short_term_lufs_text = vec![
-            "Short term LUFS:".bold().into(),
-            format!("{:.2}", self.lufs[299]).into(),
+        let lufs_text = vec![
+            "Short term LUFS:".bold() + format!("{:.2}", self.lufs[299]).into(),
+            "Integrated LUFS:".bold() + format!("{:.2}", integrated_lufs).into(),
         ];
-        let integrated_lufs_text = vec![
-            "Integrated LUFS:".bold().into(),
-            format!("{:.2}", integrated_lufs).into(),
+        let (tp_left, tp_right) = self.analyzer.get_true_peak().unwrap();
+        let true_peak_text = vec![
+            "True Peak".bold().into(),
+            "L: ".bold() + format!("{:.2} Db", tp_left).into(),
+            "R: ".bold() + format!("{:.2} Db", tp_right).into(),
         ];
-        let short_term_paragraph = Paragraph::new(short_term_lufs_text)
-            .block(Block::bordered().padding(Padding::top(paragraph_layout[0].height / 2)))
+
+        // block and paragraphs
+        let lufs_paragraph = Paragraph::new(lufs_text)
+            // .block(Block::bordered().padding(Padding::top(paragraph_layout[0].height / 2)))
+            .block(Block::bordered())
             .alignment(Alignment::Center);
-        let integrated_paragraph = Paragraph::new(integrated_lufs_text)
-            .block(Block::bordered().padding(Padding::top(paragraph_layout[1].height / 2)))
+        let true_peak_paragraph = Paragraph::new(true_peak_text)
+            // .block(Block::bordered().padding(Padding::top(paragraph_layout[1].height / 2)))
+            .block(Block::bordered())
             .alignment(Alignment::Center);
 
+        // chart section
         let dataset = vec![
             Dataset::default()
                 .marker(symbols::Marker::Braille)
@@ -335,8 +346,9 @@ impl App {
                     .bounds([-50., 0.])
                     .labels(["-50".bold(), "0".bold()]),
             );
-        f.render_widget(short_term_paragraph, paragraph_layout[0]);
-        f.render_widget(integrated_paragraph, paragraph_layout[1]);
+        f.render_widget(lufs_paragraph, paragraph_layout[0]);
+        f.render_widget(true_peak_paragraph, paragraph_layout[1]);
+
         f.render_widget(chart, layout[1]);
     }
 
@@ -351,23 +363,23 @@ impl App {
             if let Ok(pos) = self.playback_position_rx.try_recv() {
                 // if using mid side we must divide the position by 2
                 let pos = pos / 2;
-                let sr = self.audio_file.sample_rate as usize;
+                let sr = self.audio_file.sample_rate() as usize;
                 // get fft
                 let fft_left_bound = pos.saturating_sub(16384);
                 if fft_left_bound != 0 {
                     let audio_file = &self.audio_file;
-                    let mid_samples = &audio_file.mid_samples[fft_left_bound..pos];
-                    let side_samples = &audio_file.side_samples[fft_left_bound..pos];
+                    let mid_samples = &audio_file.mid_samples()[fft_left_bound..pos];
+                    let side_samples = &audio_file.side_samples()[fft_left_bound..pos];
 
                     self.fft_data.mid_fft = Analyzer::get_fft(mid_samples);
                     self.fft_data.side_fft = Analyzer::get_fft(side_samples);
                 }
 
                 //get waveform
-                let mid_samples_len = self.audio_file.mid_samples.len();
+                let mid_samples_len = self.audio_file.mid_samples().len();
                 self.waveform.playhead = pos;
                 if self.waveform.at_zero {
-                    let waveform_samples = &self.audio_file.mid_samples[0..15 * sr];
+                    let waveform_samples = &self.audio_file.mid_samples()[0..15 * sr];
                     self.waveform.chart = Analyzer::get_waveform(waveform_samples);
                 }
                 let waveform_left_bound = pos.saturating_sub((7.5 * sr as f64) as usize);
@@ -377,12 +389,12 @@ impl App {
                 if waveform_right_bound == mid_samples_len {
                     self.waveform.at_end = true;
                     let waveform_samples =
-                        &self.audio_file.mid_samples[mid_samples_len - 15 * sr..mid_samples_len];
+                        &self.audio_file.mid_samples()[mid_samples_len - 15 * sr..mid_samples_len];
                     self.waveform.chart = Analyzer::get_waveform(waveform_samples);
                 } else if waveform_left_bound != 0 {
                     self.waveform.at_zero = false;
                     let waveform_samples =
-                        &self.audio_file.mid_samples[waveform_left_bound..waveform_right_bound];
+                        &self.audio_file.mid_samples()[waveform_left_bound..waveform_right_bound];
                     self.waveform.chart = Analyzer::get_waveform(waveform_samples);
                 } else {
                     self.waveform.at_zero = true;
@@ -396,7 +408,7 @@ impl App {
                         self.lufs[i] = self.lufs[i + 1];
                     }
                     self.analyzer
-                        .add_samples(&self.audio_file.samples[lufs_left_bound..pos]);
+                        .add_samples(&self.audio_file.samples()[lufs_left_bound..pos]);
                     self.lufs[299] = self.analyzer.get_shortterm_lufs()?;
                 }
             }
@@ -454,8 +466,7 @@ impl App {
 
     fn select_file(&mut self) {
         let file = self.explorer.current();
-        // let file_name = self.explorer.current().name();
-        let file_path = self.explorer.current().path().to_str().unwrap().to_owned();
+        let file_path = self.explorer.current().path();
         if !file.is_file() {
             return;
         }
@@ -477,7 +488,7 @@ impl App {
 
         if let Err(err) = self
             .player_command_tx
-            .send(PlayerCommand::SelectFile(file_path))
+            .send(PlayerCommand::SelectFile(file_path.clone()))
         {
             //do smth idk
         }

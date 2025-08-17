@@ -2,11 +2,10 @@ use color_eyre::Result;
 use color_eyre::eyre::eyre;
 use crossbeam::channel::{Receiver, Sender};
 use rodio::Source;
+use std::path::PathBuf;
 // use color_eyre::eyre::Error;
-use std::sync::atomic::{AtomicUsize, Ordering};
 use symphonia::core::audio::{Channels, SampleBuffer};
 // use color_eyre::eyre::Error;
-use std::sync::{Arc, RwLock};
 use std::time::Duration;
 use symphonia::core::codecs::{CODEC_TYPE_NULL, DecoderOptions};
 use symphonia::core::errors::Error;
@@ -22,7 +21,7 @@ pub type SampleRate = u32;
 pub type PlaybackPosition = usize;
 
 pub enum PlayerCommand {
-    SelectFile(String),
+    SelectFile(PathBuf),
     ChangeState,
     // Had to add Quit because on MacOS tui can't be on the main thread (smth does not implement Send), player must be there.
     // So when tui quits, player must know tui has quit and quits too.
@@ -37,16 +36,39 @@ pub enum PlayerCommand {
 /// It implements [`Source`] and [`Iterator`] for playback.
 #[derive(Clone)]
 pub struct AudioFile {
-    pub samples: Samples,
-    pub mid_samples: Samples,
-    pub side_samples: Samples,
-    pub sample_rate: SampleRate,
-    pub duration: Duration,
+    title: String,
+    samples: Samples,
+    mid_samples: Samples,
+    side_samples: Samples,
+    sample_rate: SampleRate,
+    duration: Duration,
     // channels of the file (mono, stereo, etc.)
-    pub channels: Channels,
+    channels: Channels,
     // Global state and the sender of it
     playback_position: usize, // Index of the Samples vec
     playback_position_tx: Sender<usize>,
+}
+
+impl AudioFile {
+    pub fn title(&self) -> &str {
+        &self.title
+    }
+
+    pub fn samples(&self) -> &Samples {
+        &self.samples
+    }
+
+    pub fn mid_samples(&self) -> &Samples {
+        &self.mid_samples
+    }
+
+    pub fn side_samples(&self) -> &Samples {
+        &self.side_samples
+    }
+
+    pub fn duration(&self) -> Duration {
+        self.duration
+    }
 }
 
 impl Iterator for AudioFile {
@@ -112,6 +134,7 @@ impl Source for AudioFile {
 impl AudioFile {
     pub fn new(playback_position_tx: Sender<usize>) -> Self {
         AudioFile {
+            title: "".to_string(),
             samples: Vec::new(),
             mid_samples: Vec::new(),
             side_samples: Vec::new(),
@@ -123,7 +146,9 @@ impl AudioFile {
         }
     }
 
-    fn from_file(path: &str, playback_position_tx: Sender<usize>) -> Result<Self> {
+    fn from_file(path: &PathBuf, playback_position_tx: Sender<usize>) -> Result<Self> {
+        // get file name
+        let title = path.file_name().unwrap().to_string_lossy().to_string();
         let (samples, sample_rate, channels) = Self::decode_file(path)?;
         // TODO: other channels, not only stereo sound.
         let left_samples = samples.iter().step_by(2).cloned().collect::<Vec<f32>>();
@@ -146,6 +171,7 @@ impl AudioFile {
 
         let duration = mid_samples.len() as f64 / sample_rate as f64 * 1000.;
         Ok(AudioFile {
+            title,
             samples,
             mid_samples,
             side_samples,
@@ -158,7 +184,7 @@ impl AudioFile {
     }
 
     /// Decodes file and returns its [`Samples`], [`SampleRate`] and [`Channels`]
-    fn decode_file(path: &str) -> Result<(Samples, SampleRate, Channels)> {
+    fn decode_file(path: &PathBuf) -> Result<(Samples, SampleRate, Channels)> {
         // Open the media source.
         let src = std::fs::File::open(path).expect("failed to open media");
         // Create the media source stream.

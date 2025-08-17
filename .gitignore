@@ -5,3 +5,4 @@
 */*.wav
 *.m4a
 */*.m4a
+.DS_Store

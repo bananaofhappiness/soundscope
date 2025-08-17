@@ -1,6 +1,6 @@
 use color_eyre::Result;
 use ebur128::{EbuR128, Mode};
-use spectrum_analyzer::scaling::{divide_by_N, scale_20_times_log10};
+use spectrum_analyzer::scaling::scale_20_times_log10;
 use spectrum_analyzer::windows::hann_window;
 use spectrum_analyzer::{FrequencyLimit, samples_fft_to_spectrum};
 
@@ -95,5 +95,12 @@ impl Analyzer {
 
     pub fn get_integrated_lufs(&mut self) -> Result<f64, ebur128::Error> {
         self.loudness_meter.loudness_global()
+    }
+
+    pub fn get_true_peak(&mut self) -> Result<(f64, f64), ebur128::Error> {
+        let tp_left = self.loudness_meter.true_peak(0)?;
+        let tp_right = self.loudness_meter.true_peak(1)?;
+
+        Ok((tp_left, tp_right))
     }
 }

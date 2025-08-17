@@ -4,7 +4,7 @@ mod tui;
 use crate::audio_player::{AudioFile, AudioPlayer, PlaybackPosition, PlayerCommand};
 use color_eyre::Result;
 use crossbeam::channel::{bounded, unbounded};
-use std::{sync::Arc, thread};
+use std::thread;
 
 fn main() -> Result<()> {
     color_eyre::install()?;
