@@ -24,7 +24,9 @@ pub type PlaybackPosition = usize;
 pub enum PlayerCommand {
     SelectFile(String),
     ChangeState,
-    Stop,
+    // Had to add Quit because on MacOS tui can't be on the main thread (smth does not implement Send), player must be there.
+    // So when tui quits, player must know tui has quit and quits too.
+    Quit,
     MoveRight,
     MoveLeft,
 }
@@ -322,10 +324,11 @@ impl AudioPlayer {
                             self.sink.pause();
                         }
                     }
-                    PlayerCommand::Stop => {
+                    PlayerCommand::Quit => {
                         self.sink.stop();
                         self.sink.clear();
                         self.audio_file.playback_position = 0;
+                        return Ok(());
                     }
                     PlayerCommand::MoveRight => {
                         let pos = self.sink.get_pos();

@@ -23,12 +23,13 @@ fn main() -> Result<()> {
     // just a place holder audio_file to initialize app
     let audio_file = AudioFile::new(playback_position_tx);
 
-    // thread::spawn(|| tui::run(tui_reader, tui_tx));
-    thread::spawn(move || player.run(player_command_rx, audio_file_tx));
-    tui::run(
-        audio_file,
-        player_command_tx,
-        audio_file_rx,
-        playback_position_rx,
-    )
+    thread::spawn(|| {
+        tui::run(
+            audio_file,
+            player_command_tx,
+            audio_file_rx,
+            playback_position_rx,
+        )
+    });
+    player.run(player_command_rx, audio_file_tx)
 }

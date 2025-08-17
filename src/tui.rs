@@ -406,7 +406,10 @@ impl App {
                 let event = read()?;
                 if let Event::Key(key) = event {
                     match key.code {
-                        KeyCode::Char('q') => return Ok(()),
+                        KeyCode::Char('q') => {
+                            self.player_command_tx.send(PlayerCommand::Quit)?;
+                            return Ok(());
+                        }
                         KeyCode::Char('e') => {
                             self.ui_settings.show_explorer = !self.ui_settings.show_explorer
                         }
