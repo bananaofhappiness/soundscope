@@ -28,6 +28,8 @@ pub enum PlayerCommand {
     Quit,
     MoveRight,
     MoveLeft,
+    #[cfg(debug_assertions)]
+    ShowTestError,
 }
 
 // TODO: introduce streaming
@@ -186,7 +188,7 @@ impl AudioFile {
     /// Decodes file and returns its [`Samples`], [`SampleRate`] and [`Channels`]
     fn decode_file(path: &PathBuf) -> Result<(Samples, SampleRate, Channels)> {
         // Open the media source.
-        let src = std::fs::File::open(path).expect("failed to open media");
+        let src = std::fs::File::open(path)?;
         // Create the media source stream.
         let mss = MediaSourceStream::new(Box::new(src), Default::default());
 
@@ -297,8 +299,7 @@ pub struct AudioPlayer {
 
 impl AudioPlayer {
     pub fn new(playback_position_tx: Sender<usize>) -> Result<Self> {
-        let _stream_handle =
-            rodio::OutputStreamBuilder::open_default_stream().expect("open default audio stream");
+        let _stream_handle = rodio::OutputStreamBuilder::open_default_stream()?;
         let sink = rodio::Sink::connect_new(&_stream_handle.mixer());
         let audio_file = AudioFile::new(playback_position_tx.clone());
         // sink.pause();
@@ -314,6 +315,7 @@ impl AudioPlayer {
         &mut self,
         player_command_rx: Receiver<PlayerCommand>,
         audio_file_tx: Sender<AudioFile>,
+        error_tx: Sender<String>,
     ) -> Result<()> {
         loop {
             if let Ok(cmd) = player_command_rx.try_recv() {
@@ -321,14 +323,17 @@ impl AudioPlayer {
                     PlayerCommand::SelectFile(path) => {
                         match AudioFile::from_file(&path, self.playback_position_tx.clone()) {
                             Err(err) => {
-                                println!("Error loading file: {}", err);
+                                if let Err(err) =
+                                    error_tx.send(format!("Error loading file: {}", err))
+                                {
+                                    //TODO: log a sending error
+                                }
                                 continue;
-                                // TODO: show a ratatui paragraph with error message
                             }
                             Ok(af) => {
                                 self.audio_file = af.clone();
                                 if let Err(err) = audio_file_tx.send(af) {
-                                    // TODO: show a ratatui paragraph with error message
+                                    //TODO: log a sending error
                                 }
                             }
                         };
@@ -371,6 +376,10 @@ impl AudioPlayer {
                         {
                             // TODO: error handling
                         }
+                    }
+                    #[cfg(debug_assertions)]
+                    PlayerCommand::ShowTestError => {
+                        error_tx.send("This is a test message".to_string()).unwrap()
                     }
                 }
             }

@@ -5,34 +5,46 @@ use ratatui::{
     crossterm::event::{Event, KeyCode, poll, read},
     layout::Flex,
     prelude::*,
-    style::{Color, Modifier, Style, Stylize},
+    style::{Color, Modifier, Style, Styled, Stylize},
     text::{Line, Span},
     widgets::{Axis, Block, Chart, Clear, Dataset, GraphType, Padding, Paragraph},
 };
 use ratatui_explorer::{FileExplorer, Theme};
-use rodio::Source;
-use std::time::Duration;
+use rodio::{Source, cpal::Data};
+use std::{
+    error,
+    time::{Duration, Instant, SystemTime},
+};
 
 use crate::{
     analyzer::Analyzer,
     audio_player::{AudioFile, PlayerCommand},
 };
 
+const STYLE: Style = Style::new().bg(Color::Black).fg(Color::Yellow);
+const TEXT_HIGHLIGHT: Style = Style::new().bg(Color::Black).fg(Color::LightRed);
+
 /// Settings like showing/hiding UI elements
 struct UISettings {
     show_explorer: bool,
+    show_fft_chart: bool,
     show_mid_fft: bool,
     show_side_fft: bool,
     show_lufs: bool,
+    error_text: String,
+    error_timer: Option<Instant>,
 }
 
 impl Default for UISettings {
     fn default() -> Self {
         Self {
             show_explorer: false,
+            show_fft_chart: true,
             show_mid_fft: true,
             show_side_fft: false,
             show_lufs: false,
+            error_text: String::new(),
+            error_timer: None,
         }
     }
 }
@@ -72,7 +84,10 @@ struct App {
     player_command_tx: Sender<PlayerCommand>,
     /// Gets playback position for an analyzer to know what samples to analyze.
     playback_position_rx: Receiver<usize>,
+    /// Gets errors to display them afterwards
+    error_rx: Receiver<String>,
     analyzer: Analyzer,
+
     // Charts data
     /// Data used to render FFT chart
     fft_data: FFTData,
@@ -80,6 +95,7 @@ struct App {
     waveform: WaveForm,
     /// LUFS chart
     lufs: [f64; 300],
+
     //UI
     explorer: FileExplorer,
     ui_settings: UISettings,
@@ -91,6 +107,7 @@ impl App {
         player_command_tx: Sender<PlayerCommand>,
         audio_file_rx: Receiver<AudioFile>,
         playback_position_rx: Receiver<usize>,
+        error_rx: Receiver<String>,
         explorer: FileExplorer,
     ) -> Self {
         Self {
@@ -98,6 +115,7 @@ impl App {
             audio_file_rx,
             player_command_tx,
             playback_position_rx,
+            error_rx,
             analyzer: Analyzer::default(),
             fft_data: FFTData::default(),
             waveform: WaveForm::default(),
@@ -113,17 +131,27 @@ impl App {
             .direction(Direction::Vertical)
             .constraints([Constraint::Percentage(30), Constraint::Percentage(70)].as_ref())
             .split(area);
-
+        let background = Paragraph::new("").style(Style::default().bg(Color::Black));
+        f.render_widget(background, area);
         self.render_waveform(f, layout[0]);
+
         if self.ui_settings.show_lufs {
             self.render_lufs(f, layout[1]);
-        } else {
+        } else if self.ui_settings.show_fft_chart {
             self.render_fft_chart(f, layout[1]);
         }
 
+        // render error
+        if let Ok(err) = self.error_rx.try_recv() {
+            self.ui_settings.error_text = err;
+            self.ui_settings.error_timer = Some(std::time::Instant::now())
+        }
+
+        self.render_error_message(f, &self.ui_settings.error_text);
+
         // render explorer
         if self.ui_settings.show_explorer {
-            let area = Self::popup_area(area, 50, 70);
+            let area = Self::explorer_popup_area(area, 50, 70);
             f.render_widget(Clear, area);
             f.render_widget(&self.explorer.widget(), area);
         }
@@ -186,24 +214,24 @@ impl App {
         // get current playback time
         let playhead_position_in_milis =
             Duration::from_millis((self.waveform.playhead as f64 / 44100. * 1000.) as u64);
-        let secs = playhead_position_in_milis.as_secs() as f64;
-        let millis = playhead_position_in_milis.subsec_millis() as f64;
-        let current_time = secs + millis / 1000.0;
+        let current_secs = playhead_position_in_milis.as_secs_f64();
+        let current_mins = (current_secs / 60.) as u32;
+        let current_secs = current_secs % 60.;
 
-        let secs = self.audio_file.duration().as_secs() as f64;
-        let millis = self.audio_file.duration().subsec_millis() as f64;
-        let total_time = secs + millis / 1000.0;
+        let total_secs = self.audio_file.duration().as_secs_f64();
+        let total_mins = (total_secs / 60.) as u32;
+        let total_secs = total_secs % 60.;
 
         let datasets = vec![
             Dataset::default()
                 .marker(symbols::Marker::Braille)
                 .graph_type(GraphType::Line)
-                .style(Style::default().fg(Color::Black))
+                .style(STYLE)
                 .data(&self.waveform.chart),
             Dataset::default()
                 .marker(symbols::Marker::Braille)
                 .graph_type(GraphType::Line)
-                .style(Style::default().fg(Color::Red))
+                .style(Style::default().fg(Color::LightRed))
                 .data(&playhead_chart),
         ];
 
@@ -212,11 +240,18 @@ impl App {
                 Block::bordered()
                     .title(self.audio_file.title())
                     .title_bottom(Line::from("0").left_aligned())
-                    .title_bottom(Line::from(format!("{:.2}s", current_time)).centered())
-                    .title_bottom(Line::from(format!("{:.2}s", total_time)).right_aligned()),
+                    .title_bottom(
+                        Line::from(format!("{:0>2}:{:0>5.2}", current_mins, current_secs))
+                            .centered(),
+                    )
+                    .title_bottom(
+                        Line::from(format!("{:0>2}:{:0>5.2}", total_mins, total_secs))
+                            .right_aligned(),
+                    ),
             )
-            .x_axis(Axis::default().bounds([0., 15. * 1000.]))
-            .y_axis(Axis::default().bounds([-1., 1.]));
+            .style(STYLE)
+            .x_axis(Axis::default().bounds([0., 15. * 1000.]).style(STYLE))
+            .y_axis(Axis::default().bounds([-1., 1.]).style(STYLE));
 
         frame.render_widget(chart, area);
     }
@@ -244,43 +279,63 @@ impl App {
             Span::styled("20kHz", Style::default().add_modifier(Modifier::BOLD)),
         ];
 
-        let mut datasets = Vec::new();
-        if self.ui_settings.show_mid_fft {
-            datasets.push(
-                Dataset::default()
-                    .name("Mid Frequency")
-                    .marker(symbols::Marker::Braille)
-                    .graph_type(GraphType::Line)
-                    .style(Style::default().fg(Color::Green))
-                    .data(&self.fft_data.mid_fft),
-            );
-        }
-        if self.ui_settings.show_side_fft {
-            datasets.push(
-                Dataset::default()
-                    .name("Side Frequency")
-                    .marker(symbols::Marker::Braille)
-                    .graph_type(GraphType::Line)
-                    .style(Style::default().fg(Color::Red))
-                    .data(&self.fft_data.side_fft),
-            );
-        }
+        let mid_fft = match self.ui_settings.show_mid_fft {
+            true => &self.fft_data.mid_fft,
+            false => &vec![(-1f64, -1f64)],
+        };
+        let side_fft = match self.ui_settings.show_side_fft {
+            true => &self.fft_data.side_fft,
+            false => &vec![(-1f64, -1f64)],
+        };
+        if self.ui_settings.show_side_fft {}
+        let datasets = vec![
+            Dataset::default()
+                .name(vec![
+                    "M".bold()
+                        .style(Style::default().fg(Color::LightRed))
+                        .add_modifier(Modifier::BOLD),
+                    "id Frequency".into(),
+                ])
+                .marker(symbols::Marker::Braille)
+                .graph_type(GraphType::Line)
+                .style(STYLE)
+                .data(mid_fft),
+            Dataset::default()
+                .name(vec![
+                    "S".bold()
+                        .style(Style::default().fg(Color::LightRed))
+                        .add_modifier(Modifier::BOLD),
+                    "ide Frequency".into(),
+                ])
+                .marker(symbols::Marker::Braille)
+                .graph_type(GraphType::Line)
+                .style(Style::default().fg(Color::LightMagenta))
+                .data(side_fft),
+        ];
 
         let chart = Chart::new(datasets)
-            .block(Block::bordered())
+            .block(Block::bordered().title(vec![
+                "F".bold().style(TEXT_HIGHLIGHT.bold()),
+                "requencies ".bold(),
+                "L".bold().style(TEXT_HIGHLIGHT.bold()),
+                "UFS".into(),
+            ]))
+            .style(STYLE)
             .x_axis(
                 Axis::default()
                     .title("Hz")
                     .style(Style::default().fg(Color::Black))
                     .labels(x_labels)
+                    .style(STYLE)
                     .bounds([0., 100.]),
             )
             .y_axis(
                 Axis::default()
                     .title("Db")
                     .style(Style::default().fg(Color::Black))
-                    .labels(vec![Span::raw("-nDb"), Span::raw("0Db")])
-                    .bounds([0., 250.]),
+                    .labels(vec![Span::raw("-78 Db"), Span::raw("-18 Db")])
+                    .style(STYLE)
+                    .bounds([-150., 100.]),
             );
 
         frame.render_widget(chart, area);
@@ -298,48 +353,84 @@ impl App {
             .map(|(x, &y)| (x as f64, y))
             .collect::<Vec<(f64, f64)>>();
 
-        let integrated_lufs = self.analyzer.get_integrated_lufs().unwrap();
+        let integrated_lufs = match self.analyzer.get_integrated_lufs() {
+            Ok(lufs) => lufs,
+            Err(err) => {
+                self.handle_error(format!("Error getting integrated LUFS: {}", err));
+                0.0
+            }
+        };
 
         // text section
         let paragraph_layout = Layout::default()
             .direction(Direction::Vertical)
             .constraints([
-                Constraint::Ratio(1, 5),
-                Constraint::Ratio(1, 5),
-                Constraint::Ratio(1, 5),
+                Constraint::Ratio(1, 3),
+                Constraint::Ratio(1, 3),
+                Constraint::Ratio(1, 3),
             ])
             .split(layout[0]);
         let lufs_text = vec![
             "Short term LUFS:".bold() + format!("{:.2}", self.lufs[299]).into(),
             "Integrated LUFS:".bold() + format!("{:.2}", integrated_lufs).into(),
         ];
-        let (tp_left, tp_right) = self.analyzer.get_true_peak().unwrap();
+
+        // get true peak text
+        let (tp_left, tp_right) = match self.analyzer.get_true_peak() {
+            Ok((tp_left, tp_right)) => (tp_left, tp_right),
+            Err(err) => {
+                self.handle_error(format!("Error getting true peak: {}", err));
+                (0.0, 0.0)
+            }
+        };
         let true_peak_text = vec![
             "True Peak".bold().into(),
             "L: ".bold() + format!("{:.2} Db", tp_left).into(),
             "R: ".bold() + format!("{:.2} Db", tp_right).into(),
         ];
 
+        //get range text
+        let range = match self.analyzer.get_loudness_range() {
+            Ok(range) => range,
+            Err(err) => {
+                self.handle_error(format!("Error getting loudness range: {}", err));
+                0.0
+            }
+        };
+        let range_text = vec!["Range: ".bold() + format!("{:.2} LU", range).into()];
+
         // block and paragraphs
         let lufs_paragraph = Paragraph::new(lufs_text)
             // .block(Block::bordered().padding(Padding::top(paragraph_layout[0].height / 2)))
-            .block(Block::bordered())
-            .alignment(Alignment::Center);
+            .block(Block::bordered().title(vec![
+                "F".bold().style(TEXT_HIGHLIGHT.bold()),
+                "requencies ".into(),
+                "L".bold().style(TEXT_HIGHLIGHT.bold()),
+                "UFS".bold(),
+            ]))
+            .alignment(Alignment::Center)
+            .style(STYLE);
         let true_peak_paragraph = Paragraph::new(true_peak_text)
-            // .block(Block::bordered().padding(Padding::top(paragraph_layout[1].height / 2)))
             .block(Block::bordered())
-            .alignment(Alignment::Center);
+            .alignment(Alignment::Center)
+            .style(STYLE);
+        let range_paragraph = Paragraph::new(range_text)
+            // .block(Block::bordered().padding(Padding::top(paragraph_layout[2].height / 2)))
+            .block(Block::bordered())
+            .alignment(Alignment::Center)
+            .style(STYLE);
 
         // chart section
         let dataset = vec![
             Dataset::default()
                 .marker(symbols::Marker::Braille)
                 .graph_type(GraphType::Line)
-                .style(Style::default().fg(Color::Red))
+                .style(STYLE)
                 .data(&data),
         ];
         let chart = Chart::new(dataset)
             .block(Block::bordered())
+            .style(STYLE)
             .x_axis(Axis::default().bounds([0., 300.]))
             .y_axis(
                 Axis::default()
@@ -348,6 +439,7 @@ impl App {
             );
         f.render_widget(lufs_paragraph, paragraph_layout[0]);
         f.render_widget(true_peak_paragraph, paragraph_layout[1]);
+        f.render_widget(range_paragraph, paragraph_layout[2]);
 
         f.render_widget(chart, layout[1]);
     }
@@ -371,8 +463,8 @@ impl App {
                     let mid_samples = &audio_file.mid_samples()[fft_left_bound..pos];
                     let side_samples = &audio_file.side_samples()[fft_left_bound..pos];
 
-                    self.fft_data.mid_fft = Analyzer::get_fft(mid_samples);
-                    self.fft_data.side_fft = Analyzer::get_fft(side_samples);
+                    self.fft_data.mid_fft = self.analyzer.get_fft(mid_samples);
+                    self.fft_data.side_fft = self.analyzer.get_fft(side_samples);
                 }
 
                 //get waveform
@@ -409,13 +501,25 @@ impl App {
                     }
                     self.analyzer
                         .add_samples(&self.audio_file.samples()[lufs_left_bound..pos]);
-                    self.lufs[299] = self.analyzer.get_shortterm_lufs()?;
+                    self.lufs[299] = match self.analyzer.get_shortterm_lufs() {
+                        Ok(lufs) => lufs,
+                        Err(err) => {
+                            self.handle_error(format!("Error getting short-term LUFS: {}", err));
+                            0.0
+                        }
+                    };
                 }
             }
 
             // event reader
             if poll(Duration::from_micros(1))? {
-                let event = read()?;
+                let event = match read() {
+                    Ok(event) => event,
+                    Err(err) => {
+                        self.handle_error(format!("Error reading event: {}", err));
+                        continue;
+                    }
+                };
                 if let Event::Key(key) = event {
                     match key.code {
                         KeyCode::Char('q') => {
@@ -450,8 +554,17 @@ impl App {
                                 //do smth idk
                             }
                         }
-                        KeyCode::Char('l') => {
-                            self.ui_settings.show_lufs = !self.ui_settings.show_lufs
+                        KeyCode::Char('l') => self.change_chart('l'),
+                        KeyCode::Char('f') => self.change_chart('f'),
+                        KeyCode::Char('y') => {
+                            // this sends a test error
+                            // only in debug mode
+                            #[cfg(debug_assertions)]
+                            {
+                                self.player_command_tx
+                                    .send(PlayerCommand::ShowTestError)
+                                    .unwrap()
+                            }
                         }
                         _ => (),
                     }
@@ -464,20 +577,22 @@ impl App {
         }
     }
 
+    fn handle_error(&mut self, message: String) {
+        self.ui_settings.error_text = message;
+        self.ui_settings.error_timer = Some(Instant::now());
+    }
+
     fn select_file(&mut self) {
         let file = self.explorer.current();
         let file_path = self.explorer.current().path();
         if !file.is_file() {
             return;
         }
-        // audio_file.lock().unwrap().load_file(&file_path)?;
-        self.analyzer
-            .new(
-                // self.audio_file.channels() as u32,
-                2,
-                self.audio_file.sample_rate(),
-            )
-            .unwrap();
+        if let Err(_) = self.analyzer.new(
+            // self.audio_file.channels() as u32,
+            2,
+            self.audio_file.sample_rate(),
+        ) {}
         self.ui_settings.show_explorer = false;
         self.fft_data.mid_fft.clear();
         self.fft_data.side_fft.clear();
@@ -490,17 +605,56 @@ impl App {
             .player_command_tx
             .send(PlayerCommand::SelectFile(file_path.clone()))
         {
-            //do smth idk
+            //TODO: log sending error
         }
-        // Ok(())
     }
 
-    fn popup_area(area: Rect, percent_x: u16, percent_y: u16) -> Rect {
+    fn change_chart(&mut self, c: char) {
+        match c {
+            'l' => {
+                self.ui_settings.show_fft_chart = false;
+                self.ui_settings.show_lufs = true
+            }
+            'f' => {
+                self.ui_settings.show_fft_chart = true;
+                self.ui_settings.show_lufs = false
+            }
+            _ => (),
+        }
+    }
+
+    fn explorer_popup_area(area: Rect, percent_x: u16, percent_y: u16) -> Rect {
         let vertical = Layout::vertical([Constraint::Percentage(percent_y)]).flex(Flex::Center);
         let horizontal = Layout::horizontal([Constraint::Percentage(percent_x)]).flex(Flex::Center);
         let [area] = vertical.areas(area);
         let [area] = horizontal.areas(area);
         area
+    }
+
+    fn error_popup_area(area: Rect) -> Rect {
+        let vertical = Layout::vertical(Constraint::from_ratios([(5, 6), (1, 6)]));
+        let horizontal = Layout::horizontal(Constraint::from_ratios([(1, 6), (5, 6)]));
+        let area = vertical.areas::<2>(area)[1];
+        let area = horizontal.areas::<2>(area)[0];
+        area
+    }
+
+    fn render_error_message(&self, f: &mut Frame, message: &str) {
+        match self.ui_settings.error_timer {
+            Some(error_timer) => {
+                if error_timer.elapsed().as_millis() > 5000 {
+                    return;
+                }
+            }
+            None => return,
+        }
+        let error_popup_area = Self::error_popup_area(f.area());
+        f.render_widget(Clear, error_popup_area);
+        f.render_widget(
+            Paragraph::new(message)
+                .block(Block::bordered().style(STYLE).fg(Color::LightRed).bold()),
+            error_popup_area,
+        );
     }
 }
 
@@ -509,17 +663,17 @@ pub fn run(
     player_command_tx: Sender<PlayerCommand>,
     audio_file_rx: Receiver<AudioFile>,
     playback_position_rx: Receiver<usize>,
+    error_rx: Receiver<String>,
 ) -> Result<()> {
     let terminal = ratatui::init();
-    let theme = Theme::default()
-        .add_default_title()
-        .with_item_style(Style::default().fg(Color::Black));
+    let theme = Theme::default().with_style(STYLE).with_item_style(STYLE);
     let file_explorer = FileExplorer::with_theme(theme)?;
     let app_result = App::new(
         audio_file,
         player_command_tx,
         audio_file_rx,
         playback_position_rx,
+        error_rx,
         file_explorer,
     )
     .run(terminal);

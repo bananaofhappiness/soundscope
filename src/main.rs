@@ -17,6 +17,9 @@ fn main() -> Result<()> {
     // create an audio_file sender to send audio file from player to the tui app
     let (audio_file_tx, audio_file_rx) = bounded::<AudioFile>(1);
 
+    // create an error sender to send errors from player to the tui app
+    let (error_tx, error_rx) = bounded::<String>(1);
+
     // create an audio player
     let mut player = AudioPlayer::new(playback_position_tx.clone())?;
 
@@ -29,7 +32,8 @@ fn main() -> Result<()> {
             player_command_tx,
             audio_file_rx,
             playback_position_rx,
+            error_rx,
         )
     });
-    player.run(player_command_rx, audio_file_tx)
+    player.run(player_command_rx, audio_file_tx, error_tx)
 }
