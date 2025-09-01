@@ -625,9 +625,10 @@ impl App {
             //TODO: log sending error
         }
 
+        // TODO: channels
         if let Err(err) = self.analyzer.new(
-            self.audio_file.channels() as u32,
-            // 2,
+            // self.audio_file.channels() as u32,
+            2,
             self.audio_file.sample_rate(),
         ) {
             self.handle_error(format!(
