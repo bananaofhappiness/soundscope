@@ -1,6 +1,6 @@
 [package]
 name = "soundscope"
-version = "0.1.0"
+version = "1.0.0"
 edition = "2024"
 
 [dependencies]
@@ -13,3 +13,9 @@ ratatui-explorer = "0.2.1"
 rodio = "0.21.1"
 spectrum-analyzer = "1.7.0"
 symphonia = { version = "0.5.4" }
+
+[profile.release]
+strip = true
+lto = true
+codegen-units = 1
+panic = "abort"
