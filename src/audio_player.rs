@@ -26,8 +26,11 @@ pub enum PlayerCommand {
     // Had to add Quit because on MacOS tui can't be on the main thread (smth does not implement Send), player must be there.
     // So when tui quits, player must know tui has quit and quits too.
     Quit,
+    /// Move the playhead right
     MoveRight,
+    /// Move the playhead left
     MoveLeft,
+    /// Shows an error (only in debug mode)
     #[cfg(debug_assertions)]
     ShowTestError,
 }
@@ -85,11 +88,8 @@ impl Iterator for AudioFile {
         };
         if pos % 4096 == 0 {
             if let Err(err) = self.playback_position_tx.send(pos) {
-                eyre!(err);
+                // TODO: log sending error
             }
-            // if let Ok(_) = self.audio_tx.send(pos) {
-            //     println!("{pos:}");
-            // }
         }
         self.playback_position += 1;
         res
@@ -127,7 +127,7 @@ impl Source for AudioFile {
         self.playback_position = new_pos;
         // send position again so the charts update even when the audio is paused.
         if let Err(err) = self.playback_position_tx.send(new_pos) {
-            eyre!(err);
+            // TODO: log sending error
         }
         Ok(())
     }
@@ -148,6 +148,7 @@ impl AudioFile {
         }
     }
 
+    /// creates a new `AudioFile` from file
     fn from_file(path: &PathBuf, playback_position_tx: Sender<usize>) -> Result<Self> {
         // get file name
         let title = path.file_name().unwrap().to_string_lossy().to_string();
@@ -187,9 +188,8 @@ impl AudioFile {
 
     /// Decodes file and returns its [`Samples`], [`SampleRate`] and [`Channels`]
     fn decode_file(path: &PathBuf) -> Result<(Samples, SampleRate, Channels)> {
-        // Open the media source.
+        // open the media source and create a stream
         let src = std::fs::File::open(path)?;
-        // Create the media source stream.
         let mss = MediaSourceStream::new(Box::new(src), Default::default());
 
         // Create a probe hint using the file's extension.
@@ -213,7 +213,7 @@ impl AudioFile {
             .find(|t| t.codec_params.codec != CODEC_TYPE_NULL)
         {
             Some(track) => track,
-            None => return Err(color_eyre::eyre::eyre!("No supported audio tracks found")),
+            None => return Err(eyre!("No audio track found with a decodeable codec")),
         };
 
         // Use the default options for the decoder.
@@ -302,7 +302,6 @@ impl AudioPlayer {
         let _stream_handle = rodio::OutputStreamBuilder::open_default_stream()?;
         let sink = rodio::Sink::connect_new(&_stream_handle.mixer());
         let audio_file = AudioFile::new(playback_position_tx.clone());
-        // sink.pause();
         Ok(Self {
             playback_position_tx,
             audio_file,
@@ -311,6 +310,7 @@ impl AudioPlayer {
         })
     }
 
+    /// Runs `audio_player`
     pub fn run(
         &mut self,
         player_command_rx: Receiver<PlayerCommand>,
@@ -318,6 +318,7 @@ impl AudioPlayer {
         error_tx: Sender<String>,
     ) -> Result<()> {
         loop {
+            // recieve a `PlayerCommand` from an UI
             if let Ok(cmd) = player_command_rx.try_recv() {
                 match cmd {
                     PlayerCommand::SelectFile(path) => {
@@ -344,7 +345,7 @@ impl AudioPlayer {
                         self.sink.append(self.audio_file.clone());
                         self.audio_file.playback_position = 0;
                         if let Err(err) = self.playback_position_tx.send(0) {
-                            eyre!(err);
+                            // TODO: log a sending error
                         }
                     }
 
@@ -361,6 +362,7 @@ impl AudioPlayer {
                         self.audio_file.playback_position = 0;
                         return Ok(());
                     }
+                    // move the playhead right
                     PlayerCommand::MoveRight => {
                         let pos = self.sink.get_pos();
                         if let Err(err) = self.sink.try_seek(pos + Duration::from_secs(5)) {
@@ -368,6 +370,7 @@ impl AudioPlayer {
                             // TODO: error handling
                         }
                     }
+                    // move the playhead left
                     PlayerCommand::MoveLeft => {
                         let pos = self.sink.get_pos();
                         if let Err(err) = self

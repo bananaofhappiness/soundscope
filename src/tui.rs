@@ -5,16 +5,13 @@ use ratatui::{
     crossterm::event::{Event, KeyCode, poll, read},
     layout::Flex,
     prelude::*,
-    style::{Color, Modifier, Style, Styled, Stylize},
+    style::{Color, Modifier, Style, Stylize},
     text::{Line, Span},
-    widgets::{Axis, Block, Chart, Clear, Dataset, GraphType, Padding, Paragraph},
+    widgets::{Axis, Block, Chart, Clear, Dataset, GraphType, Paragraph},
 };
 use ratatui_explorer::{FileExplorer, Theme};
-use rodio::{Source, cpal::Data};
-use std::{
-    error,
-    time::{Duration, Instant, SystemTime},
-};
+use rodio::Source;
+use std::time::{Duration, Instant};
 
 use crate::{
     analyzer::Analyzer,
@@ -22,9 +19,12 @@ use crate::{
 };
 
 const STYLE: Style = Style::new().bg(Color::Black).fg(Color::Yellow);
-const TEXT_HIGHLIGHT: Style = Style::new().bg(Color::Black).fg(Color::LightRed);
+const TEXT_HIGHLIGHT: Style = Style::new()
+    .bg(Color::Black)
+    .fg(Color::LightRed)
+    .add_modifier(Modifier::BOLD);
 
-/// Settings like showing/hiding UI elements
+/// Settings like showing/hiding UI elements.
 struct UISettings {
     show_explorer: bool,
     show_fft_chart: bool,
@@ -49,12 +49,14 @@ impl Default for UISettings {
     }
 }
 
+/// FFT data for the UI.
 #[derive(Default)]
 struct FFTData {
     mid_fft: Vec<(f64, f64)>,
     side_fft: Vec<(f64, f64)>,
 }
 
+/// Waveform data for the UI.
 struct WaveForm {
     chart: Vec<(f64, f64)>,
     playhead: usize,
@@ -84,16 +86,16 @@ struct App {
     player_command_tx: Sender<PlayerCommand>,
     /// Gets playback position for an analyzer to know what samples to analyze.
     playback_position_rx: Receiver<usize>,
-    /// Gets errors to display them afterwards
+    /// Gets errors to display them afterwards.
     error_rx: Receiver<String>,
     analyzer: Analyzer,
 
     // Charts data
-    /// Data used to render FFT chart
+    /// Data used to render FFT chart.
     fft_data: FFTData,
-    /// Data used to render waveform
+    /// Data used to render waveform.
     waveform: WaveForm,
-    /// LUFS chart
+    /// LUFS chart.
     lufs: [f64; 300],
 
     //UI
@@ -125,16 +127,21 @@ impl App {
         }
     }
 
+    /// The function used to draw the UI.
     fn draw(&mut self, f: &mut Frame) {
+        // split the area into waveform part and charts parts
         let area = f.area();
         let layout = Layout::default()
             .direction(Direction::Vertical)
             .constraints([Constraint::Percentage(30), Constraint::Percentage(70)].as_ref())
             .split(area);
-        let background = Paragraph::new("").style(Style::default().bg(Color::Black));
+
+        // make the background black
+        let background = Paragraph::new("").style(STYLE);
         f.render_widget(background, area);
         self.render_waveform(f, layout[0]);
 
+        // show charts based on user settings
         if self.ui_settings.show_lufs {
             self.render_lufs(f, layout[1]);
         } else if self.ui_settings.show_fft_chart {
@@ -146,51 +153,45 @@ impl App {
             self.ui_settings.error_text = err;
             self.ui_settings.error_timer = Some(std::time::Instant::now())
         }
-
         self.render_error_message(f, &self.ui_settings.error_text);
 
         // render explorer
         if self.ui_settings.show_explorer {
-            let area = Self::explorer_popup_area(area, 50, 70);
+            let area = Self::get_explorer_popup_area(area, 50, 70);
             f.render_widget(Clear, area);
             f.render_widget(&self.explorer.widget(), area);
         }
     }
 
     fn render_waveform(&mut self, frame: &mut Frame, area: Rect) {
+        // playhead is just a function that looks like a vertical line
         let mut playhead_chart = [
             (self.waveform.playhead as f64 / 44., 1.),
             (self.waveform.playhead as f64 / 44. + 0.01, -1.),
         ];
         if self.waveform.at_end {
-            // If at the end, the playhead moves from the middle to the end of the chart.
-            // The chart displays the last 15 seconds of the audio.
-            // The playhead starts moving from the middle of the chart (7.5s mark) when
-            // the playback enters the last 7.5 seconds of the audio.
+            // if at last 15 sec of the audion the playhead should move from the middle to the end of the chart
             let total_samples = self.audio_file.mid_samples().len();
-            let chart_duration_seconds = 15.0; // Corresponds to X-axis bounds [0., 15. * 1000.]
-            let chart_middle_seconds = chart_duration_seconds / 2.0; // 7.5 seconds
+            let chart_duration_seconds = 15.0; // make a var not to hard code and be able to to add resizing waveform window if needed
+            let chart_middle_seconds = chart_duration_seconds / 2.0;
 
-            // Calculate the absolute sample position where the playhead starts scrolling
-            // from the middle of the chart to the end. This is when playback enters the
-            // last `chart_middle_seconds` (7.5s) of the total audio duration.
-            let scroll_start_absolute_samples =
-                total_samples.saturating_sub((chart_middle_seconds * 44100.0) as usize);
+            // calculate the absolute sample position where the playhead starts scrolling from the middle of the chart to the end
+            // this is when playback enters the last `chart_middle_seconds` (default is 7.5s) of the total audio duration.
+            let scroll_start_absolute_samples = total_samples.saturating_sub(
+                (chart_middle_seconds * self.audio_file.sample_rate() as f64) as usize,
+            );
 
-            // Calculate playhead's position relative to the start of this scroll phase.
-            // `self.waveform.playhead` is the absolute current playback position.
-            // The `at_end` condition in `run` ensures `self.waveform.playhead` is
-            // greater than or equal to `scroll_start_absolute_samples`.
+            // calculate playhead's position relative to the start of this scroll phase
+            // since `self.waveform.playhead` is the absolute current playback position.
             let relative_samples_in_scroll_phase = self
                 .waveform
                 .playhead
                 .saturating_sub(scroll_start_absolute_samples);
 
-            // Map this relative sample position to the chart's X-axis range for the playhead.
-            // The playhead should start at `chart_middle_seconds * 1000.` (7500 on the chart)
-            // and move up to `chart_duration_seconds * 1000.` (15000 on the chart).
-            // The conversion from samples to chart units (milliseconds) uses the same 1/44. scale
+            // map this relative sample position to the chart's X-axis range for the playhead.
+            // the conversion from samples to chart units (milliseconds) uses the same 1/44. scale
             // as other playhead positions in this function.
+            // TODO: change 44 to sample_rate/1000 as u32
             let mut chart_x_position =
                 (chart_middle_seconds * 1000.) + (relative_samples_in_scroll_phase as f64 / 44.);
 
@@ -199,6 +200,7 @@ impl App {
 
             playhead_chart = [(chart_x_position, 1.), (chart_x_position + 0.01, -1.)];
         } else if !self.waveform.at_zero {
+            // if not at zero then place the playhead right at the middle of a chart
             playhead_chart = [
                 (
                     f64::min(self.waveform.playhead as f64 / 44., 1000. * 7.5),
@@ -211,17 +213,21 @@ impl App {
             ];
         }
 
-        // get current playback time
+        // get current playback time in seconds
         let playhead_position_in_milis =
             Duration::from_millis((self.waveform.playhead as f64 / 44100. * 1000.) as u64);
-        let current_secs = playhead_position_in_milis.as_secs_f64();
-        let current_mins = (current_secs / 60.) as u32;
-        let current_secs = current_secs % 60.;
+        let current_sec = playhead_position_in_milis.as_secs_f64();
+        let current_min = (current_sec / 60.) as u32;
+        let current_sec = current_sec % 60.;
 
-        let total_secs = self.audio_file.duration().as_secs_f64();
-        let total_mins = (total_secs / 60.) as u32;
-        let total_secs = total_secs % 60.;
+        // get total audio file duration
+        let total_sec = self.audio_file.duration().as_secs_f64();
+        let total_min = (total_sec / 60.) as u32;
+        let total_sec = total_sec % 60.;
 
+        // make datasets
+        // first one to render a waveform
+        // the other one to render the playhead
         let datasets = vec![
             Dataset::default()
                 .marker(symbols::Marker::Braille)
@@ -235,17 +241,18 @@ impl App {
                 .data(&playhead_chart),
         ];
 
+        // render chart
         let chart = Chart::new(datasets)
             .block(
                 Block::bordered()
                     .title(self.audio_file.title())
                     .title_bottom(Line::from("0").left_aligned())
+                    // current position and total duration
                     .title_bottom(
-                        Line::from(format!("{:0>2}:{:0>5.2}", current_mins, current_secs))
-                            .centered(),
+                        Line::from(format!("{:0>2}:{:0>5.2}", current_min, current_sec)).centered(),
                     )
                     .title_bottom(
-                        Line::from(format!("{:0>2}:{:0>5.2}", total_mins, total_secs))
+                        Line::from(format!("{:0>2}:{:0>5.2}", total_min, total_sec))
                             .right_aligned(),
                     ),
             )
@@ -279,21 +286,25 @@ impl App {
             Span::styled("20kHz", Style::default().add_modifier(Modifier::BOLD)),
         ];
 
-        let mid_fft = match self.ui_settings.show_mid_fft {
-            true => &self.fft_data.mid_fft,
-            false => &vec![(-1f64, -1f64)],
+        // if no data about frequencies then default to some low value
+        let mid_fft: &[(f64, f64)] = if self.ui_settings.show_mid_fft {
+            &self.fft_data.mid_fft
+        } else {
+            &[(-1000.0, -1000.0)]
         };
-        let side_fft = match self.ui_settings.show_side_fft {
-            true => &self.fft_data.side_fft,
-            false => &vec![(-1f64, -1f64)],
+
+        let side_fft: &[(f64, f64)] = if self.ui_settings.show_side_fft {
+            &self.fft_data.side_fft
+        } else {
+            &[(-1000.0, -1000.0)]
         };
-        if self.ui_settings.show_side_fft {}
+
         let datasets = vec![
             Dataset::default()
+                // highlight the letter M so the user knows they must press M to toggle it
+                // same with Side fft
                 .name(vec![
-                    "M".bold()
-                        .style(Style::default().fg(Color::LightRed))
-                        .add_modifier(Modifier::BOLD),
+                    "M".bold().style(TEXT_HIGHLIGHT),
                     "id Frequency".into(),
                 ])
                 .marker(symbols::Marker::Braille)
@@ -302,9 +313,7 @@ impl App {
                 .data(mid_fft),
             Dataset::default()
                 .name(vec![
-                    "S".bold()
-                        .style(Style::default().fg(Color::LightRed))
-                        .add_modifier(Modifier::BOLD),
+                    "S".bold().style(TEXT_HIGHLIGHT),
                     "ide Frequency".into(),
                 ])
                 .marker(symbols::Marker::Braille)
@@ -314,10 +323,11 @@ impl App {
         ];
 
         let chart = Chart::new(datasets)
+            // the title uses the same highlighting technique
             .block(Block::bordered().title(vec![
-                "F".bold().style(TEXT_HIGHLIGHT.bold()),
+                "F".bold().style(TEXT_HIGHLIGHT),
                 "requencies ".bold(),
-                "L".bold().style(TEXT_HIGHLIGHT.bold()),
+                "L".bold().style(TEXT_HIGHLIGHT),
                 "UFS".into(),
             ]))
             .style(STYLE)
@@ -361,7 +371,7 @@ impl App {
             }
         };
 
-        // text section
+        // text layout
         let paragraph_layout = Layout::default()
             .direction(Direction::Vertical)
             .constraints([
@@ -370,6 +380,8 @@ impl App {
                 Constraint::Ratio(1, 3),
             ])
             .split(layout[0]);
+
+        // get lufs texts
         let lufs_text = vec![
             "Short term LUFS:".bold() + format!("{:.2}", self.lufs[299]).into(),
             "Integrated LUFS:".bold() + format!("{:.2}", integrated_lufs).into(),
@@ -399,9 +411,8 @@ impl App {
         };
         let range_text = vec!["Range: ".bold() + format!("{:.2} LU", range).into()];
 
-        // block and paragraphs
+        // paragraphs
         let lufs_paragraph = Paragraph::new(lufs_text)
-            // .block(Block::bordered().padding(Padding::top(paragraph_layout[0].height / 2)))
             .block(Block::bordered().title(vec![
                 "F".bold().style(TEXT_HIGHLIGHT.bold()),
                 "requencies ".into(),
@@ -415,7 +426,6 @@ impl App {
             .alignment(Alignment::Center)
             .style(STYLE);
         let range_paragraph = Paragraph::new(range_text)
-            // .block(Block::bordered().padding(Padding::top(paragraph_layout[2].height / 2)))
             .block(Block::bordered())
             .alignment(Alignment::Center)
             .style(STYLE);
@@ -444,6 +454,7 @@ impl App {
         f.render_widget(chart, layout[1]);
     }
 
+    /// The main loop
     fn run(mut self, mut terminal: DefaultTerminal) -> Result<()> {
         loop {
             // receive audio file
@@ -454,7 +465,7 @@ impl App {
             // receive playback position
             if let Ok(pos) = self.playback_position_rx.try_recv() {
                 // if using mid side we must divide the position by 2
-                let pos = pos / 2;
+                let pos = pos / self.audio_file.channels() as usize;
                 let sr = self.audio_file.sample_rate() as usize;
                 // get fft
                 let fft_left_bound = pos.saturating_sub(16384);
@@ -470,6 +481,7 @@ impl App {
                 //get waveform
                 let mid_samples_len = self.audio_file.mid_samples().len();
                 self.waveform.playhead = pos;
+                // if at zero load first 15 seconds to show
                 if self.waveform.at_zero {
                     let waveform_samples = &self.audio_file.mid_samples()[0..15 * sr];
                     self.waveform.chart = Analyzer::get_waveform(waveform_samples);
@@ -478,11 +490,13 @@ impl App {
                 let waveform_right_bound =
                     usize::min(pos + (7.5 * 44100.) as usize, mid_samples_len);
 
+                // if at end load last 15 seconds and dont scroll
                 if waveform_right_bound == mid_samples_len {
                     self.waveform.at_end = true;
                     let waveform_samples =
                         &self.audio_file.mid_samples()[mid_samples_len - 15 * sr..mid_samples_len];
                     self.waveform.chart = Analyzer::get_waveform(waveform_samples);
+                // if not at the beginning load 15 seconds and scroll
                 } else if waveform_left_bound != 0 {
                     self.waveform.at_zero = false;
                     let waveform_samples =
@@ -492,8 +506,8 @@ impl App {
                     self.waveform.at_zero = true;
                 }
 
-                // get lufs
-                let pos = pos * 2;
+                // get lufs lufs uses all channels
+                let pos = pos * self.audio_file.channels() as usize;
                 let lufs_left_bound = pos.saturating_sub(16384);
                 if lufs_left_bound != 0 {
                     for i in 0..self.lufs.len() - 1 {
@@ -522,20 +536,26 @@ impl App {
                 };
                 if let Event::Key(key) = event {
                     match key.code {
+                        // quit
                         KeyCode::Char('q') => {
                             self.player_command_tx.send(PlayerCommand::Quit)?;
                             return Ok(());
                         }
+                        // show explorer
                         KeyCode::Char('e') => {
                             self.ui_settings.show_explorer = !self.ui_settings.show_explorer
                         }
+                        // select file
                         KeyCode::Enter => self.select_file(),
+                        // show side fft
                         KeyCode::Char('s') => {
                             self.ui_settings.show_side_fft = !self.ui_settings.show_side_fft
                         }
+                        // show mid fft
                         KeyCode::Char('m') => {
                             self.ui_settings.show_mid_fft = !self.ui_settings.show_mid_fft
                         }
+                        // pause/play
                         KeyCode::Char(' ') => {
                             if let Err(err) =
                                 self.player_command_tx.send(PlayerCommand::ChangeState)
@@ -543,6 +563,7 @@ impl App {
                                 //do smth idk
                             }
                         }
+                        // move playhead right and left
                         KeyCode::Right => {
                             if let Err(err) = self.player_command_tx.send(PlayerCommand::MoveRight)
                             {
@@ -554,11 +575,12 @@ impl App {
                                 //do smth idk
                             }
                         }
+                        // change charts shown
                         KeyCode::Char('l') => self.change_chart('l'),
                         KeyCode::Char('f') => self.change_chart('f'),
+                        // this sends a test error
+                        // only in debug mode
                         KeyCode::Char('y') => {
-                            // this sends a test error
-                            // only in debug mode
                             #[cfg(debug_assertions)]
                             {
                                 self.player_command_tx
@@ -584,15 +606,10 @@ impl App {
 
     fn select_file(&mut self) {
         let file = self.explorer.current();
-        let file_path = self.explorer.current().path();
+        let file_path = self.explorer.current().path().clone();
         if !file.is_file() {
             return;
         }
-        if let Err(_) = self.analyzer.new(
-            // self.audio_file.channels() as u32,
-            2,
-            self.audio_file.sample_rate(),
-        ) {}
         self.ui_settings.show_explorer = false;
         self.fft_data.mid_fft.clear();
         self.fft_data.side_fft.clear();
@@ -603,18 +620,31 @@ impl App {
 
         if let Err(err) = self
             .player_command_tx
-            .send(PlayerCommand::SelectFile(file_path.clone()))
+            .send(PlayerCommand::SelectFile(file_path))
         {
             //TODO: log sending error
+        }
+
+        if let Err(err) = self.analyzer.new(
+            self.audio_file.channels() as u32,
+            // 2,
+            self.audio_file.sample_rate(),
+        ) {
+            self.handle_error(format!(
+                "Could not create an analyzer for an audio file: {}",
+                err.to_string()
+            ));
         }
     }
 
     fn change_chart(&mut self, c: char) {
         match c {
+            // lufs
             'l' => {
                 self.ui_settings.show_fft_chart = false;
                 self.ui_settings.show_lufs = true
             }
+            // frequencies
             'f' => {
                 self.ui_settings.show_fft_chart = true;
                 self.ui_settings.show_lufs = false
@@ -623,7 +653,7 @@ impl App {
         }
     }
 
-    fn explorer_popup_area(area: Rect, percent_x: u16, percent_y: u16) -> Rect {
+    fn get_explorer_popup_area(area: Rect, percent_x: u16, percent_y: u16) -> Rect {
         let vertical = Layout::vertical([Constraint::Percentage(percent_y)]).flex(Flex::Center);
         let horizontal = Layout::horizontal([Constraint::Percentage(percent_x)]).flex(Flex::Center);
         let [area] = vertical.areas(area);
@@ -631,7 +661,7 @@ impl App {
         area
     }
 
-    fn error_popup_area(area: Rect) -> Rect {
+    fn get_error_popup_area(area: Rect) -> Rect {
         let vertical = Layout::vertical(Constraint::from_ratios([(5, 6), (1, 6)]));
         let horizontal = Layout::horizontal(Constraint::from_ratios([(1, 6), (5, 6)]));
         let area = vertical.areas::<2>(area)[1];
@@ -640,6 +670,7 @@ impl App {
     }
 
     fn render_error_message(&self, f: &mut Frame, message: &str) {
+        // show error for 5 seconds
         match self.ui_settings.error_timer {
             Some(error_timer) => {
                 if error_timer.elapsed().as_millis() > 5000 {
@@ -648,7 +679,7 @@ impl App {
             }
             None => return,
         }
-        let error_popup_area = Self::error_popup_area(f.area());
+        let error_popup_area = Self::get_error_popup_area(f.area());
         f.render_widget(Clear, error_popup_area);
         f.render_widget(
             Paragraph::new(message)
@@ -658,6 +689,7 @@ impl App {
     }
 }
 
+/// pub run function that initializes the terminal and runs the application
 pub fn run(
     audio_file: AudioFile,
     player_command_tx: Sender<PlayerCommand>,
