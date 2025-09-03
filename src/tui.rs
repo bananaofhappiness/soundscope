@@ -165,9 +165,13 @@ impl App {
 
     fn render_waveform(&mut self, frame: &mut Frame, area: Rect) {
         // playhead is just a function that looks like a vertical line
+        let samples_in_one_ms = self.audio_file.sample_rate() / 1000;
         let mut playhead_chart = [
-            (self.waveform.playhead as f64 / 44., 1.),
-            (self.waveform.playhead as f64 / 44. + 0.01, -1.),
+            (self.waveform.playhead as f64 / samples_in_one_ms as f64, 1.),
+            (
+                self.waveform.playhead as f64 / samples_in_one_ms as f64 + 0.01,
+                -1.,
+            ),
         ];
         if self.waveform.at_end {
             // if at last 15 sec of the audion the playhead should move from the middle to the end of the chart
@@ -189,11 +193,10 @@ impl App {
                 .saturating_sub(scroll_start_absolute_samples);
 
             // map this relative sample position to the chart's X-axis range for the playhead.
-            // the conversion from samples to chart units (milliseconds) uses the same 1/44. scale
+            // the conversion from samples to chart units (milliseconds) uses the same 1/samles_in_one_ms scale
             // as other playhead positions in this function.
-            // TODO: change 44 to sample_rate/1000 as u32
-            let mut chart_x_position =
-                (chart_middle_seconds * 1000.) + (relative_samples_in_scroll_phase as f64 / 44.);
+            let mut chart_x_position = (chart_middle_seconds * 1000.)
+                + (relative_samples_in_scroll_phase as f64 / samples_in_one_ms as f64);
 
             // Ensure the playhead does not exceed the chart's upper bound.
             chart_x_position = f64::min(chart_x_position, chart_duration_seconds * 1000.);
@@ -203,19 +206,26 @@ impl App {
             // if not at zero then place the playhead right at the middle of a chart
             playhead_chart = [
                 (
-                    f64::min(self.waveform.playhead as f64 / 44., 1000. * 7.5),
+                    f64::min(
+                        self.waveform.playhead as f64 / samples_in_one_ms as f64,
+                        1000. * 7.5,
+                    ),
                     1.,
                 ),
                 (
-                    f64::min(self.waveform.playhead as f64 / 44., 1000. * 7.5) + 0.01,
+                    f64::min(
+                        self.waveform.playhead as f64 / samples_in_one_ms as f64,
+                        1000. * 7.5,
+                    ) + 0.01,
                     -1.,
                 ),
             ];
         }
 
         // get current playback time in seconds
-        let playhead_position_in_milis =
-            Duration::from_millis((self.waveform.playhead as f64 / 44100. * 1000.) as u64);
+        let playhead_position_in_milis = Duration::from_millis(
+            (self.waveform.playhead as f64 / self.audio_file.sample_rate() as f64 * 1000.) as u64,
+        );
         let current_sec = playhead_position_in_milis.as_secs_f64();
         let current_min = (current_sec / 60.) as u32;
         let current_sec = current_sec % 60.;
@@ -474,12 +484,8 @@ impl App {
                     let mid_samples = &audio_file.mid_samples()[fft_left_bound..pos];
                     let side_samples = &audio_file.side_samples()[fft_left_bound..pos];
 
-                    self.fft_data.mid_fft = self
-                        .analyzer
-                        .get_fft(mid_samples, self.audio_file.sample_rate());
-                    self.fft_data.side_fft = self
-                        .analyzer
-                        .get_fft(side_samples, self.audio_file.sample_rate());
+                    self.fft_data.mid_fft = self.analyzer.get_fft(mid_samples, sr);
+                    self.fft_data.side_fft = self.analyzer.get_fft(side_samples, sr);
                 }
 
                 //get waveform
@@ -488,24 +494,24 @@ impl App {
                 // if at zero load first 15 seconds to show
                 if self.waveform.at_zero {
                     let waveform_samples = &self.audio_file.mid_samples()[0..15 * sr];
-                    self.waveform.chart = Analyzer::get_waveform(waveform_samples);
+                    self.waveform.chart = Analyzer::get_waveform(waveform_samples, sr);
                 }
                 let waveform_left_bound = pos.saturating_sub((7.5 * sr as f64) as usize);
                 let waveform_right_bound =
-                    usize::min(pos + (7.5 * 44100.) as usize, mid_samples_len);
+                    usize::min(pos + (7.5 * sr as f64) as usize, mid_samples_len);
 
                 // if at end load last 15 seconds and dont scroll
                 if waveform_right_bound == mid_samples_len {
                     self.waveform.at_end = true;
                     let waveform_samples =
                         &self.audio_file.mid_samples()[mid_samples_len - 15 * sr..mid_samples_len];
-                    self.waveform.chart = Analyzer::get_waveform(waveform_samples);
+                    self.waveform.chart = Analyzer::get_waveform(waveform_samples, sr);
                 // if not at the beginning load 15 seconds and scroll
                 } else if waveform_left_bound != 0 {
                     self.waveform.at_zero = false;
                     let waveform_samples =
                         &self.audio_file.mid_samples()[waveform_left_bound..waveform_right_bound];
-                    self.waveform.chart = Analyzer::get_waveform(waveform_samples);
+                    self.waveform.chart = Analyzer::get_waveform(waveform_samples, sr);
                 } else {
                     self.waveform.at_zero = true;
                 }

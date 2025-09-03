@@ -25,14 +25,14 @@ impl Analyzer {
         Ok(())
     }
 
-    pub fn get_fft(&mut self, samples: &[f32], sample_rate: u32) -> Vec<(f64, f64)> {
+    pub fn get_fft(&mut self, samples: &[f32], sample_rate: usize) -> Vec<(f64, f64)> {
         // apply hann window for smoothing
         let hann_window = hann_window(&samples);
 
         // calc spectrum
         let spectrum = samples_fft_to_spectrum(
             &hann_window,
-            sample_rate,
+            sample_rate as u32,
             FrequencyLimit::Range(20.0, 20000.0),
             Some(&scale_20_times_log10),
         )
@@ -71,8 +71,9 @@ impl Analyzer {
             .collect()
     }
 
-    pub fn get_waveform(samples: &[f32]) -> Vec<(f64, f64)> {
-        let iter = samples.iter().step_by(44).map(|x| *x as f64);
+    pub fn get_waveform(samples: &[f32], sample_rate: usize) -> Vec<(f64, f64)> {
+        let samples_in_one_ms = sample_rate / 1000;
+        let iter = samples.iter().step_by(samples_in_one_ms).map(|x| *x as f64);
         (0..15 * 1000)
             .map(|x| x as f64)
             .zip(iter)
@@ -148,7 +149,7 @@ mod tests {
     fn test_get_waveform() {
         let samples: Vec<f32> = (0..44100).map(|i| (i as f32 / 44100.0).sin()).collect();
 
-        let waveform = Analyzer::get_waveform(&samples);
+        let waveform = Analyzer::get_waveform(&samples, 44100);
 
         // Should have data points
         assert!(!waveform.is_empty());
