@@ -6,3 +6,7 @@
 *.m4a
 */*.m4a
 .DS_Store
+# Added by goreleaser init:
+dist/
+.intentionally-empty-file.o
+target/
