@@ -7,7 +7,7 @@ use ratatui::{
     prelude::*,
     style::{Color, Modifier, Style, Stylize},
     text::{Line, Span},
-    widgets::{Axis, Block, Chart, Clear, Dataset, GraphType, Paragraph},
+    widgets::{Axis, Block, Chart, Clear, Dataset, GraphType, Paragraph, Wrap},
 };
 use ratatui_explorer::{FileExplorer, Theme};
 use rodio::Source;
@@ -318,7 +318,7 @@ impl App {
                 ])
                 .marker(symbols::Marker::Braille)
                 .graph_type(GraphType::Line)
-                .style(Style::default().fg(Color::LightMagenta))
+                .style(Style::default().fg(Color::LightGreen))
                 .data(side_fft),
         ];
 
@@ -474,8 +474,12 @@ impl App {
                     let mid_samples = &audio_file.mid_samples()[fft_left_bound..pos];
                     let side_samples = &audio_file.side_samples()[fft_left_bound..pos];
 
-                    self.fft_data.mid_fft = self.analyzer.get_fft(mid_samples);
-                    self.fft_data.side_fft = self.analyzer.get_fft(side_samples);
+                    self.fft_data.mid_fft = self
+                        .analyzer
+                        .get_fft(mid_samples, self.audio_file.sample_rate());
+                    self.fft_data.side_fft = self
+                        .analyzer
+                        .get_fft(side_samples, self.audio_file.sample_rate());
                 }
 
                 //get waveform
@@ -513,8 +517,15 @@ impl App {
                     for i in 0..self.lufs.len() - 1 {
                         self.lufs[i] = self.lufs[i + 1];
                     }
-                    self.analyzer
-                        .add_samples(&self.audio_file.samples()[lufs_left_bound..pos]);
+                    if let Err(err) = self
+                        .analyzer
+                        .add_samples(&self.audio_file.samples()[lufs_left_bound..pos])
+                    {
+                        self.handle_error(format!(
+                            "Could not get samples for LUFS analyzer: {}",
+                            err.to_string()
+                        ));
+                    };
                     self.lufs[299] = match self.analyzer.get_shortterm_lufs() {
                         Ok(lufs) => lufs,
                         Err(err) => {
@@ -557,6 +568,8 @@ impl App {
                         }
                         // pause/play
                         KeyCode::Char(' ') => {
+                            self.lufs = [-50.; 300];
+                            self.analyzer.reset();
                             if let Err(err) =
                                 self.player_command_tx.send(PlayerCommand::ChangeState)
                             {
@@ -565,12 +578,16 @@ impl App {
                         }
                         // move playhead right and left
                         KeyCode::Right => {
+                            self.lufs = [-50.; 300];
+                            self.analyzer.reset();
                             if let Err(err) = self.player_command_tx.send(PlayerCommand::MoveRight)
                             {
                                 //do smth idk
                             }
                         }
                         KeyCode::Left => {
+                            self.lufs = [-50.; 300];
+                            self.analyzer.reset();
                             if let Err(err) = self.player_command_tx.send(PlayerCommand::MoveLeft) {
                                 //do smth idk
                             }
@@ -610,6 +627,7 @@ impl App {
         if !file.is_file() {
             return;
         }
+        // reset everything
         self.ui_settings.show_explorer = false;
         self.fft_data.mid_fft.clear();
         self.fft_data.side_fft.clear();
@@ -684,7 +702,8 @@ impl App {
         f.render_widget(Clear, error_popup_area);
         f.render_widget(
             Paragraph::new(message)
-                .block(Block::bordered().style(STYLE).fg(Color::LightRed).bold()),
+                .block(Block::bordered().style(STYLE).fg(Color::LightRed).bold())
+                .wrap(Wrap { trim: true }),
             error_popup_area,
         );
     }
@@ -699,7 +718,13 @@ pub fn run(
     error_rx: Receiver<String>,
 ) -> Result<()> {
     let terminal = ratatui::init();
-    let theme = Theme::default().with_style(STYLE).with_item_style(STYLE);
+    let theme = Theme::default()
+        .with_style(STYLE)
+        .with_item_style(STYLE)
+        .with_highlight_item_style(STYLE.fg(Color::LightRed))
+        .with_dir_style(STYLE.bold())
+        .with_highlight_dir_style(STYLE.bold().fg(Color::LightRed))
+        .add_default_title();
     let file_explorer = FileExplorer::with_theme(theme)?;
     let app_result = App::new(
         audio_file,

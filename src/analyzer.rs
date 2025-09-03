@@ -25,21 +25,16 @@ impl Analyzer {
         Ok(())
     }
 
-    pub fn get_fft(&mut self, samples: &[f32]) -> Vec<(f64, f64)> {
+    pub fn get_fft(&mut self, samples: &[f32], sample_rate: u32) -> Vec<(f64, f64)> {
         // apply hann window for smoothing
         let hann_window = hann_window(&samples);
 
         // calc spectrum
         let spectrum = samples_fft_to_spectrum(
             &hann_window,
-            // sampling rate
-            44100,
+            sample_rate,
             FrequencyLimit::Range(20.0, 20000.0),
-            // optional scale
-            // Some(&scale_to_zero_to_one),
             Some(&scale_20_times_log10),
-            // Some(&divide_by_N),
-            // None,
         )
         .unwrap();
 
@@ -84,8 +79,12 @@ impl Analyzer {
             .collect::<Vec<(f64, f64)>>()
     }
 
-    pub fn add_samples(&mut self, samples: &[f32]) {
-        self.loudness_meter.add_frames_f32(samples);
+    pub fn add_samples(&mut self, samples: &[f32]) -> Result<(), ebur128::Error> {
+        self.loudness_meter.add_frames_f32(samples)
+    }
+
+    pub fn reset(&mut self) {
+        self.loudness_meter.reset();
     }
 
     pub fn get_shortterm_lufs(&mut self) -> Result<f64, ebur128::Error> {
@@ -128,17 +127,17 @@ mod tests {
         let mut analyzer = Analyzer::default();
 
         // Generate a simple sine wave at 440Hz
-        let sample_rate = 44100.0;
+        let sample_rate = 44100;
         let frequency = 440.0;
         // 1 sec of samples
         let samples: Vec<f32> = (0..16384 as usize)
             .map(|i| {
-                let t = i as f32 / sample_rate;
+                let t = i as f32 / sample_rate as f32;
                 (2.0 * std::f32::consts::PI * frequency * t).sin()
             })
             .collect();
 
-        let fft_result = analyzer.get_fft(&samples);
+        let fft_result = analyzer.get_fft(&samples, sample_rate);
 
         // Should have some data points
         assert!(!fft_result.is_empty());
@@ -170,7 +169,7 @@ mod tests {
                 .map(|i| 0.1 * (440.0 * 2.0 * std::f32::consts::PI * (i as f32 / 44100.0)).sin())
                 .collect();
 
-        analyzer.add_samples(&samples);
+        let _ = analyzer.add_samples(&samples);
 
         // Test integrated loudness (should be valid after enough samples)
         if let Ok(lufs) = analyzer.get_integrated_lufs() {
