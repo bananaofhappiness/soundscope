@@ -24,14 +24,14 @@ Grab the latest release for your platform from the [**Releases page**](https://g
 ## 🔧 Usage
 - Run the tool using `soundscope` command
 - Open the **e**xplorer by pressing `E`.
-- Navigate to your audio file using `H`, `J`, `K`, `L` or arrow keys.
+- Navigate to your audio file using arrow keys or `H`, `J`, `K`, `L` (Vim-style navigation).
 - Press `Enter` to select it.
 - Play or pause audio by pressing `Space`.
 - Turn **M**id and **S**ide Frequencies on/of by pressing `M` and `S` respectively.
 - Press `L` to check **L**UFS and `F` to check **f**requencies.
 - Use the right and left arrow keys to move playhead 5 seconds forward or backward.
 - When you are done, press `Q` to **q**uit.
-  
+
 ---
 ## 🎥 Demo Video
 
