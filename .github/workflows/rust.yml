@@ -8,6 +8,9 @@ on:
 
 env:
   CARGO_TERM_COLOR: always
+  SDL_VIDEODRIVER: "dummy"
+  SDL_AUDIODRIVER: "disk"
+
 
 jobs:
   build:
