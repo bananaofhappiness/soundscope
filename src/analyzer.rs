@@ -20,14 +20,14 @@ impl Default for Analyzer {
 
 impl Analyzer {
     /// used when new file selected
-    pub fn new(&mut self, channels: u32, rate: u32) -> Result<()> {
+    pub fn select_new_file(&mut self, channels: u32, rate: u32) -> Result<()> {
         self.loudness_meter = EbuR128::new(channels, rate, Mode::all())?;
         Ok(())
     }
 
     pub fn get_fft(&mut self, samples: &[f32], sample_rate: usize) -> Vec<(f64, f64)> {
         // apply hann window for smoothing
-        let hann_window = hann_window(&samples);
+        let hann_window = hann_window(samples);
 
         // calc spectrum
         let spectrum = samples_fft_to_spectrum(
@@ -41,12 +41,11 @@ impl Analyzer {
         // convert OrderaleF32 to f64
         let fft_vec = spectrum
             .data()
-            .into_iter()
+            .iter()
             .map(|(x, y)| (x.val() as f64, y.val() as f64))
             .collect::<Vec<(f64, f64)>>();
         // transform to log scale
-        let fft_vec = Self::transform_to_log_scale(&fft_vec);
-        fft_vec
+        Self::transform_to_log_scale(&fft_vec)
     }
 
     pub fn transform_to_log_scale(fft_data: &[(f64, f64)]) -> Vec<(f64, f64)> {
@@ -193,10 +192,10 @@ mod tests {
         let mut analyzer = Analyzer::default();
 
         // Test reinitializing with different parameters
-        let result = analyzer.new(1, 48000); // mono, 48kHz
+        let result = analyzer.select_new_file(1, 48000); // mono, 48kHz
         assert!(result.is_ok());
 
-        let result = analyzer.new(6, 96000); // 5.1 surround, 96kHz
+        let result = analyzer.select_new_file(6, 96000); // 5.1 surround, 96kHz
         assert!(result.is_ok());
     }
 

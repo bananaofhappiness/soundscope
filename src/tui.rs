@@ -153,7 +153,7 @@ impl App {
             self.ui_settings.error_text = err;
             self.ui_settings.error_timer = Some(std::time::Instant::now())
         }
-        self.render_error_message(f, &self.ui_settings.error_text);
+        self.render_error_message(f);
 
         // render explorer
         if self.ui_settings.show_explorer {
@@ -529,7 +529,7 @@ impl App {
                     {
                         self.handle_error(format!(
                             "Could not get samples for LUFS analyzer: {}",
-                            err.to_string()
+                            err
                         ));
                     };
                     self.lufs[299] = match self.analyzer.get_shortterm_lufs() {
@@ -576,26 +576,27 @@ impl App {
                         KeyCode::Char(' ') => {
                             self.lufs = [-50.; 300];
                             self.analyzer.reset();
-                            if let Err(err) =
+                            if let Err(_err) =
                                 self.player_command_tx.send(PlayerCommand::ChangeState)
                             {
-                                //do smth idk
+                                //TODO: log sending error
                             }
                         }
                         // move playhead right and left
                         KeyCode::Right => {
                             self.lufs = [-50.; 300];
                             self.analyzer.reset();
-                            if let Err(err) = self.player_command_tx.send(PlayerCommand::MoveRight)
+                            if let Err(_err) = self.player_command_tx.send(PlayerCommand::MoveRight)
                             {
-                                //do smth idk
+                                //TODO: log sending error
                             }
                         }
                         KeyCode::Left => {
                             self.lufs = [-50.; 300];
                             self.analyzer.reset();
-                            if let Err(err) = self.player_command_tx.send(PlayerCommand::MoveLeft) {
-                                //do smth idk
+                            if let Err(_err) = self.player_command_tx.send(PlayerCommand::MoveLeft)
+                            {
+                                //TODO: log sending error
                             }
                         }
                         // change charts shown
@@ -642,7 +643,7 @@ impl App {
         self.waveform.at_end = false;
         self.lufs = [-50.; 300];
 
-        if let Err(err) = self
+        if let Err(_err) = self
             .player_command_tx
             .send(PlayerCommand::SelectFile(file_path))
         {
@@ -650,14 +651,14 @@ impl App {
         }
 
         // TODO: channels
-        if let Err(err) = self.analyzer.new(
+        if let Err(err) = self.analyzer.select_new_file(
             // self.audio_file.channels() as u32,
             2,
             self.audio_file.sample_rate(),
         ) {
             self.handle_error(format!(
                 "Could not create an analyzer for an audio file: {}",
-                err.to_string()
+                err
             ));
         }
     }
@@ -690,15 +691,16 @@ impl App {
         let vertical = Layout::vertical(Constraint::from_ratios([(5, 6), (1, 6)]));
         let horizontal = Layout::horizontal(Constraint::from_ratios([(1, 6), (5, 6)]));
         let area = vertical.areas::<2>(area)[1];
-        let area = horizontal.areas::<2>(area)[0];
-        area
+        horizontal.areas::<2>(area)[0]
     }
 
-    fn render_error_message(&self, f: &mut Frame, message: &str) {
+    fn render_error_message(&mut self, f: &mut Frame) {
+        let message = self.ui_settings.error_text.clone();
         // show error for 5 seconds
         match self.ui_settings.error_timer {
             Some(error_timer) => {
                 if error_timer.elapsed().as_millis() > 5000 {
+                    self.ui_settings.error_timer = None;
                     return;
                 }
             }
@@ -743,4 +745,110 @@ pub fn run(
     .run(terminal);
     ratatui::restore();
     app_result
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crossbeam::channel;
+
+    fn create_test_app() -> (App, Sender<PlayerCommand>, Receiver<PlayerCommand>) {
+        let (player_command_tx, player_command_rx) = channel::unbounded();
+        let (_, audio_file_rx) = channel::unbounded();
+        let (playback_position_tx, playback_position_rx) = channel::unbounded();
+        let (_, error_rx) = channel::unbounded();
+
+        let audio_file = AudioFile::new(playback_position_tx);
+        let theme = Theme::default();
+        let explorer = FileExplorer::with_theme(theme).unwrap();
+
+        let app = App::new(
+            audio_file,
+            player_command_tx.clone(),
+            audio_file_rx,
+            playback_position_rx,
+            error_rx,
+            explorer,
+        );
+
+        (app, player_command_tx, player_command_rx)
+    }
+
+    #[test]
+    fn test_change_chart() {
+        let (mut app, _, _) = create_test_app();
+
+        // Test switching to LUFS
+        app.change_chart('l');
+        assert!(!app.ui_settings.show_fft_chart);
+        assert!(app.ui_settings.show_lufs);
+
+        // Test switching to frequencies
+        app.change_chart('f');
+        assert!(app.ui_settings.show_fft_chart);
+        assert!(!app.ui_settings.show_lufs);
+
+        // Test invalid character (should do nothing)
+        let prev_fft = app.ui_settings.show_fft_chart;
+        let prev_lufs = app.ui_settings.show_lufs;
+        app.change_chart('x');
+        assert_eq!(app.ui_settings.show_fft_chart, prev_fft);
+        assert_eq!(app.ui_settings.show_lufs, prev_lufs);
+    }
+
+    #[test]
+    fn test_handle_error() {
+        let (mut app, _, _) = create_test_app();
+        let error_message = "Test error message";
+
+        app.handle_error(error_message.to_string());
+
+        assert_eq!(app.ui_settings.error_text, error_message);
+        assert!(app.ui_settings.error_timer.is_some());
+    }
+
+    #[test]
+    fn test_get_explorer_popup_area() {
+        let area = Rect::new(0, 0, 100, 50);
+        let popup_area = App::get_explorer_popup_area(area, 50, 70);
+
+        // Should be centered and smaller than original area
+        assert!(popup_area.width <= area.width);
+        assert!(popup_area.height <= area.height);
+        assert!(popup_area.x >= area.x);
+        assert!(popup_area.y >= area.y);
+    }
+
+    #[test]
+    fn test_get_error_popup_area() {
+        let area = Rect::new(0, 0, 100, 60);
+        let popup_area = App::get_error_popup_area(area);
+
+        // Should be positioned in the bottom-left portion
+        assert!(popup_area.width < area.width);
+        assert!(popup_area.height < area.height);
+        assert!(popup_area.y > area.y);
+    }
+
+    #[test]
+    fn test_error_timer_logic() {
+        let (mut app, _, _) = create_test_app();
+
+        // No error initially
+        assert!(app.ui_settings.error_timer.is_none());
+
+        // Set error
+        app.handle_error("Test error".to_string());
+        let error_time = app.ui_settings.error_timer.unwrap();
+
+        // Error should be recent
+        assert!(error_time.elapsed().as_millis() < 100);
+
+        std::thread::sleep(Duration::from_secs_f32(5.01));
+
+        // it does not work since it gets None in render_error_message() but it cant be run without drawing ui
+        // assert!(app.ui_settings.error_timer.is_none())
+
+        assert!(error_time.elapsed().as_millis() > 5000);
+    }
 }

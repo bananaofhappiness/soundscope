@@ -86,10 +86,10 @@ impl Iterator for AudioFile {
         } else {
             None
         };
-        if pos % 4096 == 0 {
-            if let Err(err) = self.playback_position_tx.send(pos) {
-                // TODO: log sending error
-            }
+        if pos % 4096 == 0
+            && let Err(_err) = self.playback_position_tx.send(pos)
+        {
+            // TODO: log sending error
         }
         self.playback_position += 1;
         res
@@ -126,7 +126,7 @@ impl Source for AudioFile {
 
         self.playback_position = new_pos;
         // send position again so the charts update even when the audio is paused.
-        if let Err(err) = self.playback_position_tx.send(new_pos) {
+        if let Err(_err) = self.playback_position_tx.send(new_pos) {
             // TODO: log sending error
         }
         Ok(())
@@ -300,7 +300,7 @@ pub struct AudioPlayer {
 impl AudioPlayer {
     pub fn new(playback_position_tx: Sender<usize>) -> Result<Self> {
         let _stream_handle = rodio::OutputStreamBuilder::open_default_stream()?;
-        let sink = rodio::Sink::connect_new(&_stream_handle.mixer());
+        let sink = rodio::Sink::connect_new(_stream_handle.mixer());
         let audio_file = AudioFile::new(playback_position_tx.clone());
         Ok(Self {
             playback_position_tx,
@@ -324,7 +324,7 @@ impl AudioPlayer {
                     PlayerCommand::SelectFile(path) => {
                         match AudioFile::from_file(&path, self.playback_position_tx.clone()) {
                             Err(err) => {
-                                if let Err(err) =
+                                if let Err(_err) =
                                     error_tx.send(format!("Error loading file: {}", err))
                                 {
                                     //TODO: log a sending error
@@ -333,7 +333,7 @@ impl AudioPlayer {
                             }
                             Ok(af) => {
                                 self.audio_file = af.clone();
-                                if let Err(err) = audio_file_tx.send(af) {
+                                if let Err(_err) = audio_file_tx.send(af) {
                                     //TODO: log a sending error
                                 }
                             }
@@ -344,7 +344,7 @@ impl AudioPlayer {
                         self.sink.clear();
                         self.sink.append(self.audio_file.clone());
                         self.audio_file.playback_position = 0;
-                        if let Err(err) = self.playback_position_tx.send(0) {
+                        if let Err(_err) = self.playback_position_tx.send(0) {
                             // TODO: log a sending error
                         }
                     }
@@ -373,7 +373,7 @@ impl AudioPlayer {
                     // move the playhead left
                     PlayerCommand::MoveLeft => {
                         let pos = self.sink.get_pos();
-                        if let Err(err) = self
+                        if let Err(_err) = self
                             .sink
                             .try_seek(pos.saturating_sub(Duration::from_secs(5)))
                         {
