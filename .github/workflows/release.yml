@@ -4,7 +4,9 @@ on:
   push:
     tags:
       - "v*.*.*"
-
+env:
+  CARGO_TERM_COLOR: always
+  
 jobs:
   release:
     name: Release - ${{ matrix.platform.release_for }}
@@ -14,14 +16,19 @@ jobs:
           - os_name: Linux-x86_64
             os: ubuntu-24.04
             target: x86_64-unknown-linux-musl
-
+            bin: soundscope
+            name: soundscope-Linux-x86_64-musl.tar.gz
           - os_name: macOS-x86_64
             os: macOS-latest
             target: x86_64-apple-darwin
-
+            bin: soundscope
+            name: soundscope-Darwin-aarch64.tar.gz
           - os_name: Windows-x86_64
             os: windows-latest
-
+            bin: soundscope
+            name: soundscope-Windows-x86_64.zip
+        toolchain:
+          - stable
     runs-on: ${{ matrix.platform.os }}
     steps:
       - name: Checkout
@@ -36,6 +43,8 @@ jobs:
           target: ${{ matrix.platform.target }}
           args: "--locked --release"
           strip: true
+      - name: Run tests
+        run: cargo test --verbose
       - name: Publish artifacts and release
         uses: houseabsolute/actions-rust-release@v0
         with:
