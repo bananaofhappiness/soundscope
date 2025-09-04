@@ -5,29 +5,40 @@ on:
     tags:
       - "v*.*.*"
 
-permissions:
-  contents: write
-
 jobs:
   release:
-    runs-on: ubuntu-latest
+    name: Release - ${{ matrix.platform.release_for }}
+    strategy:
+      matrix:
+        platform:
+          - os_name: Linux-x86_64
+            os: ubuntu-24.04
+            target: x86_64-unknown-linux-musl
 
+          - os_name: macOS-x86_64
+            os: macOS-latest
+            target: x86_64-apple-darwin
+
+          - os_name: Windows-x86_64
+            os: windows-latest
+
+    runs-on: ${{ matrix.platform.os }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
-        
       - name: Install Alsa
         run: sudo apt-get install -yqq libasound2-dev
-
       - name: Cache cargo
         uses: Swatinem/rust-cache@v2
-
-      - name: Install GoReleaser
-        uses: goreleaser/goreleaser-action@v6
+      - name: Build executable
+        uses: houseabsolute/actions-rust-cross@v0
         with:
-          version: latest
-
-      - name: Run GoReleaser
-        run: goreleaser release --clean
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          target: ${{ matrix.platform.target }}
+          args: "--locked --release"
+          strip: true
+      - name: Publish artifacts and release
+        uses: houseabsolute/actions-rust-release@v0
+        with:
+          executable-name: soundscope
+          target: ${{ matrix.platform.target }}
+        if: matrix.toolchain == 'stable'
