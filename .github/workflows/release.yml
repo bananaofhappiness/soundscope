@@ -25,6 +25,7 @@ jobs:
             name: soundscope-Darwin-aarch64.tar.gz
           - os_name: Windows-x86_64
             os: windows-latest
+            target: x86_64-pc-windows-gnu
             bin: soundscope
             name: soundscope-Windows-x86_64.zip
         toolchain:
