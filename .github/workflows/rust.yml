@@ -8,9 +8,6 @@ on:
 
 env:
   CARGO_TERM_COLOR: always
-  SDL_VIDEODRIVER: "dummy"
-  SDL_AUDIODRIVER: "disk"
-
 
 jobs:
   build:
@@ -18,14 +15,21 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-    - uses: actions/checkout@v4
-    - run: sudo apt-get install -yqq libasound2-dev
+    - name: Checkout
+      uses: actions/checkout@v4
+      
+    - name: Install Alsa
+      run: sudo apt-get install -yqq libasound2-dev
+      
     - name: Build
       run: cargo build --verbose
+      
     - name: Run tests
       run: cargo test --verbose
+      
     - name: Cache cargo
       uses: Swatinem/rust-cache@v2
+      
     - name: Lint
       run: |
         cargo fmt --all -- --check
