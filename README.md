@@ -35,7 +35,7 @@ Grab the latest release for your platform from the [**Releases page**](https://g
 ---
 ## 🎥 Demo Video
 
-Watch the demo on [YouTube]().
+Watch the demo on [YouTube](https://youtu.be/Z5xJqjMiC1c).
 
 ---
 ## 🐛 Known Issues
