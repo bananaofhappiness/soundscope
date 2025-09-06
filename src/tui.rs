@@ -81,6 +81,7 @@ struct App {
     /// Must be wrapped into [`Option`] because audio file does not exist initially.
     /// After choosing a file it is never [`None`] again.
     audio_file: AudioFile,
+    is_playing_audio: bool,
     audio_file_rx: Receiver<AudioFile>,
     /// Sends commands like pause and play to the player.
     player_command_tx: Sender<PlayerCommand>,
@@ -114,6 +115,7 @@ impl App {
     ) -> Self {
         Self {
             audio_file,
+            is_playing_audio: false,
             audio_file_rx,
             player_command_tx,
             playback_position_rx,
@@ -574,12 +576,16 @@ impl App {
                         }
                         // pause/play
                         KeyCode::Char(' ') => {
-                            self.lufs = [-50.; 300];
-                            self.analyzer.reset();
                             if let Err(_err) =
                                 self.player_command_tx.send(PlayerCommand::ChangeState)
                             {
                                 //TODO: log sending error
+                            }
+                            self.is_playing_audio = !self.is_playing_audio;
+                            // do this so lufs update only on play, not pause
+                            if self.is_playing_audio {
+                                self.lufs = [-50.; 300];
+                                self.analyzer.reset();
                             }
                         }
                         // move playhead right and left
@@ -642,6 +648,7 @@ impl App {
         self.waveform.at_zero = true;
         self.waveform.at_end = false;
         self.lufs = [-50.; 300];
+        self.is_playing_audio = false;
 
         if let Err(_err) = self
             .player_command_tx
