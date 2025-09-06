@@ -2,6 +2,12 @@
 name = "soundscope"
 version = "1.0.0"
 edition = "2024"
+description = "A command-line tool for analyzing audio files (FFT, LUFS)"
+repository = "https://github.com/bananaofhappiness/soundscope"
+license = "MIT"
+readme = "README.md"
+keywords = ["audio", "command-line", "cli"]
+
 
 [dependencies]
 color-eyre = "0.6.5"
