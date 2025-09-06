@@ -383,6 +383,13 @@ impl App {
             }
         };
 
+        // it should not display `-inf`
+        let integrated_lufs = if integrated_lufs.is_infinite() {
+            -50.0
+        } else {
+            integrated_lufs
+        };
+
         // text layout
         let paragraph_layout = Layout::default()
             .direction(Direction::Vertical)
@@ -395,8 +402,8 @@ impl App {
 
         // get lufs texts
         let lufs_text = vec![
-            "Short term LUFS:".bold() + format!("{:.2}", self.lufs[299]).into(),
-            "Integrated LUFS:".bold() + format!("{:.2}", integrated_lufs).into(),
+            "Short term LUFS:".bold() + format!("{:06.2}", self.lufs[299]).into(),
+            "Integrated LUFS:".bold() + format!("{:06.2}", integrated_lufs).into(),
         ];
 
         // get true peak text
