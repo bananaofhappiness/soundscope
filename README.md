@@ -13,6 +13,10 @@ Soundscope is a crossplatform CLI tool for analyzing audio files.
 ### Using Cargo
 
 ```
+cargo install soundscope
+```
+or
+```
 cargo install --git https://github.com/bananaofhappiness/soundscope
 ```
 
