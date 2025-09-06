@@ -17,7 +17,6 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v5
       - name: Install Alsa (Linux only)
-        if: matrix.platform.os == 'ubuntu-24.04'
         run: sudo apt-get install -yqq libasound2-dev
       - name: Cache cargo
         uses: Swatinem/rust-cache@v2
@@ -32,7 +31,7 @@ jobs:
       matrix:
         platform:
           - os_name: Linux-x86_64
-            os: ubuntu-24.04
+            os: ubuntu-latest
             target: x86_64-unknown-linux-gnu
             bin: soundscope
             name: soundscope-Linux-x86_64-musl.tar.gz
@@ -53,7 +52,7 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v5
       - name: Install Alsa (Linux only)
-        if: matrix.platform.os == 'ubuntu-24.04'
+        if: matrix.platform.os == 'ubuntu-latest'
         run: sudo apt-get install -yqq libasound2-dev
       - name: Cache cargo
         uses: Swatinem/rust-cache@v2
