@@ -55,3 +55,5 @@ jobs:
           executable-name: soundscope
           target: ${{ matrix.platform.target }}
         if: matrix.toolchain == 'stable'
+      - name: Publish crate to crates.io
+        uses: katyo/publish-crates@v2
