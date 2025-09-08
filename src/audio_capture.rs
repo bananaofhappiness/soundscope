@@ -1,12 +1,10 @@
 //! This module is responsible for capturing audio from the PC and microphone.
 use crate::tui::RBuffer;
-use color_eyre::{Result, eyre::Ok};
 use cpal::{
     BufferSize, Device, Stream, StreamConfig, default_host,
     traits::{DeviceTrait, HostTrait, StreamTrait},
 };
-use ringbuffer::AllocRingBuffer;
-use std::sync::{Arc, Mutex};
+use eyre::Result;
 
 pub struct AudioDevice {
     device: Device,

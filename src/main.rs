@@ -3,8 +3,8 @@ mod audio_capture;
 mod audio_player;
 mod tui;
 use crate::audio_player::{AudioFile, AudioPlayer, PlaybackPosition, PlayerCommand};
-use color_eyre::Result;
 use crossbeam::channel::{bounded, unbounded};
+use eyre::Result;
 use ringbuffer::{AllocRingBuffer, RingBuffer};
 use std::{
     sync::{Arc, Mutex},
@@ -15,7 +15,6 @@ use std::{
 fn main() -> Result<()> {
     #[cfg(target_os = "linux")]
     suppress_alsa_messages();
-    color_eyre::install()?;
     // create a tui sender that sends signals when the file is stopped, selected etc.
     let (player_command_tx, player_command_rx) = bounded::<PlayerCommand>(1);
 

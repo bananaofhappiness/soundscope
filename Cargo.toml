@@ -1,20 +1,19 @@
 [package]
 name = "soundscope"
-version = "1.0.2"
+version = "1.1.0"
 edition = "2024"
-description = "A command-line tool for analyzing audio files (FFT, LUFS)"
+description = "A command-line tool for analyzing audio files and real-time input (FFT, LUFS)"
 repository = "https://github.com/bananaofhappiness/soundscope"
 license = "MIT"
 readme = "README.md"
 keywords = ["audio", "command-line", "cli"]
 
-
 [dependencies]
-color-eyre = "0.6.5"
 cpal = "0.16.0"
 crossbeam = "0.8.4"
 crossterm = "0.29.0"
 ebur128 = "0.1.10"
+eyre = "0.6.12"
 ratatui = "0.29.0"
 ratatui-explorer = "0.2.1"
 ringbuffer = "0.16.0"

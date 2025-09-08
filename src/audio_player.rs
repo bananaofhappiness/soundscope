@@ -1,7 +1,7 @@
 //! This module contains the implementation of the audio player used to play audio files in user's terminal.
 //! It uses `rodio` under the hood.
-use color_eyre::{Result, eyre::eyre};
 use crossbeam::channel::{Receiver, Sender};
+use eyre::{Result, eyre};
 use rodio::Source;
 use std::{path::PathBuf, time::Duration};
 use symphonia::core::{
@@ -194,7 +194,9 @@ impl AudioFile {
             .find(|t| t.codec_params.codec != CODEC_TYPE_NULL)
         {
             Some(track) => track,
-            None => return Err(eyre!("No audio track found with a decodeable codec")),
+            None => {
+                return Err(eyre!("No audio track found with a decodeable codec"));
+            }
         };
 
         // Use the default options for the decoder.

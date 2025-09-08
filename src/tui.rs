@@ -1,8 +1,8 @@
 //! This module contains the implementation of the terminal user interface (TUI) used to display audio analysis results.
 //! It uses `ratatui` under the hood.
-use color_eyre::Result;
-use cpal::{Device, Stream, default_host, traits::StreamTrait as _};
+use cpal::{Stream, traits::StreamTrait as _};
 use crossbeam::channel::{Receiver, Sender};
+use eyre::{Result, eyre};
 use ratatui::{
     DefaultTerminal,
     crossterm::event::{Event, KeyCode, KeyEvent, poll, read},
