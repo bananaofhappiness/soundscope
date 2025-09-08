@@ -2,7 +2,7 @@
 use crate::tui::RBuffer;
 use color_eyre::{Result, eyre::Ok};
 use cpal::{
-    Device, Stream, StreamConfig, default_host,
+    BufferSize, Device, Stream, StreamConfig, default_host,
     traits::{DeviceTrait, HostTrait, StreamTrait},
 };
 use ringbuffer::AllocRingBuffer;
@@ -36,10 +36,16 @@ pub fn build_input_stream(
 ) -> Result<Stream> {
     let dev = audio_device.device();
     let cfg = audio_device.config();
+    let is_mono = cfg.channels == 1;
     let stream = dev.build_input_stream(
         cfg,
         move |data: &[f32], _info| {
             let mut audio_buf = latest_captured_samples.lock().unwrap();
+            if is_mono {
+                audio_buf.extend(data.iter().copied());
+            } else {
+                audio_buf.extend(data.chunks_exact(2).map(|vals| (vals[0] + vals[1]) / 2.0))
+            }
         },
         |err| {
             eprintln!("got stream error: {}", err.to_string());

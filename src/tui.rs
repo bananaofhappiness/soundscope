@@ -611,14 +611,24 @@ impl App {
 
             // use ringbuf to analyze data if the `Mode` is not `Mode::Player`
             if self.settings.mode != Mode::Player {
-                // TODO: use ringbuf to analyze data
-                // println!(
-                //     "{:#?}",
-                //     self.latest_captured_samples.lock().unwrap().to_vec()
-                // );
-                // println!("{}", self.latest_captured_samples.lock().unwrap()[0]);
                 let samples = self.latest_captured_samples.lock().unwrap().to_vec();
-                self.fft_data.mid_fft = self.analyzer.get_fft(&samples[0..16384], 44100);
+                self.fft_data.mid_fft = self.analyzer.get_fft(&samples[645116..15 * 44100], 44100);
+                self.waveform.chart = Analyzer::get_waveform(&samples, 44100);
+                self.waveform.at_end = false;
+                self.waveform.at_zero = false;
+                for i in 0..self.lufs.len() - 1 {
+                    self.lufs[i] = self.lufs[i + 1];
+                }
+                if let Err(err) = self.analyzer.add_samples(&samples[399356..15 * 44100]) {
+                    self.handle_error(format!("Could not get samples for LUFS analyzer: {}", err));
+                };
+                self.lufs[299] = match self.analyzer.get_shortterm_lufs() {
+                    Ok(lufs) => lufs,
+                    Err(err) => {
+                        self.handle_error(format!("Error getting short-term LUFS: {}", err));
+                        0.0
+                    }
+                };
             }
             // event reader
             if poll(Duration::from_micros(1))? {
@@ -716,8 +726,11 @@ impl App {
                 let index = (c as usize) - ('1' as usize);
                 let devices = list_input_devs();
                 if index > devices.len() - 1 {
-                    self.handle_error(format!("Invalid device index: {}", index));
+                    self.handle_error(format!("Invalid device index: {}", index + 1));
                     return;
+                }
+                if self.audio_capture_stream.is_some() {
+                    self.audio_capture_stream = None
                 }
                 let device = devices[index].1.clone();
                 let audio_device = AudioDevice::new(Some(device));

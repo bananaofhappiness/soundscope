@@ -152,24 +152,7 @@ impl AudioFile {
         let title = path.file_name().unwrap().to_string_lossy().to_string();
         let (samples, sample_rate, channels) = Self::decode_file(path)?;
         // TODO: other channels, not only stereo sound.
-        let left_samples = samples.iter().step_by(2).cloned().collect::<Vec<f32>>();
-        let right_samples = samples
-            .iter()
-            .skip(1)
-            .step_by(2)
-            .cloned()
-            .collect::<Vec<f32>>();
-        let mid_samples = left_samples
-            .iter()
-            .zip(right_samples.iter())
-            .map(|(l, r)| (l + r) / 2.)
-            .collect::<Vec<f32>>();
-        let side_samples = left_samples
-            .iter()
-            .zip(right_samples.iter())
-            .map(|(l, r)| (l - r) / 2.)
-            .collect::<Vec<f32>>();
-
+        let (mid_samples, side_samples) = get_mid_and_side_samples(&samples);
         let duration = mid_samples.len() as f64 / sample_rate as f64 * 1000.;
         Ok(AudioFile {
             title,
@@ -388,4 +371,25 @@ impl AudioPlayer {
         }
         // Ok(())
     }
+}
+
+pub fn get_mid_and_side_samples(samples: &[f32]) -> (Vec<f32>, Vec<f32>) {
+    let left_samples = samples.iter().step_by(2).cloned().collect::<Vec<f32>>();
+    let right_samples = samples
+        .iter()
+        .skip(1)
+        .step_by(2)
+        .cloned()
+        .collect::<Vec<f32>>();
+    let mid_samples = left_samples
+        .iter()
+        .zip(right_samples.iter())
+        .map(|(l, r)| (l + r) / 2.)
+        .collect::<Vec<f32>>();
+    let side_samples = left_samples
+        .iter()
+        .zip(right_samples.iter())
+        .map(|(l, r)| (l - r) / 2.)
+        .collect::<Vec<f32>>();
+    (mid_samples, side_samples)
 }
