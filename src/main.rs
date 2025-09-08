@@ -13,6 +13,7 @@ use std::{
 };
 
 fn main() -> Result<()> {
+    #[cfg(target_os = "linux")]
     suppress_alsa_messages();
     color_eyre::install()?;
     // create a tui sender that sends signals when the file is stopped, selected etc.
