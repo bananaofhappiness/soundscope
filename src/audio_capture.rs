@@ -1,8 +1,8 @@
 //! This module is responsible for capturing audio from the PC and microphone.
 use crate::tui::RBuffer;
 use cpal::{
-    BufferSize, Device, Stream, StreamConfig, default_host,
-    traits::{DeviceTrait, HostTrait, StreamTrait},
+    Device, Stream, StreamConfig, default_host,
+    traits::{DeviceTrait, HostTrait},
 };
 use eyre::Result;
 
@@ -34,16 +34,11 @@ pub fn build_input_stream(
 ) -> Result<Stream> {
     let dev = audio_device.device();
     let cfg = audio_device.config();
-    let is_mono = cfg.channels == 1;
     let stream = dev.build_input_stream(
         cfg,
         move |data: &[f32], _info| {
             let mut audio_buf = latest_captured_samples.lock().unwrap();
-            if is_mono {
-                audio_buf.extend(data.iter().copied());
-            } else {
-                audio_buf.extend(data.chunks_exact(2).map(|vals| (vals[0] + vals[1]) / 2.0))
-            }
+            audio_buf.extend(data.iter().copied());
         },
         |err| {
             eprintln!("got stream error: {}", err.to_string());

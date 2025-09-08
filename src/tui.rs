@@ -16,14 +16,15 @@ use ratatui_explorer::{FileExplorer, Theme};
 use ringbuffer::{AllocRingBuffer, RingBuffer};
 use rodio::Source;
 use std::{
+    fmt::Display,
     sync::{Arc, Mutex},
     time::{Duration, Instant},
 };
 
 use crate::{
     analyzer::Analyzer,
-    audio_capture::{self, AudioDevice, build_input_stream, list_input_devs},
-    audio_player::{AudioFile, PlayerCommand},
+    audio_capture::{self, AudioDevice, list_input_devs},
+    audio_player::{self, AudioFile, PlayerCommand},
 };
 
 /// Style: Black background, yellow foreground
@@ -46,6 +47,7 @@ struct UISettings {
     show_lufs: bool,
     error_text: String,
     error_timer: Option<Instant>,
+    device_name: String,
 }
 
 impl Default for UISettings {
@@ -59,6 +61,7 @@ impl Default for UISettings {
             show_lufs: false,
             error_text: String::new(),
             error_timer: None,
+            device_name: String::new(),
         }
     }
 }
@@ -68,7 +71,17 @@ enum Mode {
     #[default]
     Player,
     Microphone,
-    System,
+    _System,
+}
+
+impl Display for Mode {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Mode::Player => write!(f, "Player"),
+            Mode::Microphone => write!(f, "Microphone"),
+            Mode::_System => write!(f, "System"),
+        }
+    }
 }
 
 #[derive(Default)]
@@ -263,6 +276,9 @@ impl App {
                 ),
             ];
         }
+        if self.settings.mode != Mode::Player {
+            playhead_chart = [(-1., -1.), (-1., -1.)];
+        }
 
         // get current playback time in seconds
         let playhead_position_in_milis = Duration::from_millis(
@@ -294,6 +310,24 @@ impl App {
         ];
 
         // render chart
+        let upper_right_title = if self.settings.mode == Mode::Player {
+            Line::from(vec![
+                "C".bold().style(TEXT_HIGHLIGHT),
+                "hange Mode: ".into(),
+                format!("{}", self.settings.mode).into(),
+            ])
+            .right_aligned()
+        } else {
+            Line::from(vec![
+                "D".bold().style(TEXT_HIGHLIGHT),
+                "evice: ".into(),
+                format!("{} ", self.ui_settings.device_name).into(),
+                "C".bold().style(TEXT_HIGHLIGHT),
+                "hange Mode: ".into(),
+                format!("{}", self.settings.mode).into(),
+            ])
+            .right_aligned()
+        };
         let chart = Chart::new(datasets)
             .block(
                 Block::bordered()
@@ -306,7 +340,8 @@ impl App {
                     .title_bottom(
                         Line::from(format!("{:0>2}:{:0>5.2}", total_min, total_sec))
                             .right_aligned(),
-                    ),
+                    )
+                    .title(upper_right_title),
             )
             .style(STYLE)
             .x_axis(Axis::default().bounds([0., 15. * 1000.]).style(STYLE))
@@ -514,7 +549,7 @@ impl App {
     }
 
     fn render_devices_list(&self, f: &mut Frame) {
-        let area = Self::get_explorer_popup_area(f.area(), 50, 70);
+        let area = Self::get_explorer_popup_area(f.area(), 20, 30);
         f.render_widget(Clear, area);
         let devs = list_input_devs();
         let list_items: Vec<ListItem> = devs
@@ -541,95 +576,14 @@ impl App {
             // receive playback position
             // if the mode differs from the player mode, then it is never executed
             if let Ok(pos) = self.playback_position_rx.try_recv() {
-                // if using mid side we must divide the position by 2
-                let pos = pos / self.audio_file.channels() as usize;
-                let sr = self.audio_file.sample_rate() as usize;
-                // get fft
-                let fft_left_bound = pos.saturating_sub(16384);
-                if fft_left_bound != 0 {
-                    let audio_file = &self.audio_file;
-                    let mid_samples = &audio_file.mid_samples()[fft_left_bound..pos];
-                    let side_samples = &audio_file.side_samples()[fft_left_bound..pos];
-
-                    self.fft_data.mid_fft = self.analyzer.get_fft(mid_samples, sr);
-                    self.fft_data.side_fft = self.analyzer.get_fft(side_samples, sr);
-                }
-
-                //get waveform
-                let mid_samples_len = self.audio_file.mid_samples().len();
-                self.waveform.playhead = pos;
-                // if at zero load first 15 seconds to show
-                if self.waveform.at_zero {
-                    let waveform_samples = &self.audio_file.mid_samples()[0..15 * sr];
-                    self.waveform.chart = Analyzer::get_waveform(waveform_samples, sr);
-                }
-                let waveform_left_bound = pos.saturating_sub((7.5 * sr as f64) as usize);
-                let waveform_right_bound =
-                    usize::min(pos + (7.5 * sr as f64) as usize, mid_samples_len);
-
-                // if at end load last 15 seconds and dont scroll
-                if waveform_right_bound == mid_samples_len {
-                    self.waveform.at_end = true;
-                    let waveform_samples =
-                        &self.audio_file.mid_samples()[mid_samples_len - 15 * sr..mid_samples_len];
-                    self.waveform.chart = Analyzer::get_waveform(waveform_samples, sr);
-                // if not at the beginning load 15 seconds and scroll
-                } else if waveform_left_bound != 0 {
-                    self.waveform.at_zero = false;
-                    let waveform_samples =
-                        &self.audio_file.mid_samples()[waveform_left_bound..waveform_right_bound];
-                    self.waveform.chart = Analyzer::get_waveform(waveform_samples, sr);
-                } else {
-                    self.waveform.at_zero = true;
-                }
-
-                // get lufs lufs uses all channels
-                let pos = pos * self.audio_file.channels() as usize;
-                let lufs_left_bound = pos.saturating_sub(16384);
-                if lufs_left_bound != 0 {
-                    for i in 0..self.lufs.len() - 1 {
-                        self.lufs[i] = self.lufs[i + 1];
-                    }
-                    if let Err(err) = self
-                        .analyzer
-                        .add_samples(&self.audio_file.samples()[lufs_left_bound..pos])
-                    {
-                        self.handle_error(format!(
-                            "Could not get samples for LUFS analyzer: {}",
-                            err
-                        ));
-                    };
-                    self.lufs[299] = match self.analyzer.get_shortterm_lufs() {
-                        Ok(lufs) => lufs,
-                        Err(err) => {
-                            self.handle_error(format!("Error getting short-term LUFS: {}", err));
-                            0.0
-                        }
-                    };
-                }
+                self.analyze_audio_file_samples(pos);
             }
 
             // use ringbuf to analyze data if the `Mode` is not `Mode::Player`
-            if self.settings.mode != Mode::Player {
-                let samples = self.latest_captured_samples.lock().unwrap().to_vec();
-                self.fft_data.mid_fft = self.analyzer.get_fft(&samples[645116..15 * 44100], 44100);
-                self.waveform.chart = Analyzer::get_waveform(&samples, 44100);
-                self.waveform.at_end = false;
-                self.waveform.at_zero = false;
-                for i in 0..self.lufs.len() - 1 {
-                    self.lufs[i] = self.lufs[i + 1];
-                }
-                if let Err(err) = self.analyzer.add_samples(&samples[399356..15 * 44100]) {
-                    self.handle_error(format!("Could not get samples for LUFS analyzer: {}", err));
-                };
-                self.lufs[299] = match self.analyzer.get_shortterm_lufs() {
-                    Ok(lufs) => lufs,
-                    Err(err) => {
-                        self.handle_error(format!("Error getting short-term LUFS: {}", err));
-                        0.0
-                    }
-                };
+            if self.settings.mode == Mode::Microphone {
+                self.analyze_microphone_input();
             }
+
             // event reader
             if poll(Duration::from_micros(1))? {
                 let event = match read() {
@@ -646,7 +600,9 @@ impl App {
                         self.player_command_tx.send(PlayerCommand::Quit)?;
                         return Ok(());
                     }
-                    self.handle_input(key);
+                    if let Err(err) = self.handle_input(key) {
+                        self.handle_error(format!("{}", err));
+                    }
                 }
 
                 if self.ui_settings.show_explorer {
@@ -657,18 +613,113 @@ impl App {
         }
     }
 
-    fn handle_input(&mut self, key: KeyEvent) {
+    fn analyze_microphone_input(&mut self) {
+        let samples = self.latest_captured_samples.lock().unwrap().to_vec();
+        let (mid_samples, side_samples) = audio_player::get_mid_and_side_samples(&samples);
+        let lb = 15 * 44100 - 2usize.pow(14);
+        self.fft_data.mid_fft = self.analyzer.get_fft(&mid_samples[lb..15 * 44100], 44100);
+        self.fft_data.side_fft = self.analyzer.get_fft(&side_samples[lb..15 * 44100], 44100);
+
+        self.waveform.chart = Analyzer::get_waveform(&mid_samples, 44100);
+        self.waveform.at_end = false;
+        self.waveform.at_zero = false;
+
+        for i in 0..self.lufs.len() - 1 {
+            self.lufs[i] = self.lufs[i + 1];
+        }
+
+        let lb = 30 * 44100 - 2usize.pow(14);
+        if let Err(err) = self.analyzer.add_samples(&samples[lb..30 * 44100]) {
+            self.handle_error(format!("Could not get samples for LUFS analyzer: {}", err));
+        };
+        self.lufs[299] = match self.analyzer.get_shortterm_lufs() {
+            Ok(lufs) => lufs,
+            Err(err) => {
+                self.handle_error(format!("Error getting short-term LUFS: {}", err));
+                0.0
+            }
+        };
+    }
+
+    fn analyze_audio_file_samples(&mut self, pos: usize) {
+        // if using mid side we must divide the position by 2
+        let pos = pos / self.audio_file.channels() as usize;
+        let sr = self.audio_file.sample_rate() as usize;
+        // get fft
+        let fft_left_bound = pos.saturating_sub(16384);
+        if fft_left_bound != 0 {
+            let audio_file = &self.audio_file;
+            let mid_samples = &audio_file.mid_samples()[fft_left_bound..pos];
+            let side_samples = &audio_file.side_samples()[fft_left_bound..pos];
+
+            self.fft_data.mid_fft = self.analyzer.get_fft(mid_samples, sr);
+            self.fft_data.side_fft = self.analyzer.get_fft(side_samples, sr);
+        }
+
+        //get waveform
+        let mid_samples_len = self.audio_file.mid_samples().len();
+        self.waveform.playhead = pos;
+        // if at zero load first 15 seconds to show
+        if self.waveform.at_zero {
+            let waveform_samples = &self.audio_file.mid_samples()[0..15 * sr];
+            self.waveform.chart = Analyzer::get_waveform(waveform_samples, sr);
+        }
+        let waveform_left_bound = pos.saturating_sub((7.5 * sr as f64) as usize);
+        let waveform_right_bound = usize::min(pos + (7.5 * sr as f64) as usize, mid_samples_len);
+
+        // if at end load last 15 seconds and dont scroll
+        if waveform_right_bound == mid_samples_len {
+            self.waveform.at_end = true;
+            let waveform_samples =
+                &self.audio_file.mid_samples()[mid_samples_len - 15 * sr..mid_samples_len];
+            self.waveform.chart = Analyzer::get_waveform(waveform_samples, sr);
+        // if not at the beginning load 15 seconds and scroll
+        } else if waveform_left_bound != 0 {
+            self.waveform.at_zero = false;
+            let waveform_samples =
+                &self.audio_file.mid_samples()[waveform_left_bound..waveform_right_bound];
+            self.waveform.chart = Analyzer::get_waveform(waveform_samples, sr);
+        } else {
+            self.waveform.at_zero = true;
+        }
+
+        // get lufs lufs uses all channels
+        let pos = pos * self.audio_file.channels() as usize;
+        let lufs_left_bound = pos.saturating_sub(16384);
+        if lufs_left_bound != 0 {
+            for i in 0..self.lufs.len() - 1 {
+                self.lufs[i] = self.lufs[i + 1];
+            }
+            if let Err(err) = self
+                .analyzer
+                .add_samples(&self.audio_file.samples()[lufs_left_bound..pos])
+            {
+                self.handle_error(format!("Could not get samples for LUFS analyzer: {}", err));
+            };
+            self.lufs[299] = match self.analyzer.get_shortterm_lufs() {
+                Ok(lufs) => lufs,
+                Err(err) => {
+                    self.handle_error(format!("Error getting short-term LUFS: {}", err));
+                    0.0
+                }
+            };
+        }
+    }
+
+    fn handle_input(&mut self, key: KeyEvent) -> Result<()> {
         match key.code {
             // show explorer
-            KeyCode::Char('e') => self.ui_settings.show_explorer = !self.ui_settings.show_explorer,
+            KeyCode::Char('e') if self.settings.mode == Mode::Player => {
+                self.ui_settings.show_explorer = !self.ui_settings.show_explorer
+            }
             // select file
-            KeyCode::Enter => self.select_file(),
+            KeyCode::Enter if self.settings.mode == Mode::Player => self.select_file(),
             // show side fft
             KeyCode::Char('s') => self.ui_settings.show_side_fft = !self.ui_settings.show_side_fft,
             // show mid fft
             KeyCode::Char('m') => self.ui_settings.show_mid_fft = !self.ui_settings.show_mid_fft,
             // pause/play
-            KeyCode::Char(' ') => {
+            KeyCode::Char(' ') if self.settings.mode == Mode::Player => {
                 if let Err(_err) = self.player_command_tx.send(PlayerCommand::ChangeState) {
                     //TODO: log sending error
                 }
@@ -680,14 +731,14 @@ impl App {
                 }
             }
             // move playhead right and left
-            KeyCode::Right => {
+            KeyCode::Right if self.settings.mode == Mode::Player => {
                 self.lufs = [-50.; 300];
                 self.analyzer.reset();
                 if let Err(_err) = self.player_command_tx.send(PlayerCommand::MoveRight) {
                     //TODO: log sending error
                 }
             }
-            KeyCode::Left => {
+            KeyCode::Left if self.settings.mode == Mode::Player => {
                 self.lufs = [-50.; 300];
                 self.analyzer.reset();
                 if let Err(_err) = self.player_command_tx.send(PlayerCommand::MoveLeft) {
@@ -695,6 +746,9 @@ impl App {
                 }
             }
             // change charts shown
+            // Probably enum will be more logical to use but this works fine
+            // and i will not change this
+            // as long as there are few charts
             KeyCode::Char('l') => self.change_chart('l'),
             KeyCode::Char('f') => self.change_chart('f'),
             // this sends a test error
@@ -708,13 +762,14 @@ impl App {
                 }
             }
             // show devices
-            KeyCode::Char('d') => {
+            KeyCode::Char('d') if self.settings.mode == Mode::Microphone => {
                 self.ui_settings.show_devices_list = !self.ui_settings.show_devices_list
             }
             // change mode. this will be replaced by normal settings selection tab
-            // TODO normal settings
-            KeyCode::Char('x') => {
+            // TODO normal settings popup window with a list of options
+            KeyCode::Char('c') => {
                 self.settings.mode = if self.settings.mode == Mode::Microphone {
+                    self.reset_charts();
                     Mode::Player
                 } else {
                     Mode::Microphone
@@ -726,13 +781,14 @@ impl App {
                 let index = (c as usize) - ('1' as usize);
                 let devices = list_input_devs();
                 if index > devices.len() - 1 {
-                    self.handle_error(format!("Invalid device index: {}", index + 1));
-                    return;
+                    return Err(eyre!("Invalid device index: {}", index + 1));
                 }
                 if self.audio_capture_stream.is_some() {
+                    self.audio_capture_stream.as_ref().unwrap().pause().unwrap();
                     self.audio_capture_stream = None
                 }
                 let device = devices[index].1.clone();
+                self.ui_settings.device_name = devices[index].0.clone();
                 let audio_device = AudioDevice::new(Some(device));
                 let stream = match audio_capture::build_input_stream(
                     self.latest_captured_samples.clone(),
@@ -740,19 +796,16 @@ impl App {
                 ) {
                     Ok(stream) => stream,
                     Err(err) => {
-                        self.handle_error(format!("Failed to run audio capture: {}", err));
-                        return;
+                        return Err(eyre!("Failed to create audio capture stream: {}", err));
                     }
                 };
-                // std::thread::spawn(move || {
-                //     stream.play();
-                // });
                 self.audio_capture_stream = Some(stream);
-                self.audio_capture_stream.as_ref().unwrap().play();
+                self.audio_capture_stream.as_ref().unwrap().play()?;
                 self.ui_settings.show_devices_list = false;
             }
             _ => (),
-        };
+        }
+        Ok(())
     }
 
     fn handle_error(&mut self, message: String) {
@@ -767,14 +820,7 @@ impl App {
             return;
         }
         // reset everything
-        self.ui_settings.show_explorer = false;
-        self.fft_data.mid_fft.clear();
-        self.fft_data.side_fft.clear();
-        self.waveform.chart.clear();
-        self.waveform.at_zero = true;
-        self.waveform.at_end = false;
-        self.lufs = [-50.; 300];
-        self.is_playing_audio = false;
+        self.reset_charts();
 
         if let Err(_err) = self
             .player_command_tx
@@ -847,6 +893,17 @@ impl App {
                 .wrap(Wrap { trim: true }),
             error_popup_area,
         );
+    }
+
+    fn reset_charts(&mut self) {
+        self.ui_settings.show_explorer = false;
+        self.fft_data.mid_fft.clear();
+        self.fft_data.side_fft.clear();
+        self.waveform.chart.clear();
+        self.waveform.at_zero = true;
+        self.waveform.at_end = false;
+        self.lufs = [-50.; 300];
+        self.is_playing_audio = false;
     }
 }
 

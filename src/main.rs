@@ -9,7 +9,6 @@ use ringbuffer::{AllocRingBuffer, RingBuffer};
 use std::{
     sync::{Arc, Mutex},
     thread,
-    time::Duration,
 };
 
 fn main() -> Result<()> {
@@ -34,7 +33,7 @@ fn main() -> Result<()> {
     let audio_file = AudioFile::new(playback_position_tx);
 
     // let mut buf = AllocRingBuffer::new((44100usize * 5).next_power_of_two());
-    let mut buf = AllocRingBuffer::new(44100usize * 15);
+    let mut buf = AllocRingBuffer::new(44100usize * 30);
     buf.fill(0.0);
     let latest_captured_samples = Arc::new(Mutex::new(buf));
 
