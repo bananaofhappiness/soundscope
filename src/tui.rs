@@ -1,28 +1,40 @@
+//! This module contains the implementation of the terminal user interface (TUI) used to display audio analysis results.
+//! It uses `ratatui` under the hood.
 use color_eyre::Result;
+use cpal::{Device, Stream, default_host, traits::StreamTrait as _};
 use crossbeam::channel::{Receiver, Sender};
 use ratatui::{
     DefaultTerminal,
-    crossterm::event::{Event, KeyCode, poll, read},
+    crossterm::event::{Event, KeyCode, KeyEvent, poll, read},
     layout::Flex,
     prelude::*,
     style::{Color, Modifier, Style, Stylize},
     text::{Line, Span},
-    widgets::{Axis, Block, Chart, Clear, Dataset, GraphType, Paragraph, Wrap},
+    widgets::{Axis, Block, Chart, Clear, Dataset, GraphType, List, ListItem, Paragraph, Wrap},
 };
 use ratatui_explorer::{FileExplorer, Theme};
+use ringbuffer::{AllocRingBuffer, RingBuffer};
 use rodio::Source;
-use std::time::{Duration, Instant};
+use std::{
+    sync::{Arc, Mutex},
+    time::{Duration, Instant},
+};
 
 use crate::{
     analyzer::Analyzer,
+    audio_capture::{self, AudioDevice, build_input_stream, list_input_devs},
     audio_player::{AudioFile, PlayerCommand},
 };
 
+/// Style: Black background, yellow foreground
 const STYLE: Style = Style::new().bg(Color::Black).fg(Color::Yellow);
+/// Text highlight style: Black background, light red foreground, bold
 const TEXT_HIGHLIGHT: Style = Style::new()
     .bg(Color::Black)
     .fg(Color::LightRed)
     .add_modifier(Modifier::BOLD);
+
+pub type RBuffer = Arc<Mutex<AllocRingBuffer<f32>>>;
 
 /// Settings like showing/hiding UI elements.
 struct UISettings {
@@ -30,6 +42,7 @@ struct UISettings {
     show_fft_chart: bool,
     show_mid_fft: bool,
     show_side_fft: bool,
+    show_devices_list: bool,
     show_lufs: bool,
     error_text: String,
     error_timer: Option<Instant>,
@@ -42,11 +55,25 @@ impl Default for UISettings {
             show_fft_chart: true,
             show_mid_fft: true,
             show_side_fft: false,
+            show_devices_list: false,
             show_lufs: false,
             error_text: String::new(),
             error_timer: None,
         }
     }
+}
+
+#[derive(Default, PartialEq)]
+enum Mode {
+    #[default]
+    Player,
+    Microphone,
+    System,
+}
+
+#[derive(Default)]
+struct Settings {
+    mode: Mode,
 }
 
 /// FFT data for the UI.
@@ -83,9 +110,14 @@ struct App {
     audio_file: AudioFile,
     is_playing_audio: bool,
     audio_file_rx: Receiver<AudioFile>,
+    /// RingBuffer used to store the latest captured samples when the `Mode` is not `Mode::Player`.
+    latest_captured_samples: RBuffer,
+    /// The stream that captures the audio through input device
+    audio_capture_stream: Option<Stream>,
     /// Sends commands like pause and play to the player.
     player_command_tx: Sender<PlayerCommand>,
-    /// Gets playback position for an analyzer to know what samples to analyze.
+    /// Gets playback position of an audio file when the mode is player
+    /// for an analyzer to know what samples to analyze.
     playback_position_rx: Receiver<usize>,
     /// Gets errors to display them afterwards.
     error_rx: Receiver<String>,
@@ -99,6 +131,7 @@ struct App {
     /// LUFS chart.
     lufs: [f64; 300],
 
+    settings: Settings,
     //UI
     explorer: FileExplorer,
     ui_settings: UISettings,
@@ -112,11 +145,14 @@ impl App {
         playback_position_rx: Receiver<usize>,
         error_rx: Receiver<String>,
         explorer: FileExplorer,
+        latest_captured_samples: RBuffer,
     ) -> Self {
         Self {
             audio_file,
             is_playing_audio: false,
             audio_file_rx,
+            latest_captured_samples,
+            audio_capture_stream: None,
             player_command_tx,
             playback_position_rx,
             error_rx,
@@ -124,6 +160,7 @@ impl App {
             fft_data: FFTData::default(),
             waveform: WaveForm::default(),
             lufs: [-50.; 300],
+            settings: Settings::default(),
             explorer,
             ui_settings: UISettings::default(),
         }
@@ -162,6 +199,9 @@ impl App {
             let area = Self::get_explorer_popup_area(area, 50, 70);
             f.render_widget(Clear, area);
             f.render_widget(&self.explorer.widget(), area);
+        }
+        if self.ui_settings.show_devices_list {
+            self.render_devices_list(f);
         }
     }
 
@@ -473,6 +513,23 @@ impl App {
         f.render_widget(chart, layout[1]);
     }
 
+    fn render_devices_list(&self, f: &mut Frame) {
+        let area = Self::get_explorer_popup_area(f.area(), 50, 70);
+        f.render_widget(Clear, area);
+        let devs = list_input_devs();
+        let list_items: Vec<ListItem> = devs
+            .iter()
+            .enumerate()
+            .map(|(i, (name, _dev))| ListItem::from(format!("[{}] {}", i + 1, name)))
+            .collect();
+        let list = List::new(list_items)
+            .block(Block::bordered().title("Devices"))
+            .style(STYLE)
+            .highlight_style(TEXT_HIGHLIGHT);
+
+        f.render_widget(list, area);
+    }
+
     /// The main loop
     fn run(mut self, mut terminal: DefaultTerminal) -> Result<()> {
         loop {
@@ -482,6 +539,7 @@ impl App {
             }
 
             // receive playback position
+            // if the mode differs from the player mode, then it is never executed
             if let Ok(pos) = self.playback_position_rx.try_recv() {
                 // if using mid side we must divide the position by 2
                 let pos = pos / self.audio_file.channels() as usize;
@@ -551,6 +609,17 @@ impl App {
                 }
             }
 
+            // use ringbuf to analyze data if the `Mode` is not `Mode::Player`
+            if self.settings.mode != Mode::Player {
+                // TODO: use ringbuf to analyze data
+                // println!(
+                //     "{:#?}",
+                //     self.latest_captured_samples.lock().unwrap().to_vec()
+                // );
+                // println!("{}", self.latest_captured_samples.lock().unwrap()[0]);
+                let samples = self.latest_captured_samples.lock().unwrap().to_vec();
+                self.fft_data.mid_fft = self.analyzer.get_fft(&samples[0..16384], 44100);
+            }
             // event reader
             if poll(Duration::from_micros(1))? {
                 let event = match read() {
@@ -560,80 +629,117 @@ impl App {
                         continue;
                     }
                 };
+
                 if let Event::Key(key) = event {
-                    match key.code {
-                        // quit
-                        KeyCode::Char('q') => {
-                            self.player_command_tx.send(PlayerCommand::Quit)?;
-                            return Ok(());
-                        }
-                        // show explorer
-                        KeyCode::Char('e') => {
-                            self.ui_settings.show_explorer = !self.ui_settings.show_explorer
-                        }
-                        // select file
-                        KeyCode::Enter => self.select_file(),
-                        // show side fft
-                        KeyCode::Char('s') => {
-                            self.ui_settings.show_side_fft = !self.ui_settings.show_side_fft
-                        }
-                        // show mid fft
-                        KeyCode::Char('m') => {
-                            self.ui_settings.show_mid_fft = !self.ui_settings.show_mid_fft
-                        }
-                        // pause/play
-                        KeyCode::Char(' ') => {
-                            if let Err(_err) =
-                                self.player_command_tx.send(PlayerCommand::ChangeState)
-                            {
-                                //TODO: log sending error
-                            }
-                            self.is_playing_audio = !self.is_playing_audio;
-                            // do this so lufs update only on play, not pause
-                            if self.is_playing_audio {
-                                self.lufs = [-50.; 300];
-                                self.analyzer.reset();
-                            }
-                        }
-                        // move playhead right and left
-                        KeyCode::Right => {
-                            self.lufs = [-50.; 300];
-                            self.analyzer.reset();
-                            if let Err(_err) = self.player_command_tx.send(PlayerCommand::MoveRight)
-                            {
-                                //TODO: log sending error
-                            }
-                        }
-                        KeyCode::Left => {
-                            self.lufs = [-50.; 300];
-                            self.analyzer.reset();
-                            if let Err(_err) = self.player_command_tx.send(PlayerCommand::MoveLeft)
-                            {
-                                //TODO: log sending error
-                            }
-                        }
-                        // change charts shown
-                        KeyCode::Char('l') => self.change_chart('l'),
-                        KeyCode::Char('f') => self.change_chart('f'),
-                        // this sends a test error
-                        // only in debug mode
-                        KeyCode::Char('y') => {
-                            #[cfg(debug_assertions)]
-                            {
-                                self.player_command_tx
-                                    .send(PlayerCommand::ShowTestError)
-                                    .unwrap()
-                            }
-                        }
-                        _ => (),
+                    // quit
+                    if key.code == KeyCode::Char('q') {
+                        self.player_command_tx.send(PlayerCommand::Quit)?;
+                        return Ok(());
                     }
+                    self.handle_input(key);
                 }
+
                 if self.ui_settings.show_explorer {
                     self.explorer.handle(&event)?;
                 }
             }
             terminal.draw(|f| self.draw(f))?;
         }
+    }
+
+    fn handle_input(&mut self, key: KeyEvent) {
+        match key.code {
+            // show explorer
+            KeyCode::Char('e') => self.ui_settings.show_explorer = !self.ui_settings.show_explorer,
+            // select file
+            KeyCode::Enter => self.select_file(),
+            // show side fft
+            KeyCode::Char('s') => self.ui_settings.show_side_fft = !self.ui_settings.show_side_fft,
+            // show mid fft
+            KeyCode::Char('m') => self.ui_settings.show_mid_fft = !self.ui_settings.show_mid_fft,
+            // pause/play
+            KeyCode::Char(' ') => {
+                if let Err(_err) = self.player_command_tx.send(PlayerCommand::ChangeState) {
+                    //TODO: log sending error
+                }
+                self.is_playing_audio = !self.is_playing_audio;
+                // do this so lufs update only on play, not pause
+                if self.is_playing_audio {
+                    self.lufs = [-50.; 300];
+                    self.analyzer.reset();
+                }
+            }
+            // move playhead right and left
+            KeyCode::Right => {
+                self.lufs = [-50.; 300];
+                self.analyzer.reset();
+                if let Err(_err) = self.player_command_tx.send(PlayerCommand::MoveRight) {
+                    //TODO: log sending error
+                }
+            }
+            KeyCode::Left => {
+                self.lufs = [-50.; 300];
+                self.analyzer.reset();
+                if let Err(_err) = self.player_command_tx.send(PlayerCommand::MoveLeft) {
+                    //TODO: log sending error
+                }
+            }
+            // change charts shown
+            KeyCode::Char('l') => self.change_chart('l'),
+            KeyCode::Char('f') => self.change_chart('f'),
+            // this sends a test error
+            // only in debug mode
+            KeyCode::Char('y') => {
+                #[cfg(debug_assertions)]
+                {
+                    self.player_command_tx
+                        .send(PlayerCommand::ShowTestError)
+                        .unwrap()
+                }
+            }
+            // show devices
+            KeyCode::Char('d') => {
+                self.ui_settings.show_devices_list = !self.ui_settings.show_devices_list
+            }
+            // change mode. this will be replaced by normal settings selection tab
+            // TODO normal settings
+            KeyCode::Char('x') => {
+                self.settings.mode = if self.settings.mode == Mode::Microphone {
+                    Mode::Player
+                } else {
+                    Mode::Microphone
+                };
+            }
+            KeyCode::Char(c)
+                if self.ui_settings.show_devices_list && c.is_ascii_digit() && c != '0' =>
+            {
+                let index = (c as usize) - ('1' as usize);
+                let devices = list_input_devs();
+                if index > devices.len() - 1 {
+                    self.handle_error(format!("Invalid device index: {}", index));
+                    return;
+                }
+                let device = devices[index].1.clone();
+                let audio_device = AudioDevice::new(Some(device));
+                let stream = match audio_capture::build_input_stream(
+                    self.latest_captured_samples.clone(),
+                    audio_device,
+                ) {
+                    Ok(stream) => stream,
+                    Err(err) => {
+                        self.handle_error(format!("Failed to run audio capture: {}", err));
+                        return;
+                    }
+                };
+                // std::thread::spawn(move || {
+                //     stream.play();
+                // });
+                self.audio_capture_stream = Some(stream);
+                self.audio_capture_stream.as_ref().unwrap().play();
+                self.ui_settings.show_devices_list = false;
+            }
+            _ => (),
+        };
     }
 
     fn handle_error(&mut self, message: String) {
@@ -738,6 +844,7 @@ pub fn run(
     audio_file_rx: Receiver<AudioFile>,
     playback_position_rx: Receiver<usize>,
     error_rx: Receiver<String>,
+    latest_captured_samples: RBuffer,
 ) -> Result<()> {
     let terminal = ratatui::init();
     let theme = Theme::default()
@@ -755,6 +862,7 @@ pub fn run(
         playback_position_rx,
         error_rx,
         file_explorer,
+        latest_captured_samples,
     )
     .run(terminal);
     ratatui::restore();
@@ -775,6 +883,9 @@ mod tests {
         let audio_file = AudioFile::new(playback_position_tx);
         let theme = Theme::default();
         let explorer = FileExplorer::with_theme(theme).unwrap();
+        let latest_captured_samples = Arc::new(Mutex::new(AllocRingBuffer::new(
+            (44100usize * 5).next_power_of_two(),
+        )));
 
         let app = App::new(
             audio_file,
@@ -783,6 +894,7 @@ mod tests {
             playback_position_rx,
             error_rx,
             explorer,
+            latest_captured_samples,
         );
 
         (app, player_command_tx, player_command_rx)

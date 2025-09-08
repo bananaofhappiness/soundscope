@@ -11,11 +11,13 @@ keywords = ["audio", "command-line", "cli"]
 
 [dependencies]
 color-eyre = "0.6.5"
+cpal = "0.16.0"
 crossbeam = "0.8.4"
 crossterm = "0.29.0"
 ebur128 = "0.1.10"
 ratatui = "0.29.0"
 ratatui-explorer = "0.2.1"
+ringbuffer = "0.16.0"
 rodio = "0.21.1"
 spectrum-analyzer = "1.7.0"
 symphonia = { version = "0.5.4" }

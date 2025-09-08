@@ -1061,6 +1061,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "ringbuffer"
+version = "0.16.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "57b0b88a509053cbfd535726dcaaceee631313cef981266119527a1d110f6d2b"
+
+[[package]]
 name = "rodio"
 version = "0.21.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1181,11 +1187,13 @@ name = "soundscope"
 version = "1.0.2"
 dependencies = [
  "color-eyre",
+ "cpal",
  "crossbeam",
  "crossterm 0.29.0",
  "ebur128",
  "ratatui",
  "ratatui-explorer",
+ "ringbuffer",
  "rodio",
  "spectrum-analyzer",
  "symphonia",

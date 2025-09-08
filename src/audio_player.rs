@@ -1,18 +1,18 @@
-use color_eyre::Result;
-use color_eyre::eyre::eyre;
+//! This module contains the implementation of the audio player used to play audio files in user's terminal.
+//! It uses `rodio` under the hood.
+use color_eyre::{Result, eyre::eyre};
 use crossbeam::channel::{Receiver, Sender};
 use rodio::Source;
-use std::path::PathBuf;
-// use color_eyre::eyre::Error;
-use symphonia::core::audio::{Channels, SampleBuffer};
-// use color_eyre::eyre::Error;
-use std::time::Duration;
-use symphonia::core::codecs::{CODEC_TYPE_NULL, DecoderOptions};
-use symphonia::core::errors::Error;
-use symphonia::core::formats::FormatOptions;
-use symphonia::core::io::MediaSourceStream;
-use symphonia::core::meta::MetadataOptions;
-use symphonia::core::probe::Hint;
+use std::{path::PathBuf, time::Duration};
+use symphonia::core::{
+    audio::{Channels, SampleBuffer},
+    codecs::{CODEC_TYPE_NULL, DecoderOptions},
+    errors::Error,
+    formats::FormatOptions,
+    io::MediaSourceStream,
+    meta::MetadataOptions,
+    probe::Hint,
+};
 
 // Samples of the whole file
 pub type Samples = Vec<f32>;
@@ -35,8 +35,6 @@ pub enum PlayerCommand {
     ShowTestError,
 }
 
-// TODO: introduce streaming
-// stream the first portion of the track while the whole track loading in the background
 /// `AudioFile` represents a loaded audio file with its samples, sample rate, and channels.
 /// It implements [`Source`] and [`Iterator`] for playback.
 #[derive(Clone)]
@@ -71,8 +69,8 @@ impl AudioFile {
         &self.side_samples
     }
 
-    pub fn duration(&self) -> Duration {
-        self.duration
+    pub fn duration(&self) -> &Duration {
+        &self.duration
     }
 }
 

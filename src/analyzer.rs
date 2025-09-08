@@ -1,8 +1,10 @@
+//! This module is responsible for analyzing audio files.
+//! Taking samples it returns the loudness and spectrum.
 use color_eyre::Result;
 use ebur128::{EbuR128, Mode};
-use spectrum_analyzer::scaling::scale_20_times_log10;
-use spectrum_analyzer::windows::hann_window;
-use spectrum_analyzer::{FrequencyLimit, samples_fft_to_spectrum};
+use spectrum_analyzer::{
+    FrequencyLimit, samples_fft_to_spectrum, scaling::scale_20_times_log10, windows::hann_window,
+};
 
 pub struct Analyzer {
     loudness_meter: EbuR128,
