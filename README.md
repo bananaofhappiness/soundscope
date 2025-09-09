@@ -4,6 +4,7 @@ Soundscope is a crossplatform CLI tool for analyzing audio files.
 
 ---
 ## ✨ Features
+- 🎤 Analysis of both **audio files** and **microphone input** in **real-time**.
 - 📊 **FFT Spectrum** — view the frequency distribution.
 - 📉 **Waveform Display** — see the amplitude over time.
 - 🔊 **LUFS Metering and True Peak** — measure loudness precisely.
