@@ -127,6 +127,7 @@ struct App {
     latest_captured_samples: RBuffer,
     /// The stream that captures the audio through input device
     audio_capture_stream: Option<Stream>,
+    device_sample_rate: u32,
     /// Sends commands like pause and play to the player.
     player_command_tx: Sender<PlayerCommand>,
     /// Gets playback position of an audio file when the mode is player
@@ -176,6 +177,7 @@ impl App {
             settings: Settings::default(),
             explorer,
             ui_settings: UISettings::default(),
+            device_sample_rate: 44100,
         }
     }
 
@@ -616,11 +618,12 @@ impl App {
     fn analyze_microphone_input(&mut self) {
         let samples = self.latest_captured_samples.lock().unwrap().to_vec();
         let (mid_samples, side_samples) = audio_player::get_mid_and_side_samples(&samples);
-        let lb = 15 * 44100 - 2usize.pow(14);
-        self.fft_data.mid_fft = self.analyzer.get_fft(&mid_samples[lb..15 * 44100], 44100);
-        self.fft_data.side_fft = self.analyzer.get_fft(&side_samples[lb..15 * 44100], 44100);
+        let sr = self.device_sample_rate as usize;
+        let lb = 15 * sr - 2usize.pow(14);
+        self.fft_data.mid_fft = self.analyzer.get_fft(&mid_samples[lb..15 * sr], sr);
+        self.fft_data.side_fft = self.analyzer.get_fft(&side_samples[lb..15 * sr], sr);
 
-        self.waveform.chart = Analyzer::get_waveform(&mid_samples, 44100);
+        self.waveform.chart = Analyzer::get_waveform(&mid_samples, sr);
         self.waveform.at_end = false;
         self.waveform.at_zero = false;
 
@@ -628,8 +631,8 @@ impl App {
             self.lufs[i] = self.lufs[i + 1];
         }
 
-        let lb = 30 * 44100 - 2usize.pow(14);
-        if let Err(err) = self.analyzer.add_samples(&samples[lb..30 * 44100]) {
+        let lb = 30 * sr - 2usize.pow(14);
+        if let Err(err) = self.analyzer.add_samples(&samples[lb..30 * sr]) {
             self.handle_error(format!("Could not get samples for LUFS analyzer: {}", err));
         };
         self.lufs[299] = match self.analyzer.get_shortterm_lufs() {
@@ -779,32 +782,47 @@ impl App {
                 if self.ui_settings.show_devices_list && c.is_ascii_digit() && c != '0' =>
             {
                 let index = (c as usize) - ('1' as usize);
-                let devices = list_input_devs();
-                if index > devices.len() - 1 {
-                    return Err(eyre!("Invalid device index: {}", index + 1));
+                if let Err(err) = self.select_device(index) {
+                    self.handle_error(format!("Failed to select device: {}", err));
                 }
-                if self.audio_capture_stream.is_some() {
-                    self.audio_capture_stream.as_ref().unwrap().pause().unwrap();
-                    self.audio_capture_stream = None
-                }
-                let device = devices[index].1.clone();
-                self.ui_settings.device_name = devices[index].0.clone();
-                let audio_device = AudioDevice::new(Some(device));
-                let stream = match audio_capture::build_input_stream(
-                    self.latest_captured_samples.clone(),
-                    audio_device,
-                ) {
-                    Ok(stream) => stream,
-                    Err(err) => {
-                        return Err(eyre!("Failed to create audio capture stream: {}", err));
-                    }
-                };
-                self.audio_capture_stream = Some(stream);
-                self.audio_capture_stream.as_ref().unwrap().play()?;
-                self.ui_settings.show_devices_list = false;
             }
             _ => (),
         }
+        Ok(())
+    }
+
+    fn select_device(&mut self, index: usize) -> Result<()> {
+        let devices = list_input_devs();
+        if index > devices.len() - 1 {
+            return Err(eyre!("Invalid device index: {}", index + 1));
+        }
+        if self.audio_capture_stream.is_some() {
+            self.audio_capture_stream.as_ref().unwrap().pause().unwrap();
+            self.audio_capture_stream = None
+        }
+        let device = devices[index].1.clone();
+        let audio_device = AudioDevice::new(Some(device));
+
+        self.ui_settings.device_name = devices[index].0.clone();
+        self.device_sample_rate = audio_device.config().sample_rate.0;
+
+        let mut buf = AllocRingBuffer::new(self.device_sample_rate as usize * 30);
+        buf.fill(0.0);
+        let latest_captured_samples = Arc::new(Mutex::new(buf));
+        self.latest_captured_samples = latest_captured_samples;
+
+        let stream = match audio_capture::build_input_stream(
+            self.latest_captured_samples.clone(),
+            audio_device,
+        ) {
+            Ok(stream) => stream,
+            Err(err) => {
+                return Err(eyre!("Failed to create audio capture stream: {}", err));
+            }
+        };
+        self.audio_capture_stream = Some(stream);
+        self.audio_capture_stream.as_ref().unwrap().play()?;
+        self.ui_settings.show_devices_list = false;
         Ok(())
     }
 
@@ -1047,10 +1065,84 @@ mod tests {
     }
 
     #[test]
-    fn test_analyze_microphone_input() {
+    fn test_analyze_microphone_input_44100() {
         let (mut app, _, _) = create_test_app();
         app.settings.mode = Mode::Microphone;
         let sr = 44100;
+
+        // Fill the buffer with test data
+        {
+            let mut buffer = app.latest_captured_samples.lock().unwrap();
+            buffer.clear();
+            for i in 0..sr * 30 {
+                let sample = (i as f32 * 500.0 * 2.0 * std::f32::consts::PI / sr as f32).sin();
+                buffer.enqueue(sample);
+            }
+        }
+
+        app.analyze_microphone_input();
+
+        assert!(!app.fft_data.mid_fft.is_empty());
+
+        // Check that there's a peak around 500 Hz
+        let freq_bin = 500.0 / (sr as f32 / 2.0) * (app.fft_data.mid_fft.len() as f32);
+        let bin_idx = freq_bin.round() as usize;
+
+        // Check that this bin has non-trivial amplitude
+        if bin_idx < app.fft_data.mid_fft.len() {
+            let amp = app.fft_data.mid_fft[bin_idx].1; // assuming (freq, amp)
+            assert!(
+                amp < -20.0,
+                "Expected strong signal at ~500Hz, got: {}",
+                amp
+            );
+        } else {
+            panic!("Bin index out of range: {}", bin_idx);
+        }
+    }
+
+    #[test]
+    fn test_analyze_microphone_input_48000() {
+        let (mut app, _, _) = create_test_app();
+        app.settings.mode = Mode::Microphone;
+        let sr = 48000;
+
+        // Fill the buffer with test data
+        {
+            let mut buffer = app.latest_captured_samples.lock().unwrap();
+            buffer.clear();
+            for i in 0..sr * 30 {
+                let sample = (i as f32 * 500.0 * 2.0 * std::f32::consts::PI / sr as f32).sin();
+                buffer.enqueue(sample);
+            }
+        }
+
+        app.analyze_microphone_input();
+
+        assert!(!app.fft_data.mid_fft.is_empty());
+
+        // Check that there's a peak around 500 Hz
+        let freq_bin = 500.0 / (sr as f32 / 2.0) * (app.fft_data.mid_fft.len() as f32);
+        let bin_idx = freq_bin.round() as usize;
+
+        // Check that this bin has non-trivial amplitude
+        if bin_idx < app.fft_data.mid_fft.len() {
+            let amp = app.fft_data.mid_fft[bin_idx].1; // assuming (freq, amp)
+            assert!(
+                amp < -20.0,
+                "Expected strong signal at ~500Hz, got: {}",
+                amp
+            );
+        } else {
+            panic!("Bin index out of range: {}", bin_idx);
+        }
+    }
+
+    #[test]
+    fn test_analyze_microphone_input_96000() {
+        let (mut app, _, _) = create_test_app();
+        app.settings.mode = Mode::Microphone;
+        let sr = 96000;
 
         // Fill the buffer with test data
         {
