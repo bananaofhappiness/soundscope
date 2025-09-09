@@ -1,18 +1,18 @@
-use color_eyre::Result;
-use color_eyre::eyre::eyre;
+//! This module contains the implementation of the audio player used to play audio files in user's terminal.
+//! It uses `rodio` under the hood.
 use crossbeam::channel::{Receiver, Sender};
+use eyre::{Result, eyre};
 use rodio::Source;
-use std::path::PathBuf;
-// use color_eyre::eyre::Error;
-use symphonia::core::audio::{Channels, SampleBuffer};
-// use color_eyre::eyre::Error;
-use std::time::Duration;
-use symphonia::core::codecs::{CODEC_TYPE_NULL, DecoderOptions};
-use symphonia::core::errors::Error;
-use symphonia::core::formats::FormatOptions;
-use symphonia::core::io::MediaSourceStream;
-use symphonia::core::meta::MetadataOptions;
-use symphonia::core::probe::Hint;
+use std::{path::PathBuf, time::Duration};
+use symphonia::core::{
+    audio::{Channels, SampleBuffer},
+    codecs::{CODEC_TYPE_NULL, DecoderOptions},
+    errors::Error,
+    formats::FormatOptions,
+    io::MediaSourceStream,
+    meta::MetadataOptions,
+    probe::Hint,
+};
 
 // Samples of the whole file
 pub type Samples = Vec<f32>;
@@ -35,8 +35,6 @@ pub enum PlayerCommand {
     ShowTestError,
 }
 
-// TODO: introduce streaming
-// stream the first portion of the track while the whole track loading in the background
 /// `AudioFile` represents a loaded audio file with its samples, sample rate, and channels.
 /// It implements [`Source`] and [`Iterator`] for playback.
 #[derive(Clone)]
@@ -71,8 +69,8 @@ impl AudioFile {
         &self.side_samples
     }
 
-    pub fn duration(&self) -> Duration {
-        self.duration
+    pub fn duration(&self) -> &Duration {
+        &self.duration
     }
 }
 
@@ -154,24 +152,7 @@ impl AudioFile {
         let title = path.file_name().unwrap().to_string_lossy().to_string();
         let (samples, sample_rate, channels) = Self::decode_file(path)?;
         // TODO: other channels, not only stereo sound.
-        let left_samples = samples.iter().step_by(2).cloned().collect::<Vec<f32>>();
-        let right_samples = samples
-            .iter()
-            .skip(1)
-            .step_by(2)
-            .cloned()
-            .collect::<Vec<f32>>();
-        let mid_samples = left_samples
-            .iter()
-            .zip(right_samples.iter())
-            .map(|(l, r)| (l + r) / 2.)
-            .collect::<Vec<f32>>();
-        let side_samples = left_samples
-            .iter()
-            .zip(right_samples.iter())
-            .map(|(l, r)| (l - r) / 2.)
-            .collect::<Vec<f32>>();
-
+        let (mid_samples, side_samples) = get_mid_and_side_samples(&samples);
         let duration = mid_samples.len() as f64 / sample_rate as f64 * 1000.;
         Ok(AudioFile {
             title,
@@ -213,7 +194,9 @@ impl AudioFile {
             .find(|t| t.codec_params.codec != CODEC_TYPE_NULL)
         {
             Some(track) => track,
-            None => return Err(eyre!("No audio track found with a decodeable codec")),
+            None => {
+                return Err(eyre!("No audio track found with a decodeable codec"));
+            }
         };
 
         // Use the default options for the decoder.
@@ -390,4 +373,25 @@ impl AudioPlayer {
         }
         // Ok(())
     }
+}
+
+pub fn get_mid_and_side_samples(samples: &[f32]) -> (Vec<f32>, Vec<f32>) {
+    let left_samples = samples.iter().step_by(2).cloned().collect::<Vec<f32>>();
+    let right_samples = samples
+        .iter()
+        .skip(1)
+        .step_by(2)
+        .cloned()
+        .collect::<Vec<f32>>();
+    let mid_samples = left_samples
+        .iter()
+        .zip(right_samples.iter())
+        .map(|(l, r)| (l + r) / 2.)
+        .collect::<Vec<f32>>();
+    let side_samples = left_samples
+        .iter()
+        .zip(right_samples.iter())
+        .map(|(l, r)| (l - r) / 2.)
+        .collect::<Vec<f32>>();
+    (mid_samples, side_samples)
 }

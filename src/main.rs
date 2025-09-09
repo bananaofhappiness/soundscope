@@ -1,13 +1,19 @@
 mod analyzer;
+mod audio_capture;
 mod audio_player;
 mod tui;
 use crate::audio_player::{AudioFile, AudioPlayer, PlaybackPosition, PlayerCommand};
-use color_eyre::Result;
 use crossbeam::channel::{bounded, unbounded};
-use std::thread;
+use eyre::Result;
+use ringbuffer::{AllocRingBuffer, RingBuffer};
+use std::{
+    sync::{Arc, Mutex},
+    thread,
+};
 
 fn main() -> Result<()> {
-    color_eyre::install()?;
+    #[cfg(target_os = "linux")]
+    suppress_alsa_messages();
     // create a tui sender that sends signals when the file is stopped, selected etc.
     let (player_command_tx, player_command_rx) = bounded::<PlayerCommand>(1);
 
@@ -26,6 +32,11 @@ fn main() -> Result<()> {
     // just a place holder audio_file to initialize app
     let audio_file = AudioFile::new(playback_position_tx);
 
+    // let mut buf = AllocRingBuffer::new((44100usize * 5).next_power_of_two());
+    let mut buf = AllocRingBuffer::new(44100usize * 30);
+    buf.fill(0.0);
+    let latest_captured_samples = Arc::new(Mutex::new(buf));
+
     thread::spawn(|| {
         tui::run(
             audio_file,
@@ -33,7 +44,27 @@ fn main() -> Result<()> {
             audio_file_rx,
             playback_position_rx,
             error_rx,
+            latest_captured_samples,
         )
     });
     player.run(player_command_rx, audio_file_tx, error_tx)
+}
+
+// The code below suppresses ALSA error messages
+#[cfg(target_os = "linux")]
+#[link(name = "asound")]
+unsafe extern "C" {
+    fn snd_lib_error_set_handler(
+        handler: Option<extern "C" fn(*const i8, i32, *const i8, i32, *const i8)>,
+    );
+}
+
+#[cfg(target_os = "linux")]
+extern "C" fn no_errors(_: *const i8, _: i32, _: *const i8, _: i32, _: *const i8) {}
+
+#[cfg(target_os = "linux")]
+fn suppress_alsa_messages() {
+    unsafe {
+        snd_lib_error_set_handler(Some(no_errors));
+    }
 }

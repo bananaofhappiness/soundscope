@@ -15,8 +15,12 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v5
-      - name: Install Alsa (Linux only)
+      - name: Install Alsa
         run: sudo apt-get install -yqq libasound2-dev
+      - name: Lint
+        run: |
+          cargo fmt --all -- --check
+          cargo clippy -- -D warnings
       - name: Cache cargo
         uses: Swatinem/rust-cache@v2
       - name: Dry-run publish
