@@ -32,7 +32,6 @@ fn main() -> Result<()> {
     // just a place holder audio_file to initialize app
     let audio_file = AudioFile::new(playback_position_tx);
 
-    // let mut buf = AllocRingBuffer::new((44100usize * 5).next_power_of_two());
     let mut buf = AllocRingBuffer::new(44100usize * 30);
     buf.fill(0.0);
     let latest_captured_samples = Arc::new(Mutex::new(buf));
