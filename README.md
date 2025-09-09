@@ -35,7 +35,10 @@ Grab the latest release for your platform from the [**Releases page**](https://g
 - Turn **M**id and **S**ide Frequencies on/of by pressing `M` and `S` respectively.
 - Press `L` to check **L**UFS and `F` to check **f**requencies.
 - Use the right and left arrow keys to move playhead 5 seconds forward or backward.
+- Alternatively, press `C` to **C**hange input mode from audio file to microphone.
+- In microphone mode, choose **D**evice using `D`.
 - When you are done, press `Q` to **q**uit.
+
 
 ---
 ## 🎥 Demo Video
