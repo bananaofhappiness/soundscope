@@ -41,7 +41,7 @@ pub fn build_input_stream(
             audio_buf.extend(data.iter().copied());
         },
         |err| {
-            eprintln!("got stream error: {}", err.to_string());
+            eprintln!("got stream error: {}", err);
         },
         None,
     )?;
