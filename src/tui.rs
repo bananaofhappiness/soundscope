@@ -953,9 +953,7 @@ mod tests {
         let audio_file = AudioFile::new(playback_position_tx);
         let theme = Theme::default();
         let explorer = FileExplorer::with_theme(theme).unwrap();
-        let latest_captured_samples = Arc::new(Mutex::new(AllocRingBuffer::new(
-            (44100usize * 5).next_power_of_two(),
-        )));
+        let latest_captured_samples = Arc::new(Mutex::new(AllocRingBuffer::new(44100 * 30)));
 
         let app = App::new(
             audio_file,
@@ -1046,5 +1044,42 @@ mod tests {
         // assert!(app.ui_settings.error_timer.is_none())
 
         assert!(error_time.elapsed().as_millis() > 5000);
+    }
+
+    #[test]
+    fn test_analyze_microphone_input() {
+        let (mut app, _, _) = create_test_app();
+        app.settings.mode = Mode::Microphone;
+        let sr = 44100;
+
+        // Fill the buffer with test data
+        {
+            let mut buffer = app.latest_captured_samples.lock().unwrap();
+            buffer.clear();
+            for i in 0..sr * 30 {
+                let sample = (i as f32 * 500.0 * 2.0 * std::f32::consts::PI / sr as f32).sin();
+                buffer.enqueue(sample);
+            }
+        }
+
+        app.analyze_microphone_input();
+
+        assert!(!app.fft_data.mid_fft.is_empty());
+
+        // Check that there's a peak around 500 Hz
+        let freq_bin = 500.0 / (sr as f32 / 2.0) * (app.fft_data.mid_fft.len() as f32);
+        let bin_idx = freq_bin.round() as usize;
+
+        // Check that this bin has non-trivial amplitude
+        if bin_idx < app.fft_data.mid_fft.len() {
+            let amp = app.fft_data.mid_fft[bin_idx].1; // assuming (freq, amp)
+            assert!(
+                amp < -20.0,
+                "Expected strong signal at ~500Hz, got: {}",
+                amp
+            );
+        } else {
+            panic!("Bin index out of range: {}", bin_idx);
+        }
     }
 }
