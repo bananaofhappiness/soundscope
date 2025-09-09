@@ -15,6 +15,10 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v5
+      - name: Lint
+        run: |
+          cargo fmt --all -- --check
+          cargo clippy -- -D warnings
       - name: Install Alsa (Linux only)
         run: sudo apt-get install -yqq libasound2-dev
       - name: Cache cargo
