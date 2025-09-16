@@ -12,11 +12,13 @@ use ratatui::{
     text::{Line, Span},
     widgets::{Axis, Block, Chart, Clear, Dataset, GraphType, List, ListItem, Paragraph, Wrap},
 };
-use ratatui_explorer::{FileExplorer, Theme};
+use ratatui_explorer::FileExplorer;
 use ringbuffer::{AllocRingBuffer, RingBuffer};
 use rodio::Source;
+use serde::Deserialize;
 use std::{
     fmt::Display,
+    path::{Path, PathBuf},
     sync::{Arc, Mutex},
     time::{Duration, Instant},
 };
@@ -80,6 +82,152 @@ impl Display for Mode {
             Mode::Player => write!(f, "Player"),
             Mode::Microphone => write!(f, "Microphone"),
             Mode::_System => write!(f, "System"),
+        }
+    }
+}
+
+#[derive(Deserialize, Default)]
+struct Theme {
+    global: GlobalTheme,
+    waveform: WaveformTheme,
+    fft: FftTheme,
+    lufs: LufsTheme,
+    devices: DevicesTheme,
+    explorer: ExplorerTheme,
+}
+
+#[derive(Deserialize)]
+struct GlobalTheme {
+    background: Option<Color>,
+    /// It is default value for everything that is not a background,
+    /// Except for SideFFT, which is LightGreen, and playhead position, which is LightRed
+    foreground: Option<Color>,
+    /// Color used to highlight corresponding characters
+    /// Like highlighting L in LUFS to let the user know
+    /// that pressing L will open the LUFS meter
+    highlight: Option<Color>,
+}
+
+#[derive(Deserialize)]
+struct WaveformTheme {
+    borders: Option<Color>,
+    waveform: Option<Color>,
+    playhead: Option<Color>,
+    /// Current playing time and total duration
+    time: Option<Color>,
+    /// Buttons like <-, +, -, ->
+    controls: Option<Color>,
+    /// Color of a button when it's pressed
+    controls_highlight: Option<Color>,
+    labels: Option<Color>,
+}
+
+#[derive(Deserialize)]
+struct FftTheme {
+    borders: Option<Color>,
+    /// Frequencies and LUFS tabs text
+    labels: Option<Color>,
+    axes: Option<Color>,
+    axes_labels: Option<Color>,
+    mid_fft: Option<Color>,
+    side_fft: Option<Color>,
+}
+
+#[derive(Deserialize)]
+struct LufsTheme {
+    axis: Option<Color>,
+    chart: Option<Color>,
+    /// Frequencies and LUFS tabs text
+    labels: Option<Color>,
+    /// Text color on the left
+    foreground: Option<Color>,
+    /// Color of the numbers on the left
+    numbers: Option<Color>,
+}
+
+#[derive(Deserialize)]
+struct DevicesTheme {
+    background: Option<Color>,
+    foreground: Option<Color>,
+}
+
+#[derive(Deserialize)]
+struct ExplorerTheme {
+    background: Option<Color>,
+    foreground: Option<Color>,
+    item_foreground: Option<Color>,
+    highlight_item_foreground: Option<Color>,
+    dir_foreground: Option<Color>,
+    highlight_dir_foreground: Option<Color>,
+}
+
+impl Default for GlobalTheme {
+    fn default() -> Self {
+        Self {
+            background: Some(Color::Black),
+            foreground: Some(Color::Yellow),
+            highlight: Some(Color::LightRed),
+        }
+    }
+}
+
+impl Default for WaveformTheme {
+    fn default() -> Self {
+        Self {
+            borders: Some(Color::Yellow),
+            waveform: Some(Color::Yellow),
+            playhead: Some(Color::LightRed),
+            time: Some(Color::Yellow),
+            controls: Some(Color::Yellow),
+            controls_highlight: Some(Color::LightRed),
+            labels: Some(Color::Yellow),
+        }
+    }
+}
+
+impl Default for FftTheme {
+    fn default() -> Self {
+        Self {
+            axes: Some(Color::Yellow),
+            axes_labels: Some(Color::Yellow),
+            borders: Some(Color::Yellow),
+            labels: Some(Color::Yellow),
+            mid_fft: Some(Color::Yellow),
+            side_fft: Some(Color::LightGreen),
+        }
+    }
+}
+
+impl Default for LufsTheme {
+    fn default() -> Self {
+        Self {
+            axis: Some(Color::Yellow),
+            chart: Some(Color::Yellow),
+            labels: Some(Color::Yellow),
+            foreground: Some(Color::Yellow),
+            numbers: Some(Color::Yellow),
+        }
+    }
+}
+
+impl Default for DevicesTheme {
+    fn default() -> Self {
+        Self {
+            background: Some(Color::Black),
+            foreground: Some(Color::White),
+        }
+    }
+}
+
+impl Default for ExplorerTheme {
+    fn default() -> Self {
+        Self {
+            background: Some(Color::Black),
+            foreground: Some(Color::Yellow),
+            item_foreground: Some(Color::Yellow),
+            highlight_item_foreground: Some(Color::LightRed),
+            dir_foreground: Some(Color::Yellow),
+            highlight_dir_foreground: Some(Color::LightRed),
         }
     }
 }
@@ -334,7 +482,7 @@ impl App {
             .block(
                 Block::bordered()
                     .title(self.audio_file.title())
-                    .title_bottom(Line::from("0").left_aligned())
+                    // .title_bottom(Line::from("<- + - ->").left_aligned())
                     // current position and total duration
                     .title_bottom(
                         Line::from(format!("{:0>2}:{:0>5.2}", current_min, current_sec)).centered(),
@@ -423,7 +571,6 @@ impl App {
             .x_axis(
                 Axis::default()
                     .title("Hz")
-                    .style(Style::default().fg(Color::Black))
                     .labels(x_labels)
                     .style(STYLE)
                     .bounds([0., 100.]),
@@ -431,7 +578,6 @@ impl App {
             .y_axis(
                 Axis::default()
                     .title("Db")
-                    .style(Style::default().fg(Color::Black))
                     .labels(vec![Span::raw("-78 Db"), Span::raw("-18 Db")])
                     .style(STYLE)
                     .bounds([-150., 100.]),
@@ -569,6 +715,8 @@ impl App {
 
     /// The main loop
     fn run(mut self, mut terminal: DefaultTerminal) -> Result<()> {
+        let path = PathBuf::from("example");
+        let theme = self.load_theme(&path).or(Some(Theme::default()));
         loop {
             // receive audio file
             if let Ok(af) = self.audio_file_rx.try_recv() {
@@ -923,6 +1071,18 @@ impl App {
         self.lufs = [-50.; 300];
         self.is_playing_audio = false;
     }
+
+    fn load_theme(&mut self, path: &PathBuf) -> Option<Theme> {
+        if !path.exists() {
+            let name = path.file_name().unwrap().to_string_lossy().to_string();
+            self.handle_error(format!(
+                "Theme file not found: {}.theme. Theme set to default.",
+                name
+            ));
+            return None;
+        }
+        None
+    }
 }
 
 /// pub run function that initializes the terminal and runs the application
@@ -935,14 +1095,16 @@ pub fn run(
     latest_captured_samples: RBuffer,
 ) -> Result<()> {
     let terminal = ratatui::init();
-    let theme = Theme::default()
+    let config_dir = PathBuf::from(".");
+
+    let explorer_theme = ratatui_explorer::Theme::default()
         .with_style(STYLE)
         .with_item_style(STYLE)
         .with_highlight_item_style(STYLE.fg(Color::LightRed))
         .with_dir_style(STYLE.bold())
         .with_highlight_dir_style(STYLE.bold().fg(Color::LightRed))
         .add_default_title();
-    let file_explorer = FileExplorer::with_theme(theme)?;
+    let file_explorer = FileExplorer::with_theme(explorer_theme)?;
     let app_result = App::new(
         audio_file,
         player_command_tx,
@@ -969,7 +1131,7 @@ mod tests {
         let (_, error_rx) = channel::unbounded();
 
         let audio_file = AudioFile::new(playback_position_tx);
-        let theme = Theme::default();
+        let theme = ratatui_explorer::Theme::default();
         let explorer = FileExplorer::with_theme(theme).unwrap();
         let latest_captured_samples = Arc::new(Mutex::new(AllocRingBuffer::new(44100 * 30)));
 

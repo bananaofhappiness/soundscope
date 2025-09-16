@@ -14,12 +14,14 @@ crossbeam = "0.8.4"
 crossterm = "0.29.0"
 ebur128 = "0.1.10"
 eyre = "0.6.12"
-ratatui = "0.29.0"
+ratatui = {version = "0.29.0", features = ["serde"]}
 ratatui-explorer = "0.2.1"
 ringbuffer = "0.16.0"
 rodio = "0.21.1"
+serde = { version = "1.0.225", features = ["derive"] }
 spectrum-analyzer = "1.7.0"
 symphonia = { version = "0.5.4" }
+toml = "0.9.6"
 
 [profile.release]
 strip = true
