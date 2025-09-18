@@ -7,13 +7,14 @@ use crate::{
 };
 use cpal::{Stream, traits::StreamTrait as _};
 use crossbeam::channel::{Receiver, Sender};
+use dirs::config_dir;
 use eyre::{Result, eyre};
 use ratatui::{
     DefaultTerminal,
     crossterm::event::{Event, KeyCode, KeyEvent, poll, read},
     layout::Flex,
     prelude::*,
-    style::{Color, Modifier, Style, Stylize},
+    style::{Color, Modifier, Style, Styled, Stylize},
     text::{Line, Span, ToLine, ToSpan},
     widgets::{Axis, Block, Chart, Clear, Dataset, GraphType, List, ListItem, Paragraph, Wrap},
 };
@@ -23,26 +24,19 @@ use rodio::Source;
 use serde::Deserialize;
 use std::{
     fmt::Display,
-    fs::File,
+    fs::{self, File},
     io::Read,
     path::{Path, PathBuf},
     sync::{Arc, Mutex},
     time::{Duration, Instant},
 };
 
+/// Uses [fill] to conviniently fill all fields of a struct.
 macro_rules! fill_fields {
     ($self:ident.$section:ident.$($field:ident => $value:expr),* $(,)?) => {
         $( fill(&mut $self.$section.$field, $value); )*
     };
 }
-
-/// Style: Black background, yellow foreground
-const STYLE: Style = Style::new().bg(Color::Black).fg(Color::Yellow);
-/// Text highlight style: Black background, light red foreground, bold
-const TEXT_HIGHLIGHT: Style = Style::new()
-    .bg(Color::Black)
-    .fg(Color::LightRed)
-    .add_modifier(Modifier::BOLD);
 
 pub type RBuffer = Arc<Mutex<AllocRingBuffer<f32>>>;
 
@@ -55,6 +49,7 @@ struct UISettings {
     show_side_fft: bool,
     show_devices_list: bool,
     show_lufs: bool,
+    show_themes_list: bool,
     error_text: String,
     error_timer: Option<Instant>,
     device_name: String,
@@ -70,6 +65,7 @@ impl Default for UISettings {
             show_side_fft: false,
             show_devices_list: false,
             show_lufs: false,
+            show_themes_list: false,
             error_text: String::new(),
             error_timer: None,
             device_name: String::new(),
@@ -77,6 +73,7 @@ impl Default for UISettings {
     }
 }
 
+/// Mode of the [App]. Currently, only Player and Microphone are supported.
 #[derive(Default, PartialEq)]
 enum Mode {
     #[default]
@@ -95,6 +92,8 @@ impl Display for Mode {
     }
 }
 
+/// Defines theme using .theme file
+/// Otherwise, uses default values.
 #[derive(Deserialize, Default)]
 struct Theme {
     global: GlobalTheme,
@@ -103,8 +102,11 @@ struct Theme {
     lufs: LufsTheme,
     devices: DevicesTheme,
     explorer: ExplorerTheme,
+    error: ErrorTheme,
 }
 
+/// Used to set `default: T` to a `field` if it is not set (it is None).
+/// Used in [fill_fields] macro
 fn fill<T>(field: &mut Option<T>, default: T) {
     if field.is_none() {
         *field = Some(default);
@@ -112,6 +114,7 @@ fn fill<T>(field: &mut Option<T>, default: T) {
 }
 
 impl Theme {
+    /// Sets `self.global.foreground` and `self.global.background` for every field that was not defined in a .theme file.
     fn apply_global_as_default(&mut self) {
         let fg = self.global.foreground;
         let bg = self.global.background;
@@ -154,18 +157,25 @@ impl Theme {
         fill_fields!(self.explorer.
             background => bg,
             dir_foreground => fg,
+            item_foreground => fg,
             highlight_dir_foreground => hl,
             highlight_item_foreground => hl,
-            item_foreground => fg,
         );
 
         fill_fields!(self.devices.
             background => bg,
             foreground => fg,
         );
+
+        fill_fields!(self.error.
+            background => bg,
+            foreground => fg,
+            borders => fg,
+        );
     }
 }
 
+/// Used to set default values of every UI element if they are not specified in the config file.
 #[derive(Deserialize)]
 struct GlobalTheme {
     background: Color,
@@ -178,6 +188,7 @@ struct GlobalTheme {
     highlight: Option<Color>,
 }
 
+/// Used to define the theme for the waveform display.
 #[derive(Deserialize)]
 struct WaveformTheme {
     borders: Option<Color>,
@@ -193,6 +204,7 @@ struct WaveformTheme {
     highlight: Option<Color>,
 }
 
+/// Used to define the theme for the FFT display.
 #[derive(Deserialize)]
 struct FftTheme {
     borders: Option<Color>,
@@ -207,6 +219,7 @@ struct FftTheme {
     highlight: Option<Color>,
 }
 
+/// Used to define the theme for the LUFS display.
 #[derive(Deserialize)]
 struct LufsTheme {
     axis: Option<Color>,
@@ -223,12 +236,14 @@ struct LufsTheme {
     highlight: Option<Color>,
 }
 
+/// Used to define the theme for the devices list.
 #[derive(Deserialize)]
 struct DevicesTheme {
     background: Option<Color>,
     foreground: Option<Color>,
 }
 
+/// Used to define the theme for the explorer.
 #[derive(Deserialize)]
 struct ExplorerTheme {
     background: Option<Color>,
@@ -236,6 +251,14 @@ struct ExplorerTheme {
     highlight_item_foreground: Option<Color>,
     dir_foreground: Option<Color>,
     highlight_dir_foreground: Option<Color>,
+}
+
+/// Used to define the theme for the error popup.
+#[derive(Deserialize)]
+struct ErrorTheme {
+    background: Option<Color>,
+    foreground: Option<Color>,
+    borders: Option<Color>,
 }
 
 impl Default for GlobalTheme {
@@ -314,6 +337,17 @@ impl Default for ExplorerTheme {
     }
 }
 
+impl Default for ErrorTheme {
+    fn default() -> Self {
+        Self {
+            background: Some(Color::Black),
+            foreground: Some(Color::LightRed),
+            borders: Some(Color::LightRed),
+        }
+    }
+}
+
+/// Settings for the [App]. Currently only the [Mode] is supported.
 #[derive(Default)]
 struct Settings {
     mode: Mode,
@@ -345,11 +379,9 @@ impl Default for WaveForm {
     }
 }
 
-/// `App` contains the necessary components for the application like tx, rx, UI settings.
+/// `App` contains the necessary components for the application like senders, receivers, [AudioFile] data, [UIsettings].
 struct App {
     /// Audio file which is loaded into the player.
-    /// Must be wrapped into [`Option`] because audio file does not exist initially.
-    /// After choosing a file it is never [`None`] again.
     audio_file: AudioFile,
     is_playing_audio: bool,
     audio_file_rx: Receiver<AudioFile>,
@@ -379,6 +411,8 @@ struct App {
     //UI
     explorer: FileExplorer,
     ui_settings: UISettings,
+    // Used to conviniently return to current directory when opening an explorer
+    current_directory: PathBuf,
 }
 
 impl App {
@@ -407,14 +441,13 @@ impl App {
             explorer: FileExplorer::with_theme(ratatui_explorer::Theme::default())?,
             ui_settings: UISettings::default(),
             device_sample_rate: 44100,
+            current_directory: PathBuf::from(""),
         })
     }
 
-    fn set_theme(&mut self, path: &PathBuf) {
-        let theme = self.load_theme(path).unwrap_or_default();
-        let s = Style::default()
-            .bg(theme.explorer.background.unwrap())
-            .fg(theme.explorer.item_foreground.unwrap());
+    fn set_theme(&mut self, theme: Theme) {
+        // define styles
+        let s = Style::default().bg(theme.explorer.background.unwrap());
         let is = s.fg(theme.explorer.item_foreground.unwrap());
         let ihl = s.fg(theme.explorer.highlight_item_foreground.unwrap());
         let ds = s.fg(theme.explorer.dir_foreground.unwrap()).bold();
@@ -429,6 +462,7 @@ impl App {
             .with_highlight_dir_style(dhl)
             .add_default_title();
         self.explorer.set_theme(explorer_theme);
+        self.ui_settings.theme = theme;
     }
 
     /// The function used to draw the UI.
@@ -441,7 +475,7 @@ impl App {
             .split(area);
 
         // make the background black
-        let background = Paragraph::new("").style(STYLE);
+        let background = Paragraph::new("").style(self.ui_settings.theme.global.background);
         f.render_widget(background, area);
         self.render_waveform(f, layout[0]);
 
@@ -460,7 +494,7 @@ impl App {
         self.render_error_message(f);
 
         // render explorer
-        if self.ui_settings.show_explorer {
+        if self.ui_settings.show_explorer || self.ui_settings.show_themes_list {
             let area = Self::get_explorer_popup_area(area, 50, 70);
             f.render_widget(Clear, area);
             f.render_widget(&self.explorer.widget(), area);
@@ -575,15 +609,21 @@ impl App {
                 "C".bold().style(hl),
                 "hange Mode: ".to_span().style(lb),
                 self.settings.mode.to_span().style(lb),
+                " T".bold().style(hl),
+                "heme".to_span().style(lb),
             ])
             .right_aligned(),
             _ => Line::from(vec![
                 "D".bold().style(hl),
                 "evice: ".to_span().style(lb),
                 self.ui_settings.device_name.to_span().style(lb),
+                " ".to_span(),
                 "C".bold().style(hl),
                 "hange Mode: ".to_span().style(lb),
                 self.settings.mode.to_span().style(lb),
+                " ".to_span(),
+                "T".bold().style(hl),
+                "heme".to_span().style(lb),
             ])
             .right_aligned(),
         };
@@ -606,8 +646,8 @@ impl App {
                     .style(bd),
             )
             .style(wv)
-            .x_axis(Axis::default().bounds([0., 15. * 1000.]).style(STYLE))
-            .y_axis(Axis::default().bounds([-1., 1.]).style(STYLE));
+            .x_axis(Axis::default().bounds([0., 15. * 1000.]))
+            .y_axis(Axis::default().bounds([-1., 1.]));
 
         frame.render_widget(chart, area);
     }
@@ -834,17 +874,50 @@ impl App {
             .enumerate()
             .map(|(i, (name, _dev))| ListItem::from(format!("[{}] {}", i + 1, name)))
             .collect();
-        let list = List::new(list_items)
-            .block(Block::bordered().title("Devices"))
-            .style(s);
+        let list = List::new(list_items).block(Block::bordered().title("Devices").style(s));
 
         f.render_widget(list, area);
     }
 
+    // fn render_themes_list(&self, f: &mut Frame) {
+    //     let s = Style::default()
+    //         .fg(self.ui_settings.theme.theme_list.foreground.unwrap())
+    //         .bg(self.ui_settings.theme.theme_list.background.unwrap());
+    //     let hl = s.fg(self.ui_settings.theme.theme_list.highlight.unwrap());
+    //     let area = Self::get_explorer_popup_area(f.area(), 20, 30);
+    //     f.render_widget(Clear, area);
+    //     let devs = list_input_devs();
+    //     let list_items: Vec<ListItem> = devs
+    //         .iter()
+    //         .enumerate()
+    //         .map(|(i, (name, _dev))| ListItem::from(format!("[{}] {}", i + 1, name)))
+    //         .collect();
+    //     let list = List::new(list_items)
+    //         .block(Block::bordered().title("Devices"))
+    //         .style(s);
+
+    //     f.render_widget(list, area);
+    // }
+
     /// The main loop
     fn run(mut self, mut terminal: DefaultTerminal) -> Result<()> {
-        // self.ui_settings.theme.fft.axes_labels = Some(Color::Green);
-        // self.ui_settings.theme.fft.axes = Some(Color::Magenta);
+        // apply theme
+        // check if config directory exists
+        match config_dir() {
+            Some(path) => {
+                self.apply_current_theme(path);
+            }
+            None => {
+                self.handle_error(
+                    "Config directory does not exist. Could not load theme.".to_string(),
+                );
+                let mut theme = Theme::default();
+                theme.apply_global_as_default();
+                self.set_theme(theme);
+            }
+        }
+
+        self.current_directory = self.explorer.cwd().clone();
 
         loop {
             // receive audio file
@@ -885,6 +958,10 @@ impl App {
                 }
 
                 if self.ui_settings.show_explorer {
+                    self.explorer.handle(&event)?;
+                }
+
+                if self.ui_settings.show_themes_list {
                     self.explorer.handle(&event)?;
                 }
             }
@@ -990,10 +1067,12 @@ impl App {
         match key.code {
             // show explorer
             KeyCode::Char('e') if self.settings.mode == Mode::Player => {
+                self.explorer.set_cwd(&self.current_directory).unwrap();
                 self.ui_settings.show_explorer = !self.ui_settings.show_explorer
             }
             // select file
-            KeyCode::Enter if self.settings.mode == Mode::Player => self.select_file(),
+            KeyCode::Enter if self.ui_settings.show_explorer => self.select_audio_file(),
+            KeyCode::Enter if self.ui_settings.show_themes_list => self.select_theme_file(),
             // show side fft
             KeyCode::Char('s') => self.ui_settings.show_side_fft = !self.ui_settings.show_side_fft,
             // show mid fft
@@ -1055,6 +1134,7 @@ impl App {
                     Mode::Microphone
                 };
             }
+            // Select device using its index if the device list is shown
             KeyCode::Char(c)
                 if self.ui_settings.show_devices_list && c.is_ascii_digit() && c != '0' =>
             {
@@ -1062,6 +1142,12 @@ impl App {
                 if let Err(err) = self.select_device(index) {
                     self.handle_error(format!("Failed to select device: {}", err));
                 }
+            }
+            KeyCode::Char('t') => {
+                self.explorer
+                    .set_cwd(config_dir().unwrap().join("soundscope"))
+                    .unwrap();
+                self.ui_settings.show_themes_list = !self.ui_settings.show_themes_list;
             }
             _ => (),
         }
@@ -1108,7 +1194,7 @@ impl App {
         self.ui_settings.error_timer = Some(Instant::now());
     }
 
-    fn select_file(&mut self) {
+    fn select_audio_file(&mut self) {
         let file = self.explorer.current();
         let file_path = self.explorer.current().path().clone();
         if !file.is_file() {
@@ -1135,6 +1221,20 @@ impl App {
                 err
             ));
         }
+    }
+
+    fn select_theme_file(&mut self) {
+        let file = self.explorer.current();
+        let file_path = self.explorer.current().path().clone();
+        if !file.is_file() {
+            return;
+        }
+        let mut theme = match self.load_theme(&file_path) {
+            Some(theme) => theme,
+            None => Theme::default(),
+        };
+        theme.apply_global_as_default();
+        self.set_theme(theme);
     }
 
     fn change_chart(&mut self, c: char) {
@@ -1169,6 +1269,9 @@ impl App {
     }
 
     fn render_error_message(&mut self, f: &mut Frame) {
+        let s = Style::default().bg(self.ui_settings.theme.error.background.unwrap());
+        let bd = s.fg(self.ui_settings.theme.error.borders.unwrap());
+        let fg = s.fg(self.ui_settings.theme.error.foreground.unwrap());
         let message = self.ui_settings.error_text.clone();
         // show error for 5 seconds
         match self.ui_settings.error_timer {
@@ -1183,8 +1286,8 @@ impl App {
         let error_popup_area = Self::get_error_popup_area(f.area());
         f.render_widget(Clear, error_popup_area);
         f.render_widget(
-            Paragraph::new(message)
-                .block(Block::bordered().style(STYLE).fg(Color::LightRed).bold())
+            Paragraph::new(message.to_line().style(fg))
+                .block(Block::bordered().style(bd))
                 .wrap(Wrap { trim: true }),
             error_popup_area,
         );
@@ -1203,12 +1306,9 @@ impl App {
 
     fn load_theme(&mut self, path: &PathBuf) -> Option<Theme> {
         let name = path.file_name().unwrap().to_string_lossy().to_string();
-        if !path.exists() {
-            self.handle_error(format!(
-                "Theme file not found: {}.theme. Theme set to default.",
-                name
-            ));
-            return None;
+        let current_theme = path.parent().unwrap().join(".current_theme");
+        if let Err(err) = fs::write(current_theme, format!("{name}")) {
+            self.handle_error(format!("Error saving chosen theme: {}", err.to_string()));
         }
         let mut file = match File::open(path) {
             Ok(file) => file,
@@ -1230,6 +1330,46 @@ impl App {
             }
         };
         Some(theme)
+    }
+
+    /// Called at startup to apply the current theme from a .current_theme file if it exists
+    fn apply_current_theme(&mut self, mut path: PathBuf) {
+        // if .config/soundscope does not exist, create it
+        path.push("soundscope");
+        std::fs::create_dir_all(&path).unwrap();
+        let current_theme_file = path.join(".current_theme");
+        if current_theme_file.exists() {
+            // read contents of current_theme file
+            // this is the name of the theme {name}.theme
+            match std::fs::read_to_string(current_theme_file) {
+                Ok(theme_file) => {
+                    let theme_file = path.join(theme_file);
+                    let mut theme = if theme_file.exists() {
+                        self.load_theme(&theme_file).unwrap_or_default()
+                    } else {
+                        self.handle_error(format!(
+                            "Theme file {} not found. Applying default theme.",
+                            theme_file.display()
+                        ));
+                        Theme::default()
+                    };
+                    theme.apply_global_as_default();
+                    self.set_theme(theme);
+                }
+                Err(err) => {
+                    self.handle_error(format!(
+                        "Error reading .current_theme file {err}. Applying default theme."
+                    ));
+                    let mut theme = Theme::default();
+                    theme.apply_global_as_default();
+                    self.set_theme(theme)
+                }
+            }
+        } else {
+            let mut theme = Theme::default();
+            theme.apply_global_as_default();
+            self.set_theme(theme)
+        }
     }
 }
 
@@ -1483,6 +1623,7 @@ mod tests {
             lufs: LufsTheme::default(),
             devices: DevicesTheme::default(),
             explorer: ExplorerTheme::default(),
+            error: ErrorTheme::default(),
         };
         theme.global.foreground = Color::LightCyan;
         theme.global.background = Color::Magenta;
