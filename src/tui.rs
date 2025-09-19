@@ -14,7 +14,7 @@ use ratatui::{
     crossterm::event::{Event, KeyCode, KeyEvent, poll, read},
     layout::Flex,
     prelude::*,
-    style::{Color, Modifier, Style, Styled, Stylize},
+    style::{Color, Style, Stylize},
     text::{Line, Span, ToLine, ToSpan},
     widgets::{Axis, Block, Chart, Clear, Dataset, GraphType, List, ListItem, Paragraph, Wrap},
 };
@@ -26,7 +26,7 @@ use std::{
     fmt::Display,
     fs::{self, File},
     io::Read,
-    path::{Path, PathBuf},
+    path::PathBuf,
     sync::{Arc, Mutex},
     time::{Duration, Instant},
 };
@@ -508,7 +508,7 @@ impl App {
         let s = Style::default().bg(self.ui_settings.theme.waveform.background.unwrap());
         let lb = s.fg(self.ui_settings.theme.waveform.labels.unwrap());
         let bd = s.fg(self.ui_settings.theme.waveform.borders.unwrap());
-        let ct = s.fg(self.ui_settings.theme.waveform.controls.unwrap());
+        let _ct = s.fg(self.ui_settings.theme.waveform.controls.unwrap());
         let hl = s.fg(self.ui_settings.theme.waveform.highlight.unwrap());
         let pl = s.fg(self.ui_settings.theme.waveform.playhead.unwrap());
         let tm = s.fg(self.ui_settings.theme.waveform.time.unwrap());
@@ -1090,14 +1090,20 @@ impl App {
                 }
             }
             // move playhead right and left
-            KeyCode::Right if self.settings.mode == Mode::Player => {
+            KeyCode::Right
+                if self.settings.mode == Mode::Player
+                    && !(self.ui_settings.show_devices_list || self.ui_settings.show_explorer) =>
+            {
                 self.lufs = [-50.; 300];
                 self.analyzer.reset();
                 if let Err(_err) = self.player_command_tx.send(PlayerCommand::MoveRight) {
                     //TODO: log sending error
                 }
             }
-            KeyCode::Left if self.settings.mode == Mode::Player => {
+            KeyCode::Left
+                if self.settings.mode == Mode::Player
+                    && !(self.ui_settings.show_devices_list || self.ui_settings.show_explorer) =>
+            {
                 self.lufs = [-50.; 300];
                 self.analyzer.reset();
                 if let Err(_err) = self.player_command_tx.send(PlayerCommand::MoveLeft) {
@@ -1229,10 +1235,7 @@ impl App {
         if !file.is_file() {
             return;
         }
-        let mut theme = match self.load_theme(&file_path) {
-            Some(theme) => theme,
-            None => Theme::default(),
-        };
+        let mut theme = self.load_theme(&file_path).unwrap_or_default();
         theme.apply_global_as_default();
         self.set_theme(theme);
     }
@@ -1307,25 +1310,25 @@ impl App {
     fn load_theme(&mut self, path: &PathBuf) -> Option<Theme> {
         let name = path.file_name().unwrap().to_string_lossy().to_string();
         let current_theme = path.parent().unwrap().join(".current_theme");
-        if let Err(err) = fs::write(current_theme, format!("{name}")) {
-            self.handle_error(format!("Error saving chosen theme: {}", err.to_string()));
+        if let Err(err) = fs::write(current_theme, &name) {
+            self.handle_error(format!("Error saving chosen theme: {err}"));
         }
         let mut file = match File::open(path) {
             Ok(file) => file,
             Err(err) => {
-                self.handle_error(format!("Error reading {}.theme: {}", name, err.to_string()));
+                self.handle_error(format!("Error reading {name}.theme: {err}"));
                 return None;
             }
         };
         let mut contents = String::new();
         if let Err(err) = file.read_to_string(&mut contents) {
-            self.handle_error(format!("Error reading {}.theme: {}", name, err.to_string()));
+            self.handle_error(format!("Error reading {name}.theme: {err}"));
             return None;
         }
         let theme: Theme = match toml::from_str(&contents) {
             Ok(theme) => theme,
             Err(err) => {
-                self.handle_error(format!("Error reading {}.theme: {}", name, err.to_string()));
+                self.handle_error(format!("Error reading {name}.theme: {err}"));
                 return None;
             }
         };
@@ -1409,7 +1412,6 @@ mod tests {
         let (_, error_rx) = channel::unbounded();
 
         let audio_file = AudioFile::new(playback_position_tx);
-        let theme = ratatui_explorer::Theme::default();
         let latest_captured_samples = Arc::new(Mutex::new(AllocRingBuffer::new(44100 * 30)));
 
         let app = App::new(

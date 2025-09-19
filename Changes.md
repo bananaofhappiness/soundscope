@@ -3,10 +3,10 @@
 All notable changes to this project will be documented in this file.
 
 ---
-## [1.1.1] - 2025-09-09
+## [1.2.0] - 2025-09-19
 
 ### Added
-- Microphone input support with real-time analysis (in v1.1.0).
-- Updated changelog (since I attached the outdated one to the previous release and attach outdated Readme to crates.io).
+- Custom themes support. README contains a guide on how to create a custom theme.
+- QoL: using arrow keys in the explorer no longer seeks the audio.
 
 ### Known Issues
