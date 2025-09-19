@@ -127,7 +127,7 @@ Only global foreground and global background colors are mandatory. You can pass 
 - White
 ```
 Color separators `-`, `_`, and ` ` are supported and names are case insensitive. For example, `Light-blue` or `light_blue` or `light Blue` are all valid.
-After creating a theme into `.theme` file and placing it into `{YOUR_CONFIG_DIRECTORY}/soundscope`, press `T` to open up the theme selection list and choose yours.
+After saving your theme into `.theme` file and placing it into `{YOUR_CONFIG_DIRECTORY}/soundscope`, press `T` to open up the theme selection list and choose yours.
 
 ---
 ## 🐛 Known Issues
@@ -138,6 +138,7 @@ After creating a theme into `.theme` file and placing it into `{YOUR_CONFIG_DIRE
 
 ---
 ## 🛣 Roadmap
+- [x] Microphone input.
 - [ ] Zooming the Waveform in and out.
 - [x] Custom themes support.
 
