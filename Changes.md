@@ -3,10 +3,10 @@
 All notable changes to this project will be documented in this file.
 
 ---
-## [1.2.0] - 2025-09-19
+## [1.3.0] - 2025-10-05
 
-### Added
-- Custom themes support. [README](README.md) contains a guide on how to create a custom theme.
-- QoL: using arrow keys in the explorer no longer seeks the audio.
+### Fixes
+- Fixed excessive CPU usage (over 90%).
+- Added mono-channel support for microphone input to resolve latency issues on some microphones.
 
 ### Known Issues
