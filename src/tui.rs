@@ -467,6 +467,7 @@ impl App {
 
     /// The function used to draw the UI.
     fn draw(&mut self, f: &mut Frame) {
+        std::thread::sleep(Duration::from_millis(8));
         // split the area into waveform part and charts parts
         let area = f.area();
         let layout = Layout::default()
