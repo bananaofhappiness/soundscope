@@ -67,6 +67,7 @@ playhead = "LightRed "# if not set, default is LightRed
 time = "Yellow"
 # Buttons like <-, +, -, ->
 controls = "Yellow"
+controls_highlight = "LightRed"
 # Color of a button when it's pressed
 controls_highlight = "LightRed"
 labels = "Yellow"

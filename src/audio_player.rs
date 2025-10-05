@@ -139,7 +139,7 @@ impl AudioFile {
             mid_samples: Vec::new(),
             side_samples: Vec::new(),
             sample_rate: 44100,
-            duration: Duration::from_millis(0),
+            duration: Duration::from_secs(15),
             channels: Channels::all(),
             playback_position: 0,
             playback_position_tx,

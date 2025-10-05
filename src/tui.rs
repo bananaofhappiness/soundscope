@@ -489,7 +489,6 @@ impl App {
 
     /// The function used to draw the UI.
     fn draw(&mut self, f: &mut Frame) {
-        std::thread::sleep(Duration::from_millis(8));
         // split the area into waveform part and charts parts
         let area = f.area();
         let layout = Layout::default()
@@ -611,6 +610,16 @@ impl App {
             .right_aligned(),
         };
         let title = self.audio_file.title();
+        let x_window = match self.settings.mode {
+            Mode::Microphone | Mode::_System => [
+                15000. - (self.ui_settings.waveform_window as usize * 1000) as f64,
+                15000.,
+            ],
+            _ => [
+                0.,
+                (self.ui_settings.waveform_window as usize * 1000) as f64,
+            ],
+        };
         let chart = Chart::new(datasets)
             .block(
                 Block::bordered()
@@ -629,7 +638,7 @@ impl App {
                     .style(bd),
             )
             .style(wv)
-            .x_axis(Axis::default().bounds([0., self.ui_settings.waveform_window * 1000.]))
+            .x_axis(Axis::default().bounds(x_window))
             .y_axis(Axis::default().bounds([-1., 1.]));
 
         frame.render_widget(chart, area);
@@ -996,9 +1005,13 @@ impl App {
         self.current_directory = self.explorer.cwd().clone();
 
         loop {
+            std::thread::sleep(Duration::from_millis(8));
             // receive audio file
             if let Ok(af) = self.audio_file_rx.try_recv() {
                 self.audio_file = af;
+                if self.audio_file.duration().as_secs_f64() < 15. {
+                    self.ui_settings.waveform_window = self.audio_file.duration().as_secs_f64()
+                }
             }
 
             // receive playback position
@@ -1254,9 +1267,14 @@ impl App {
                     f64::max(self.ui_settings.waveform_window - 1., 1.);
             }
             KeyCode::Char('-') | KeyCode::Char('_') => {
+                let bound = if self.audio_file.duration().as_secs_f64() < 15. {
+                    self.audio_file.duration().as_secs_f64()
+                } else {
+                    15.
+                };
                 self.ui_settings.minus_sign_timer = Some(Instant::now());
                 self.ui_settings.waveform_window =
-                    f64::min(self.ui_settings.waveform_window + 1., 15.);
+                    f64::min(self.ui_settings.waveform_window + 1., bound);
             }
             _ => (),
         }
@@ -1413,7 +1431,7 @@ impl App {
     fn load_theme(&mut self, path: &PathBuf) -> Option<Theme> {
         let name = path.file_name().unwrap().to_string_lossy().to_string();
         let current_theme = path.parent().unwrap().join(".current_theme");
-        if let Err(err) = fs::write(current_theme, &name) {
+        if let Err(err) = fs::write(&current_theme, &name) {
             self.handle_error(format!("Error saving chosen theme: {err}"));
         }
         let mut file = match File::open(path) {
@@ -1428,9 +1446,15 @@ impl App {
             self.handle_error(format!("Error reading {name}.theme: {err}"));
             return None;
         }
-        let theme: Theme = match toml::from_str(&contents) {
+        if contents == "DEFAULT" {
+            return None;
+        }
+        let theme = match toml::from_str(&contents) {
             Ok(theme) => theme,
             Err(err) => {
+                if let Err(err) = fs::write(&current_theme, "DEFAULT") {
+                    self.handle_error(format!("Error setting theme to DEFAULT: {err}"));
+                }
                 self.handle_error(format!("Error reading {name}.theme: {err}"));
                 return None;
             }
@@ -1447,25 +1471,37 @@ impl App {
         if current_theme_file.exists() {
             // read contents of current_theme file
             // this is the name of the theme {name}.theme
-            match std::fs::read_to_string(current_theme_file) {
+            match std::fs::read_to_string(&current_theme_file) {
                 Ok(theme_file) => {
-                    let theme_file = path.join(theme_file);
-                    let mut theme = if theme_file.exists() {
-                        self.load_theme(&theme_file).unwrap_or_default()
+                    if theme_file == "DEFAULT" {
+                        let mut theme = Theme::default();
+                        theme.apply_global_as_default();
+                        self.set_theme(theme)
                     } else {
-                        self.handle_error(format!(
-                            "Theme file {} not found. Applying default theme.",
-                            theme_file.display()
-                        ));
-                        Theme::default()
-                    };
-                    theme.apply_global_as_default();
-                    self.set_theme(theme);
+                        let theme_file = path.join(theme_file);
+                        let mut theme = if theme_file.exists() {
+                            self.load_theme(&theme_file).unwrap_or_default()
+                        } else {
+                            self.handle_error(format!(
+                                "Theme file {} not found. Applying default theme.",
+                                theme_file.display()
+                            ));
+                            if let Err(err) = fs::write(&current_theme_file, "DEFAULT") {
+                                self.handle_error(format!("Error setting theme to DEFAULT: {err}"));
+                            }
+                            Theme::default()
+                        };
+                        theme.apply_global_as_default();
+                        self.set_theme(theme);
+                    }
                 }
                 Err(err) => {
                     self.handle_error(format!(
                         "Error reading .current_theme file {err}. Applying default theme."
                     ));
+                    if let Err(err) = fs::write(&current_theme_file, "DEFAULT") {
+                        self.handle_error(format!("Error setting theme to DEFAULT: {err}"));
+                    }
                     let mut theme = Theme::default();
                     theme.apply_global_as_default();
                     self.set_theme(theme)
