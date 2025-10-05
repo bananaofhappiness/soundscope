@@ -3,10 +3,13 @@
 All notable changes to this project will be documented in this file.
 
 ---
-## [1.3.0] - 2025-10-05
+## [1.4.0] - 2025-10-05
 
 ### Fixes
-- Fixed excessive CPU usage (over 90%).
-- Added mono-channel support for microphone input to resolve latency issues on some microphones.
+- The explorer and device list borders had the wrong color in the default theme.
+- Microphone input now stops when not in microphone capture mode.
+
+### Added
+- The ability to zoom in and out of the waveform.
 
 ### Known Issues
