@@ -179,6 +179,8 @@ impl Theme {
         fill_fields!(self.devices.
             background => bg,
             foreground => fg,
+            borders => fg,
+            highlight => hl,
         );
 
         fill_fields!(self.error.
@@ -257,6 +259,8 @@ struct LufsTheme {
 struct DevicesTheme {
     background: Option<Color>,
     foreground: Option<Color>,
+    borders: Option<Color>,
+    highlight: Option<Color>,
 }
 
 /// Used to define the theme for the explorer.
@@ -340,6 +344,8 @@ impl Default for DevicesTheme {
         Self {
             background: Some(Color::Black),
             foreground: Some(Color::Yellow),
+            borders: Some(Color::Yellow),
+            highlight: Some(Color::LightRed),
         }
     }
 }
@@ -801,7 +807,7 @@ impl App {
             .block(Block::bordered().style(bd).title(vec![
                 "F".to_span().style(hl).bold(),
                 "requencies ".to_span().style(lb).bold(),
-                "L".to_span().style(hl).bold(),
+                "L".to_span().style(hl),
                 "UFS".to_span().style(lb),
             ]))
             .x_axis(
@@ -834,6 +840,7 @@ impl App {
         let bd = s.fg(self.ui_settings.theme.lufs.borders.unwrap());
         let ch = s.fg(self.ui_settings.theme.lufs.chart.unwrap());
         let lb = s.fg(self.ui_settings.theme.lufs.labels.unwrap());
+        let nb = s.fg(self.ui_settings.theme.lufs.numbers.unwrap());
         let layout = Layout::default()
             .direction(Direction::Horizontal)
             .constraints([Constraint::Percentage(20), Constraint::Percentage(80)].as_ref())
@@ -871,9 +878,13 @@ impl App {
             .split(layout[0]);
 
         // get lufs text
+        let integrated = format!("{:06.2}", integrated_lufs);
+        let short_term = format!("{:06.2}", self.lufs[299]);
+        let integrated = integrated.to_span().style(nb);
+        let short_term = short_term.to_span().style(nb);
         let lufs_text = vec![
-            ("Short term LUFS:".bold() + format!("{:06.2}", self.lufs[299]).into()).style(fg),
-            ("Integrated LUFS:".bold() + format!("{:06.2}", integrated_lufs).into()).style(fg),
+            Line::from("Short term LUFS:".bold().style(fg) + short_term),
+            Line::from("Intergrated LUFS:".bold().style(fg) + integrated),
         ];
 
         // get true peak
@@ -886,10 +897,14 @@ impl App {
         };
 
         // get true peak text
+        let left = format!("{:.2}", tp_left);
+        let right = format!("{:.2}", tp_right);
+        let left = left.to_span().style(nb);
+        let right = right.to_span().style(nb);
         let true_peak_text = vec![
             "True Peak".to_line().style(fg).bold(),
-            "L: ".bold() + format!("{:.2} Db", tp_left).into(),
-            "R: ".bold() + format!("{:.2} Db", tp_right).into(),
+            "L: ".bold().style(fg) + left + " Db".bold().style(fg),
+            "R: ".bold().style(fg) + right + " Db".bold().style(fg),
         ];
 
         //get range text
@@ -905,7 +920,7 @@ impl App {
         // paragraphs
         let lufs_paragraph = Paragraph::new(lufs_text)
             .block(Block::bordered().style(bd).title(vec![
-                "F".to_span().style(hl).bold(),
+                "F".to_span().style(hl),
                 "requencies ".to_span().style(lb),
                 "L".to_span().style(hl).bold(),
                 "UFS".to_span().style(lb).bold(),
@@ -949,17 +964,27 @@ impl App {
         let s = Style::default()
             .fg(self.ui_settings.theme.devices.foreground.unwrap())
             .bg(self.ui_settings.theme.devices.background.unwrap());
+        let bd = s.fg(self.ui_settings.theme.devices.borders.unwrap());
+        let hl = s.fg(self.ui_settings.theme.devices.highlight.unwrap());
         let area = Self::get_explorer_popup_area(f.area(), 20, 30);
         f.render_widget(Clear, area);
         let devs = list_input_devs();
         let list_items: Vec<ListItem> = devs
             .iter()
             .enumerate()
-            .map(|(i, (name, _dev))| ListItem::from(format!("[{}] {}", i + 1, name)))
+            .map(|(i, (name, _dev))| {
+                let num = format!("[{}]", i + 1);
+                let name = format!(" {}", name);
+                // idk why .to_span doesn't work
+                // prolly cuz it takes &self but bold takes self
+                let num = num.bold().reset().style(hl);
+                let name = name.bold().reset().style(s);
+                ListItem::from(num + name)
+            })
             .collect();
         let list = List::new(list_items)
             .style(s)
-            .block(Block::bordered().title("Devices").style(s));
+            .block(Block::bordered().title("Devices").style(bd));
 
         f.render_widget(list, area);
     }

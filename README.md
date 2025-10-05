@@ -64,10 +64,10 @@ borders = "Yellow"
 waveform = "Yellow"
 playhead = "LightRed "# if not set, default is LightRed
 # Current playing time and total duration
-time = "Yellow"
+current_time = "Yellow"
+total_duration = "Yellow"
 # Buttons like <-, +, -, ->
 controls = "Yellow"
-controls_highlight = "LightRed"
 # Color of a button when it's pressed
 controls_highlight = "LightRed"
 labels = "Yellow"
@@ -90,13 +90,19 @@ labels = "Yellow"
 foreground = "Yellow"
 # Color of the numbers on the left
 numbers = "Yellow"
+borders = "Yellow"
+background = "Black"
+highlight = "LightRed"
 
 [devices]
 background = "Black"
 foreground = "Yellow"
+borders = "Yellow"
+highlight = "LightRed"
 
 [explorer]
 background = "Black"
+borders = "Yellow"
 item_foreground = "Yellow"
 highlight_item_foreground = "LightRed"
 dir_foreground = "Yellow"
@@ -105,7 +111,7 @@ highlight_dir_foreground = "LightRed"
 [error]
 background = "Black"
 foreground = "Yellow"
-bordes = "Yellow"
+borders = "Yellow"
 ```
 
 Only global foreground and global background colors are mandatory. You can pass the HEX color code or use one of the predefined colors below:
