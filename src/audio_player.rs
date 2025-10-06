@@ -1,8 +1,8 @@
 //! This module contains the implementation of the audio player used to play audio files in user's terminal.
-//! It uses `rodio` under the hood.
+//! under the hood it uses `rodio` for playback and `symphonia` for decoding.
 use crossbeam::channel::{Receiver, Sender};
 use eyre::{Result, eyre};
-use rodio::Source;
+use rodio::{ChannelCount, OutputStream, OutputStreamBuilder, Sink, Source, source};
 use std::{path::PathBuf, time::Duration};
 use symphonia::core::{
     audio::{Channels, SampleBuffer},
@@ -99,7 +99,7 @@ impl Source for AudioFile {
         None
     }
 
-    fn channels(&self) -> rodio::ChannelCount {
+    fn channels(&self) -> ChannelCount {
         self.channels.count() as u16
     }
 
@@ -111,7 +111,7 @@ impl Source for AudioFile {
         Some(self.duration)
     }
 
-    fn try_seek(&mut self, pos: Duration) -> Result<(), rodio::source::SeekError> {
+    fn try_seek(&mut self, pos: Duration) -> Result<(), source::SeekError> {
         // TODO: other channels, see https://docs.rs/rodio/latest/src/rodio/buffer.rs.html#88-105
         let curr_channel = self.playback_position % self.channels() as usize;
         let new_pos = pos.as_secs_f32() * self.sample_rate() as f32 * self.channels() as f32;
@@ -276,14 +276,14 @@ pub struct AudioPlayer {
     // sends playback position
     playback_position_tx: Sender<usize>,
     audio_file: AudioFile,
-    _stream_handle: rodio::OutputStream,
-    sink: rodio::Sink,
+    _stream_handle: OutputStream,
+    sink: Sink,
 }
 
 impl AudioPlayer {
     pub fn new(playback_position_tx: Sender<usize>) -> Result<Self> {
-        let _stream_handle = rodio::OutputStreamBuilder::open_default_stream()?;
-        let sink = rodio::Sink::connect_new(_stream_handle.mixer());
+        let _stream_handle = OutputStreamBuilder::open_default_stream()?;
+        let sink = Sink::connect_new(_stream_handle.mixer());
         let audio_file = AudioFile::new(playback_position_tx.clone());
         Ok(Self {
             playback_position_tx,
