@@ -85,7 +85,7 @@ impl Default for UISettings {
 }
 
 /// Mode of the [App]. Currently, only Player and Microphone are supported.
-#[derive(Default, PartialEq)]
+#[derive(Default)]
 enum Mode {
     #[default]
     Player,
@@ -558,7 +558,7 @@ impl App {
             // if not at zero then place the playhead right at the middle of a chart
             playhead_chart = self.get_middle_playhead_pos(samples_in_one_ms);
         }
-        if self.settings.mode != Mode::Player {
+        if !matches!(self.settings.mode, Mode::Player) {
             playhead_chart = [(-1., -1.), (-1., -1.)];
         }
 
@@ -883,8 +883,8 @@ impl App {
         let integrated = integrated.to_span().style(nb);
         let short_term = short_term.to_span().style(nb);
         let lufs_text = vec![
-            Line::from("Short term LUFS:".bold().style(fg) + short_term),
-            Line::from("Intergrated LUFS:".bold().style(fg) + integrated),
+            "Short term LUFS:".bold().style(fg) + short_term,
+            "Intergrated LUFS:".bold().style(fg) + integrated,
         ];
 
         // get true peak
@@ -1183,7 +1183,7 @@ impl App {
     fn handle_input(&mut self, key: KeyEvent) -> Result<()> {
         match key.code {
             // show explorer
-            KeyCode::Char('e') if self.settings.mode == Mode::Player => {
+            KeyCode::Char('e') if matches!(self.settings.mode, Mode::Player) => {
                 self.explorer.set_cwd(&self.current_directory).unwrap();
                 self.ui_settings.show_explorer = !self.ui_settings.show_explorer
             }
@@ -1195,7 +1195,7 @@ impl App {
             // show mid fft
             KeyCode::Char('m') => self.ui_settings.show_mid_fft = !self.ui_settings.show_mid_fft,
             // pause/play
-            KeyCode::Char(' ') if self.settings.mode == Mode::Player => {
+            KeyCode::Char(' ') if matches!(self.settings.mode, Mode::Player) => {
                 if let Err(_err) = self.player_command_tx.send(PlayerCommand::ChangeState) {
                     //TODO: log sending error
                 }
@@ -1208,7 +1208,7 @@ impl App {
             }
             // move playhead right and left
             KeyCode::Right
-                if self.settings.mode == Mode::Player
+                if matches!(self.settings.mode, Mode::Player)
                     && !(self.ui_settings.show_devices_list || self.ui_settings.show_explorer) =>
             {
                 self.ui_settings.right_arrow_timer = Some(Instant::now());
@@ -1219,7 +1219,7 @@ impl App {
                 }
             }
             KeyCode::Left
-                if self.settings.mode == Mode::Player
+                if matches!(self.settings.mode, Mode::Player)
                     && !(self.ui_settings.show_devices_list || self.ui_settings.show_explorer) =>
             {
                 self.ui_settings.left_arrow_timer = Some(Instant::now());
@@ -1246,7 +1246,7 @@ impl App {
                 }
             }
             // show devices
-            KeyCode::Char('d') if self.settings.mode == Mode::Microphone => {
+            KeyCode::Char('d') if matches!(self.settings.mode, Mode::Microphone) => {
                 self.ui_settings.show_devices_list = !self.ui_settings.show_devices_list
             }
             // change mode. this will be replaced by normal settings selection tab
@@ -1254,19 +1254,13 @@ impl App {
             KeyCode::Char('c') => {
                 self.settings.mode = if matches!(self.settings.mode, Mode::Microphone) {
                     self.reset_charts();
-                    match self.audio_capture_stream.as_ref() {
-                        Some(stream) => {
-                            let _ = stream.pause();
-                        }
-                        None => (),
+                    if let Some(stream) = self.audio_capture_stream.as_ref() {
+                        let _ = stream.pause();
                     }
                     Mode::Player
                 } else {
-                    match self.audio_capture_stream.as_ref() {
-                        Some(stream) => {
-                            let _ = stream.play();
-                        }
-                        None => (),
+                    if let Some(stream) = self.audio_capture_stream.as_ref() {
+                        let _ = stream.play();
                     }
                     Mode::Microphone
                 };
