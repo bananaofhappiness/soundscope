@@ -53,6 +53,12 @@ struct UISettings {
     error_text: String,
     error_timer: Option<Instant>,
     device_name: String,
+    waveform_window: f64,
+    // Used to flash control elements when the button is pressed
+    left_arrow_timer: Option<Instant>,
+    right_arrow_timer: Option<Instant>,
+    plus_sign_timer: Option<Instant>,
+    minus_sign_timer: Option<Instant>,
 }
 
 impl Default for UISettings {
@@ -69,12 +75,17 @@ impl Default for UISettings {
             error_text: String::new(),
             error_timer: None,
             device_name: String::new(),
+            waveform_window: 15.,
+            left_arrow_timer: None,
+            right_arrow_timer: None,
+            plus_sign_timer: None,
+            minus_sign_timer: None,
         }
     }
 }
 
 /// Mode of the [App]. Currently, only Player and Microphone are supported.
-#[derive(Default, PartialEq)]
+#[derive(Default)]
 enum Mode {
     #[default]
     Player,
@@ -124,9 +135,11 @@ impl Theme {
         fill_fields!(self.waveform.
             borders => fg,
             controls => fg,
+            controls_highlight => hl,
             labels => fg,
             playhead => hl,
-            time => fg,
+            current_time => fg,
+            total_duration => fg,
             waveform => fg,
             background => bg,
             highlight => hl,
@@ -156,6 +169,7 @@ impl Theme {
 
         fill_fields!(self.explorer.
             background => bg,
+            borders => fg,
             dir_foreground => fg,
             item_foreground => fg,
             highlight_dir_foreground => hl,
@@ -165,6 +179,8 @@ impl Theme {
         fill_fields!(self.devices.
             background => bg,
             foreground => fg,
+            borders => fg,
+            highlight => hl,
         );
 
         fill_fields!(self.error.
@@ -195,9 +211,11 @@ struct WaveformTheme {
     waveform: Option<Color>,
     playhead: Option<Color>,
     /// Current playing time and total duration
-    time: Option<Color>,
+    current_time: Option<Color>,
+    total_duration: Option<Color>,
     /// Buttons like <-, +, -, ->
     controls: Option<Color>,
+    controls_highlight: Option<Color>,
     labels: Option<Color>,
     /// Background of the chart
     background: Option<Color>,
@@ -241,12 +259,15 @@ struct LufsTheme {
 struct DevicesTheme {
     background: Option<Color>,
     foreground: Option<Color>,
+    borders: Option<Color>,
+    highlight: Option<Color>,
 }
 
 /// Used to define the theme for the explorer.
 #[derive(Deserialize)]
 struct ExplorerTheme {
     background: Option<Color>,
+    borders: Option<Color>,
     item_foreground: Option<Color>,
     highlight_item_foreground: Option<Color>,
     dir_foreground: Option<Color>,
@@ -277,8 +298,10 @@ impl Default for WaveformTheme {
             borders: Some(Color::Yellow),
             waveform: Some(Color::Yellow),
             playhead: Some(Color::LightRed),
-            time: Some(Color::Yellow),
+            current_time: Some(Color::Yellow),
+            total_duration: Some(Color::Yellow),
             controls: Some(Color::Yellow),
+            controls_highlight: Some(Color::LightRed),
             labels: Some(Color::Yellow),
             background: Some(Color::Black),
             highlight: Some(Color::LightRed),
@@ -320,7 +343,9 @@ impl Default for DevicesTheme {
     fn default() -> Self {
         Self {
             background: Some(Color::Black),
-            foreground: Some(Color::White),
+            foreground: Some(Color::Yellow),
+            borders: Some(Color::Yellow),
+            highlight: Some(Color::LightRed),
         }
     }
 }
@@ -329,6 +354,7 @@ impl Default for ExplorerTheme {
     fn default() -> Self {
         Self {
             background: Some(Color::Black),
+            borders: Some(Color::Yellow),
             item_foreground: Some(Color::Yellow),
             highlight_item_foreground: Some(Color::LightRed),
             dir_foreground: Some(Color::Yellow),
@@ -447,7 +473,9 @@ impl App {
 
     fn set_theme(&mut self, theme: Theme) {
         // define styles
-        let s = Style::default().bg(theme.explorer.background.unwrap());
+        let s = Style::default()
+            .bg(theme.explorer.background.unwrap())
+            .fg(theme.explorer.borders.unwrap());
         let is = s.fg(theme.explorer.item_foreground.unwrap());
         let ihl = s.fg(theme.explorer.highlight_item_foreground.unwrap());
         let ds = s.fg(theme.explorer.dir_foreground.unwrap()).bold();
@@ -467,7 +495,6 @@ impl App {
 
     /// The function used to draw the UI.
     fn draw(&mut self, f: &mut Frame) {
-        std::thread::sleep(Duration::from_millis(8));
         // split the area into waveform part and charts parts
         let area = f.area();
         let layout = Layout::default()
@@ -512,7 +539,8 @@ impl App {
         let _ct = s.fg(self.ui_settings.theme.waveform.controls.unwrap());
         let hl = s.fg(self.ui_settings.theme.waveform.highlight.unwrap());
         let pl = s.fg(self.ui_settings.theme.waveform.playhead.unwrap());
-        let tm = s.fg(self.ui_settings.theme.waveform.time.unwrap());
+        let ct = s.fg(self.ui_settings.theme.waveform.current_time.unwrap());
+        let td = s.fg(self.ui_settings.theme.waveform.total_duration.unwrap());
         let wv = s.fg(self.ui_settings.theme.waveform.waveform.unwrap());
         // playhead is just a function that looks like a vertical line
         let samples_in_one_ms = self.audio_file.sample_rate() / 1000;
@@ -524,54 +552,13 @@ impl App {
             ),
         ];
         if self.waveform.at_end {
-            // if at last 15 sec of the audion the playhead should move from the middle to the end of the chart
-            let total_samples = self.audio_file.mid_samples().len();
-            let chart_duration_seconds = 15.0; // make a var not to hard code and be able to to add resizing waveform window if needed
-            let chart_middle_seconds = chart_duration_seconds / 2.0;
-
-            // calculate the absolute sample position where the playhead starts scrolling from the middle of the chart to the end
-            // this is when playback enters the last `chart_middle_seconds` (default is 7.5s) of the total audio duration.
-            let scroll_start_absolute_samples = total_samples.saturating_sub(
-                (chart_middle_seconds * self.audio_file.sample_rate() as f64) as usize,
-            );
-
-            // calculate playhead's position relative to the start of this scroll phase
-            // since `self.waveform.playhead` is the absolute current playback position.
-            let relative_samples_in_scroll_phase = self
-                .waveform
-                .playhead
-                .saturating_sub(scroll_start_absolute_samples);
-
-            // map this relative sample position to the chart's X-axis range for the playhead.
-            // the conversion from samples to chart units (milliseconds) uses the same 1/samles_in_one_ms scale
-            // as other playhead positions in this function.
-            let mut chart_x_position = (chart_middle_seconds * 1000.)
-                + (relative_samples_in_scroll_phase as f64 / samples_in_one_ms as f64);
-
-            // Ensure the playhead does not exceed the chart's upper bound.
-            chart_x_position = f64::min(chart_x_position, chart_duration_seconds * 1000.);
-
+            let chart_x_position = self.get_relative_playhead_pos(samples_in_one_ms);
             playhead_chart = [(chart_x_position, 1.), (chart_x_position + 0.01, -1.)];
         } else if !self.waveform.at_zero {
             // if not at zero then place the playhead right at the middle of a chart
-            playhead_chart = [
-                (
-                    f64::min(
-                        self.waveform.playhead as f64 / samples_in_one_ms as f64,
-                        1000. * 7.5,
-                    ),
-                    1.,
-                ),
-                (
-                    f64::min(
-                        self.waveform.playhead as f64 / samples_in_one_ms as f64,
-                        1000. * 7.5,
-                    ) + 0.01,
-                    -1.,
-                ),
-            ];
+            playhead_chart = self.get_middle_playhead_pos(samples_in_one_ms);
         }
-        if self.settings.mode != Mode::Player {
+        if !matches!(self.settings.mode, Mode::Player) {
             playhead_chart = [(-1., -1.), (-1., -1.)];
         }
 
@@ -629,28 +616,129 @@ impl App {
             .right_aligned(),
         };
         let title = self.audio_file.title();
+        let x_window = match self.settings.mode {
+            Mode::Microphone | Mode::_System => [
+                15000. - (self.ui_settings.waveform_window as usize * 1000) as f64,
+                15000.,
+            ],
+            _ => [
+                0.,
+                (self.ui_settings.waveform_window as usize * 1000) as f64,
+            ],
+        };
         let chart = Chart::new(datasets)
             .block(
                 Block::bordered()
                     .title(title.to_span().style(lb))
-                    // .title_bottom(Line::from("<- - + ->").left_aligned())
+                    .title_bottom(self.get_flashing_controls_text().left_aligned())
                     // current position and total duration
                     .title_bottom(
-                        Line::styled(format!("{:0>2}:{:0>5.2}", current_min, current_sec), tm)
+                        Line::styled(format!("{:0>2}:{:0>5.2}", current_min, current_sec), ct)
                             .centered(),
                     )
                     .title_bottom(
-                        Line::styled(format!("{:0>2}:{:0>5.2}", total_min, total_sec), tm)
+                        Line::styled(format!("{:0>2}:{:0>5.2}", total_min, total_sec), td)
                             .right_aligned(),
                     )
                     .title(upper_right_title)
                     .style(bd),
             )
             .style(wv)
-            .x_axis(Axis::default().bounds([0., 15. * 1000.]))
+            .x_axis(Axis::default().bounds(x_window))
             .y_axis(Axis::default().bounds([-1., 1.]));
 
         frame.render_widget(chart, area);
+    }
+
+    fn get_relative_playhead_pos(&self, samples_in_one_ms: u32) -> f64 {
+        // if at last 15 sec of the audion the playhead should move from the middle to the end of the chart
+        let total_samples = self.audio_file.mid_samples().len();
+        let chart_duration_seconds = self.ui_settings.waveform_window; // make a var not to hard code and be able to to add resizing waveform window if needed
+        let chart_middle_seconds = chart_duration_seconds / 2.0;
+
+        // calculate the absolute sample position where the playhead starts scrolling from the middle of the chart to the end
+        // this is when playback enters the last `chart_middle_seconds` (default is 7.5s) of the total audio duration.
+        let scroll_start_absolute_samples = total_samples
+            .saturating_sub((chart_middle_seconds * self.audio_file.sample_rate() as f64) as usize);
+
+        // calculate playhead's position relative to the start of this scroll phase
+        // since `self.waveform.playhead` is the absolute current playback position.
+        let relative_samples_in_scroll_phase = self
+            .waveform
+            .playhead
+            .saturating_sub(scroll_start_absolute_samples);
+
+        // map this relative sample position to the chart's X-axis range for the playhead.
+        // the conversion from samples to chart units (milliseconds) uses the same 1/samles_in_one_ms scale
+        // as other playhead positions in this function.
+        let mut chart_x_position = (chart_middle_seconds * 1000.)
+            + (relative_samples_in_scroll_phase as f64 / samples_in_one_ms as f64);
+
+        // Ensure the playhead does not exceed the chart's upper bound.
+        chart_x_position = f64::min(chart_x_position, chart_duration_seconds * 1000.);
+        chart_x_position
+    }
+
+    fn get_middle_playhead_pos(&self, samples_in_one_ms: u32) -> [(f64, f64); 2] {
+        [
+            (
+                f64::min(
+                    self.waveform.playhead as f64 / samples_in_one_ms as f64,
+                    1000. * self.ui_settings.waveform_window / 2.,
+                ),
+                1.,
+            ),
+            (
+                f64::min(
+                    self.waveform.playhead as f64 / samples_in_one_ms as f64,
+                    1000. * self.ui_settings.waveform_window / 2.,
+                ) + 0.01,
+                -1.,
+            ),
+        ]
+    }
+
+    fn get_flashing_controls_text(&self) -> Line<'_> {
+        let t = 100;
+        let s = Style::default()
+            .bg(self.ui_settings.theme.waveform.background.unwrap())
+            .fg(self.ui_settings.theme.waveform.controls.unwrap());
+        let hl = s.fg(self.ui_settings.theme.waveform.controls_highlight.unwrap());
+        let left_arrow = match self.ui_settings.left_arrow_timer {
+            Some(timer) if timer.elapsed().as_millis() < t => "<-".to_span().style(hl),
+            _ => "<-".to_span().style(s),
+        };
+        let right_arrow = match self.ui_settings.right_arrow_timer {
+            Some(timer) if timer.elapsed().as_millis() < t => "->".to_span().style(hl),
+            _ => "->".to_span().style(s),
+        };
+        let minus = match self.ui_settings.minus_sign_timer {
+            Some(timer) if timer.elapsed().as_millis() < t => "-".to_span().style(hl),
+            _ => "-".to_span().style(s),
+        };
+        let plus = match self.ui_settings.plus_sign_timer {
+            Some(timer) if timer.elapsed().as_millis() < t => "+".to_span().style(hl),
+            _ => "+".to_span().style(s),
+        };
+        // Line::from(format!(
+        //     "{} {} {:0>2}s {} {}",
+        //     left_arrow, minus, self.ui_settings.waveform_window, plus, right_arrow
+        // ))
+        Line::from(vec![
+            left_arrow,
+            " ".to_span(),
+            minus,
+            " ".to_span(),
+            format!(
+                "{:0>2}s",
+                self.ui_settings.waveform_window.to_span().style(s)
+            )
+            .into(),
+            " ".to_span(),
+            plus,
+            " ".to_span(),
+            right_arrow,
+        ])
     }
 
     fn render_fft_chart(&mut self, frame: &mut Frame, area: Rect) {
@@ -719,7 +807,7 @@ impl App {
             .block(Block::bordered().style(bd).title(vec![
                 "F".to_span().style(hl).bold(),
                 "requencies ".to_span().style(lb).bold(),
-                "L".to_span().style(hl).bold(),
+                "L".to_span().style(hl),
                 "UFS".to_span().style(lb),
             ]))
             .x_axis(
@@ -752,6 +840,7 @@ impl App {
         let bd = s.fg(self.ui_settings.theme.lufs.borders.unwrap());
         let ch = s.fg(self.ui_settings.theme.lufs.chart.unwrap());
         let lb = s.fg(self.ui_settings.theme.lufs.labels.unwrap());
+        let nb = s.fg(self.ui_settings.theme.lufs.numbers.unwrap());
         let layout = Layout::default()
             .direction(Direction::Horizontal)
             .constraints([Constraint::Percentage(20), Constraint::Percentage(80)].as_ref())
@@ -789,9 +878,13 @@ impl App {
             .split(layout[0]);
 
         // get lufs text
+        let integrated = format!("{:06.2}", integrated_lufs);
+        let short_term = format!("{:06.2}", self.lufs[299]);
+        let integrated = integrated.to_span().style(nb);
+        let short_term = short_term.to_span().style(nb);
         let lufs_text = vec![
-            ("Short term LUFS:".bold() + format!("{:06.2}", self.lufs[299]).into()).style(fg),
-            ("Integrated LUFS:".bold() + format!("{:06.2}", integrated_lufs).into()).style(fg),
+            "Short term LUFS:".bold().style(fg) + short_term,
+            "Intergrated LUFS:".bold().style(fg) + integrated,
         ];
 
         // get true peak
@@ -804,10 +897,14 @@ impl App {
         };
 
         // get true peak text
+        let left = format!("{:.2}", tp_left);
+        let right = format!("{:.2}", tp_right);
+        let left = left.to_span().style(nb);
+        let right = right.to_span().style(nb);
         let true_peak_text = vec![
             "True Peak".to_line().style(fg).bold(),
-            "L: ".bold() + format!("{:.2} Db", tp_left).into(),
-            "R: ".bold() + format!("{:.2} Db", tp_right).into(),
+            "L: ".bold().style(fg) + left + " Db".bold().style(fg),
+            "R: ".bold().style(fg) + right + " Db".bold().style(fg),
         ];
 
         //get range text
@@ -823,7 +920,7 @@ impl App {
         // paragraphs
         let lufs_paragraph = Paragraph::new(lufs_text)
             .block(Block::bordered().style(bd).title(vec![
-                "F".to_span().style(hl).bold(),
+                "F".to_span().style(hl),
                 "requencies ".to_span().style(lb),
                 "L".to_span().style(hl).bold(),
                 "UFS".to_span().style(lb).bold(),
@@ -867,15 +964,27 @@ impl App {
         let s = Style::default()
             .fg(self.ui_settings.theme.devices.foreground.unwrap())
             .bg(self.ui_settings.theme.devices.background.unwrap());
+        let bd = s.fg(self.ui_settings.theme.devices.borders.unwrap());
+        let hl = s.fg(self.ui_settings.theme.devices.highlight.unwrap());
         let area = Self::get_explorer_popup_area(f.area(), 20, 30);
         f.render_widget(Clear, area);
         let devs = list_input_devs();
         let list_items: Vec<ListItem> = devs
             .iter()
             .enumerate()
-            .map(|(i, (name, _dev))| ListItem::from(format!("[{}] {}", i + 1, name)))
+            .map(|(i, (name, _dev))| {
+                let num = format!("[{}]", i + 1);
+                let name = format!(" {}", name);
+                // idk why .to_span doesn't work
+                // prolly cuz it takes &self but bold takes self
+                let num = num.bold().reset().style(hl);
+                let name = name.bold().reset().style(s);
+                ListItem::from(num + name)
+            })
             .collect();
-        let list = List::new(list_items).block(Block::bordered().title("Devices").style(s));
+        let list = List::new(list_items)
+            .style(s)
+            .block(Block::bordered().title("Devices").style(bd));
 
         f.render_widget(list, area);
     }
@@ -921,9 +1030,13 @@ impl App {
         self.current_directory = self.explorer.cwd().clone();
 
         loop {
+            std::thread::sleep(Duration::from_millis(8));
             // receive audio file
             if let Ok(af) = self.audio_file_rx.try_recv() {
                 self.audio_file = af;
+                if self.audio_file.duration().as_secs_f64() < 15. {
+                    self.ui_settings.waveform_window = self.audio_file.duration().as_secs_f64()
+                }
             }
 
             // receive playback position
@@ -933,7 +1046,7 @@ impl App {
             }
 
             // use ringbuf to analyze data if the `Mode` is not `Mode::Player`
-            if self.settings.mode == Mode::Microphone {
+            if matches!(self.settings.mode, Mode::Microphone) {
                 self.analyze_microphone_input();
             }
 
@@ -1015,21 +1128,24 @@ impl App {
         }
 
         //get waveform
+        let window = self.ui_settings.waveform_window as usize;
+        let half_window = self.ui_settings.waveform_window / 2.;
         let mid_samples_len = self.audio_file.mid_samples().len();
         self.waveform.playhead = pos;
         // if at zero load first 15 seconds to show
         if self.waveform.at_zero {
-            let waveform_samples = &self.audio_file.mid_samples()[0..15 * sr];
+            let waveform_samples = &self.audio_file.mid_samples()[0..window * sr];
             self.waveform.chart = Analyzer::get_waveform(waveform_samples, sr);
         }
-        let waveform_left_bound = pos.saturating_sub((7.5 * sr as f64) as usize);
-        let waveform_right_bound = usize::min(pos + (7.5 * sr as f64) as usize, mid_samples_len);
+        let waveform_left_bound = pos.saturating_sub((half_window * sr as f64) as usize);
+        let waveform_right_bound =
+            usize::min(pos + (half_window * sr as f64) as usize, mid_samples_len);
 
-        // if at end load last 15 seconds and dont scroll
+        // if at end load last `window` seconds and dont scroll
         if waveform_right_bound == mid_samples_len {
             self.waveform.at_end = true;
             let waveform_samples =
-                &self.audio_file.mid_samples()[mid_samples_len - 15 * sr..mid_samples_len];
+                &self.audio_file.mid_samples()[mid_samples_len - window * sr..mid_samples_len];
             self.waveform.chart = Analyzer::get_waveform(waveform_samples, sr);
         // if not at the beginning load 15 seconds and scroll
         } else if waveform_left_bound != 0 {
@@ -1067,7 +1183,7 @@ impl App {
     fn handle_input(&mut self, key: KeyEvent) -> Result<()> {
         match key.code {
             // show explorer
-            KeyCode::Char('e') if self.settings.mode == Mode::Player => {
+            KeyCode::Char('e') if matches!(self.settings.mode, Mode::Player) => {
                 self.explorer.set_cwd(&self.current_directory).unwrap();
                 self.ui_settings.show_explorer = !self.ui_settings.show_explorer
             }
@@ -1079,7 +1195,7 @@ impl App {
             // show mid fft
             KeyCode::Char('m') => self.ui_settings.show_mid_fft = !self.ui_settings.show_mid_fft,
             // pause/play
-            KeyCode::Char(' ') if self.settings.mode == Mode::Player => {
+            KeyCode::Char(' ') if matches!(self.settings.mode, Mode::Player) => {
                 if let Err(_err) = self.player_command_tx.send(PlayerCommand::ChangeState) {
                     //TODO: log sending error
                 }
@@ -1092,9 +1208,10 @@ impl App {
             }
             // move playhead right and left
             KeyCode::Right
-                if self.settings.mode == Mode::Player
+                if matches!(self.settings.mode, Mode::Player)
                     && !(self.ui_settings.show_devices_list || self.ui_settings.show_explorer) =>
             {
+                self.ui_settings.right_arrow_timer = Some(Instant::now());
                 self.lufs = [-50.; 300];
                 self.analyzer.reset();
                 if let Err(_err) = self.player_command_tx.send(PlayerCommand::MoveRight) {
@@ -1102,9 +1219,10 @@ impl App {
                 }
             }
             KeyCode::Left
-                if self.settings.mode == Mode::Player
+                if matches!(self.settings.mode, Mode::Player)
                     && !(self.ui_settings.show_devices_list || self.ui_settings.show_explorer) =>
             {
+                self.ui_settings.left_arrow_timer = Some(Instant::now());
                 self.lufs = [-50.; 300];
                 self.analyzer.reset();
                 if let Err(_err) = self.player_command_tx.send(PlayerCommand::MoveLeft) {
@@ -1128,16 +1246,22 @@ impl App {
                 }
             }
             // show devices
-            KeyCode::Char('d') if self.settings.mode == Mode::Microphone => {
+            KeyCode::Char('d') if matches!(self.settings.mode, Mode::Microphone) => {
                 self.ui_settings.show_devices_list = !self.ui_settings.show_devices_list
             }
             // change mode. this will be replaced by normal settings selection tab
             // TODO normal settings popup window with a list of options
             KeyCode::Char('c') => {
-                self.settings.mode = if self.settings.mode == Mode::Microphone {
+                self.settings.mode = if matches!(self.settings.mode, Mode::Microphone) {
                     self.reset_charts();
+                    if let Some(stream) = self.audio_capture_stream.as_ref() {
+                        let _ = stream.pause();
+                    }
                     Mode::Player
                 } else {
+                    if let Some(stream) = self.audio_capture_stream.as_ref() {
+                        let _ = stream.play();
+                    }
                     Mode::Microphone
                 };
             }
@@ -1155,6 +1279,21 @@ impl App {
                     .set_cwd(config_dir().unwrap().join("soundscope"))
                     .unwrap();
                 self.ui_settings.show_themes_list = !self.ui_settings.show_themes_list;
+            }
+            KeyCode::Char('=') | KeyCode::Char('+') => {
+                self.ui_settings.plus_sign_timer = Some(Instant::now());
+                self.ui_settings.waveform_window =
+                    f64::max(self.ui_settings.waveform_window - 1., 1.);
+            }
+            KeyCode::Char('-') | KeyCode::Char('_') => {
+                let bound = if self.audio_file.duration().as_secs_f64() < 15. {
+                    self.audio_file.duration().as_secs_f64()
+                } else {
+                    15.
+                };
+                self.ui_settings.minus_sign_timer = Some(Instant::now());
+                self.ui_settings.waveform_window =
+                    f64::min(self.ui_settings.waveform_window + 1., bound);
             }
             _ => (),
         }
@@ -1311,7 +1450,7 @@ impl App {
     fn load_theme(&mut self, path: &PathBuf) -> Option<Theme> {
         let name = path.file_name().unwrap().to_string_lossy().to_string();
         let current_theme = path.parent().unwrap().join(".current_theme");
-        if let Err(err) = fs::write(current_theme, &name) {
+        if let Err(err) = fs::write(&current_theme, &name) {
             self.handle_error(format!("Error saving chosen theme: {err}"));
         }
         let mut file = match File::open(path) {
@@ -1326,9 +1465,15 @@ impl App {
             self.handle_error(format!("Error reading {name}.theme: {err}"));
             return None;
         }
-        let theme: Theme = match toml::from_str(&contents) {
+        if contents == "DEFAULT" {
+            return None;
+        }
+        let theme = match toml::from_str(&contents) {
             Ok(theme) => theme,
             Err(err) => {
+                if let Err(err) = fs::write(&current_theme, "DEFAULT") {
+                    self.handle_error(format!("Error setting theme to DEFAULT: {err}"));
+                }
                 self.handle_error(format!("Error reading {name}.theme: {err}"));
                 return None;
             }
@@ -1345,25 +1490,37 @@ impl App {
         if current_theme_file.exists() {
             // read contents of current_theme file
             // this is the name of the theme {name}.theme
-            match std::fs::read_to_string(current_theme_file) {
+            match std::fs::read_to_string(&current_theme_file) {
                 Ok(theme_file) => {
-                    let theme_file = path.join(theme_file);
-                    let mut theme = if theme_file.exists() {
-                        self.load_theme(&theme_file).unwrap_or_default()
+                    if theme_file == "DEFAULT" {
+                        let mut theme = Theme::default();
+                        theme.apply_global_as_default();
+                        self.set_theme(theme)
                     } else {
-                        self.handle_error(format!(
-                            "Theme file {} not found. Applying default theme.",
-                            theme_file.display()
-                        ));
-                        Theme::default()
-                    };
-                    theme.apply_global_as_default();
-                    self.set_theme(theme);
+                        let theme_file = path.join(theme_file);
+                        let mut theme = if theme_file.exists() {
+                            self.load_theme(&theme_file).unwrap_or_default()
+                        } else {
+                            self.handle_error(format!(
+                                "Theme file {} not found. Applying default theme.",
+                                theme_file.display()
+                            ));
+                            if let Err(err) = fs::write(&current_theme_file, "DEFAULT") {
+                                self.handle_error(format!("Error setting theme to DEFAULT: {err}"));
+                            }
+                            Theme::default()
+                        };
+                        theme.apply_global_as_default();
+                        self.set_theme(theme);
+                    }
                 }
                 Err(err) => {
                     self.handle_error(format!(
                         "Error reading .current_theme file {err}. Applying default theme."
                     ));
+                    if let Err(err) = fs::write(&current_theme_file, "DEFAULT") {
+                        self.handle_error(format!("Error setting theme to DEFAULT: {err}"));
+                    }
                     let mut theme = Theme::default();
                     theme.apply_global_as_default();
                     self.set_theme(theme)
@@ -1637,7 +1794,7 @@ mod tests {
 
         theme.waveform.playhead = None;
         theme.waveform.highlight = None;
-        theme.waveform.time = None;
+        theme.waveform.current_time = None;
 
         theme.lufs.numbers = None;
 
@@ -1653,7 +1810,7 @@ mod tests {
 
         assert!(theme.waveform.playhead == Some(Color::LightRed));
         assert!(theme.waveform.highlight == Some(Color::LightRed));
-        assert!(theme.waveform.time == Some(Color::LightCyan));
+        assert!(theme.waveform.current_time == Some(Color::LightCyan));
 
         assert!(theme.lufs.numbers == Some(Color::LightCyan));
 
