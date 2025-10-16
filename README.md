@@ -44,7 +44,7 @@ Grab the latest release for your platform from the [**Releases page**](https://g
 ---
 ## 🎥 Demo Video
 
-Watch the demo on [YouTube](https://youtu.be/Z5xJqjMiC1c).
+Watch the demo on [YouTube](https://youtu.be/AnvWPmRWa1Y?si=9-oT4GtchbH5fqJa).
 
 ---
 ## 🎨 Creating a custom theme
