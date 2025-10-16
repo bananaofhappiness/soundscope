@@ -8,6 +8,7 @@ use spectrum_analyzer::{
 
 pub struct Analyzer {
     loudness_meter: EbuR128,
+    sample_rate: u32,
 }
 
 impl Default for Analyzer {
@@ -16,25 +17,29 @@ impl Default for Analyzer {
             Ok(loudness_meter) => loudness_meter,
             Err(err) => panic!("Failed to create loudness meter: {}", err),
         };
-        Self { loudness_meter }
+        Self {
+            loudness_meter,
+            sample_rate: 44100,
+        }
     }
 }
 
 impl Analyzer {
-    /// used when new file selected
-    pub fn select_new_file(&mut self, channels: u32, rate: u32) -> Result<()> {
+    /// used when new file or device selected
+    pub fn create_loudness_meter(&mut self, channels: u32, rate: u32) -> Result<()> {
+        self.sample_rate = rate;
         self.loudness_meter = EbuR128::new(channels, rate, Mode::all())?;
         Ok(())
     }
 
-    pub fn get_fft(&mut self, samples: &[f32], sample_rate: usize) -> Vec<(f64, f64)> {
+    pub fn get_fft(&self, samples: &[f32]) -> Vec<(f64, f64)> {
         // apply hann window for smoothing
         let hann_window = hann_window(samples);
 
         // calc spectrum
         let spectrum = samples_fft_to_spectrum(
             &hann_window,
-            sample_rate as u32,
+            self.sample_rate,
             FrequencyLimit::Range(20.0, 20000.0),
             Some(&scale_20_times_log10),
         )
@@ -50,7 +55,7 @@ impl Analyzer {
         Self::transform_to_log_scale(&fft_vec)
     }
 
-    pub fn transform_to_log_scale(fft_data: &[(f64, f64)]) -> Vec<(f64, f64)> {
+    fn transform_to_log_scale(fft_data: &[(f64, f64)]) -> Vec<(f64, f64)> {
         // set frequency range
         let min_freq_log = 20_f64.log10();
         let max_freq_log = 20000_f64.log10();
@@ -72,8 +77,8 @@ impl Analyzer {
             .collect()
     }
 
-    pub fn get_waveform(samples: &[f32], sample_rate: usize) -> Vec<(f64, f64)> {
-        let samples_in_one_ms = sample_rate / 1000;
+    pub fn get_waveform(&self, samples: &[f32]) -> Vec<(f64, f64)> {
+        let samples_in_one_ms = self.sample_rate as usize / 1000;
         let iter = samples.iter().step_by(samples_in_one_ms).map(|x| *x as f64);
         (0..15 * 1000)
             .map(|x| x as f64)
@@ -107,6 +112,10 @@ impl Analyzer {
 
         Ok((tp_left, tp_right))
     }
+
+    pub fn sample_rate(&self) -> u32 {
+        self.sample_rate
+    }
 }
 
 #[cfg(test)]
@@ -126,7 +135,7 @@ mod tests {
     #[test]
     /// Tests the FFT functionality with a simple sine wave
     fn test_get_fft() {
-        let mut analyzer = Analyzer::default();
+        let analyzer = Analyzer::default();
 
         // Generate a simple sine wave at 440Hz
         let sample_rate = 44100;
@@ -139,7 +148,7 @@ mod tests {
             })
             .collect();
 
-        let fft_result = analyzer.get_fft(&samples, sample_rate);
+        let fft_result = analyzer.get_fft(&samples);
 
         // Should have some data points
         assert!(!fft_result.is_empty());
@@ -148,9 +157,10 @@ mod tests {
     #[test]
     /// Tests the waveform generation
     fn test_get_waveform() {
+        let analyzer = Analyzer::default();
         let samples: Vec<f32> = (0..44100).map(|i| (i as f32 / 44100.0).sin()).collect();
 
-        let waveform = Analyzer::get_waveform(&samples, 44100);
+        let waveform = analyzer.get_waveform(&samples);
 
         // Should have data points
         assert!(!waveform.is_empty());
@@ -194,10 +204,10 @@ mod tests {
         let mut analyzer = Analyzer::default();
 
         // Test reinitializing with different parameters
-        let result = analyzer.select_new_file(1, 48000); // mono, 48kHz
+        let result = analyzer.create_loudness_meter(1, 48000); // mono, 48kHz
         assert!(result.is_ok());
 
-        let result = analyzer.select_new_file(6, 96000); // 5.1 surround, 96kHz
+        let result = analyzer.create_loudness_meter(6, 96000); // 5.1 surround, 96kHz
         assert!(result.is_ok());
     }
 
