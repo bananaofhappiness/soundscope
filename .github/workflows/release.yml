@@ -39,6 +39,11 @@ jobs:
             os: macOS-latest
             target: x86_64-apple-darwin
             bin: soundscope
+            name: soundscope-Darwin-x86_64.tar.gz
+          - os_name: macOS-aarch64
+            os: macOS-latest
+            target: aarch64-apple-darwin
+            bin: soundscope
             name: soundscope-Darwin-aarch64.tar.gz
           - os_name: Windows-x86_64
             os: windows-latest
