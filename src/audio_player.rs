@@ -325,8 +325,8 @@ impl AudioPlayer {
                         // clear the sink and append new file
                         self.sink.stop();
                         self.sink.clear();
-                        self.sink.append(self.audio_file.clone());
                         self.audio_file.playback_position = 0;
+                        self.sink.append(self.audio_file.clone());
                         if let Err(_err) = self.playback_position_tx.send(0) {
                             // TODO: log a sending error
                         }
@@ -338,6 +338,11 @@ impl AudioPlayer {
                         } else {
                             self.sink.pause();
                         }
+                        // if we hit the end of the track, then load it again
+                        if self.sink.empty() {
+                            self.audio_file.playback_position = 0;
+                            self.sink.append(self.audio_file.clone());
+                        }
                     }
                     PlayerCommand::Quit => {
                         self.sink.stop();
@@ -348,13 +353,27 @@ impl AudioPlayer {
                     // move the playhead right
                     PlayerCommand::MoveRight => {
                         let pos = self.sink.get_pos();
-                        if let Err(err) = self.sink.try_seek(pos + Duration::from_secs(5)) {
+                        if self.sink.empty() {
+                            continue;
+                        }
+                        let seek = (pos + Duration::from_secs(5)).min(self.audio_file.duration);
+
+                        if let Err(err) = self.sink.try_seek(seek) {
                             println!("Error seeking: {:?}", err);
                             // TODO: error handling
                         }
                     }
                     // move the playhead left
                     PlayerCommand::MoveLeft => {
+                        if self.sink.empty() {
+                            let pos = self.audio_file.duration - Duration::from_secs(5);
+                            self.sink.append(self.audio_file.clone());
+                            if let Err(err) = self.sink.try_seek(pos) {
+                                println!("Error seeking: {:?}", err);
+                                // TODO: error handling
+                            }
+                            continue;
+                        }
                         let pos = self.sink.get_pos();
                         if let Err(_err) = self
                             .sink
