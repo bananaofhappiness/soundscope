@@ -132,9 +132,13 @@ Only global foreground and global background colors are mandatory. You can pass 
 - LightMagenta
 - LightCyan
 - White
+- Reset
 ```
+`Reset` restores the terminal's default color. This can be useful if you're using a transparent background.
+
 Color separators `-`, `_`, and ` ` are supported and names are case insensitive. For example, `Light-blue` or `light_blue` or `light Blue` are all valid.
-After saving your theme into `.theme` file and placing it into `{YOUR_CONFIG_DIRECTORY}/soundscope`, press `T` to open up the theme selection list and choose yours.
+
+After saving your theme into `.theme` file and placing it into `{YOUR_CONFIG_DIRECTORY}/soundscope`, press `T` to open up the theme selection list and choose yours. 
 
 ---
 ## 🐛 Known Issues
