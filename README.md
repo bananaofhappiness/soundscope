@@ -40,6 +40,7 @@ Grab the latest release for your platform from the [**Releases page**](https://g
 - In microphone mode, choose **D**evice using `D`.
 - When you are done, press `Q` to **q**uit.
 - Change **T**heme by pressing `T`.
+- You can also hover over the FFT chart to see additional information about frequency and amplitude. Hold any mouse button to hide this information.
 
 ---
 ## 🎥 Demo Video
@@ -147,9 +148,10 @@ After saving your theme into `.theme` file and placing it into `{YOUR_CONFIG_DIR
 
 ---
 ## 🛣 Roadmap
-- [x] Microphone input.
-- [x] Zooming the Waveform in and out.
-- [x] Custom themes support.
+- [x] Microphone input. ([v1.1.0](https://github.com/bananaofhappiness/soundscope/releases/tag/v1.1.0), 2025-09-09)
+- [x] Zooming the Waveform in and out. ([v1.4.0](https://github.com/bananaofhappiness/soundscope/releases/tag/v1.4.0), 2025-10-06)
+- [x] Custom themes support. ([v1.2.0](https://github.com/bananaofhappiness/soundscope/releases/tag/v1.2.0), 2025-19-09)
+- [x] Frequency and amplitude details on hover over the FFT chart. ([v1.5.0](https://github.com/bananaofhappiness/soundscope/releases/tag/v1.5.0), 2025-12-15)
 
 ---
 ## 🤝 Contributing

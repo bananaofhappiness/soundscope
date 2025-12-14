@@ -348,6 +348,10 @@ impl AudioPlayer {
                         self.sink.stop();
                         self.sink.clear();
                         self.audio_file.playback_position = 0;
+                        ratatui::crossterm::execute!(
+                            std::io::stdout(),
+                            ratatui::crossterm::event::DisableMouseCapture
+                        )?;
                         return Ok(());
                     }
                     // move the playhead right
