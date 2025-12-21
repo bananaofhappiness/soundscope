@@ -143,8 +143,8 @@ After saving your theme into `.theme` file and placing it into `{YOUR_CONFIG_DIR
 
 ---
 ## 🐛 Known Issues
-- After the playhead reaches the end of the file, the file needs to be reopened in order to be played again. This isn't a bug, but fixing it would be a useful quality‑of‑life (QoL) improvement.
-- It works fine with stereo tracks but was not tested with tracks that have different number of channels.
+- Microphone input not working on MacOs.
+- Unsuppressed ALSA error messages when device list is open on Linux.
 
 ---
 ## 🛣 Roadmap
