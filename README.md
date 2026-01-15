@@ -143,7 +143,7 @@ After saving your theme into `.theme` file and placing it into `{YOUR_CONFIG_DIR
 
 ---
 ## 🐛 Known Issues
-- Microphone input not working on MacOs.
+- The application crashes when trying to select a microphone with low sample rate (at least ≤16000).
 - Unsuppressed ALSA error messages when device list is open on Linux.
 
 ---
