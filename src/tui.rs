@@ -208,7 +208,7 @@ struct GlobalTheme {
 }
 
 /// Used to define the theme for the waveform display.
-#[derive(Deserialize)]
+#[derive(Deserialize, Default)]
 struct WaveformTheme {
     borders: Option<Color>,
     waveform: Option<Color>,
@@ -240,8 +240,23 @@ struct FftTheme {
     highlight: Option<Color>,
 }
 
+impl Default for FftTheme {
+    fn default() -> Self {
+        FftTheme {
+            borders: None,
+            labels: None,
+            axes: None,
+            axes_labels: None,
+            mid_fft: None,
+            side_fft: Some(Color::Indexed(170)),
+            background: None,
+            highlight: None,
+        }
+    }
+}
+
 /// Used to define the theme for the LUFS display.
-#[derive(Deserialize)]
+#[derive(Deserialize, Default)]
 struct LufsTheme {
     axis: Option<Color>,
     chart: Option<Color>,
@@ -258,7 +273,7 @@ struct LufsTheme {
 }
 
 /// Used to define the theme for the devices list.
-#[derive(Deserialize)]
+#[derive(Deserialize, Default)]
 struct DevicesTheme {
     background: Option<Color>,
     foreground: Option<Color>,
@@ -267,7 +282,7 @@ struct DevicesTheme {
 }
 
 /// Used to define the theme for the explorer.
-#[derive(Deserialize)]
+#[derive(Deserialize, Default)]
 struct ExplorerTheme {
     background: Option<Color>,
     borders: Option<Color>,
@@ -278,7 +293,7 @@ struct ExplorerTheme {
 }
 
 /// Used to define the theme for the error popup.
-#[derive(Deserialize)]
+#[derive(Deserialize, Default)]
 struct ErrorTheme {
     background: Option<Color>,
     foreground: Option<Color>,
@@ -289,89 +304,8 @@ impl Default for GlobalTheme {
     fn default() -> Self {
         Self {
             background: Color::Black,
-            foreground: Color::Yellow,
+            foreground: Color::Indexed(221),
             highlight: Some(Color::LightRed),
-        }
-    }
-}
-
-impl Default for WaveformTheme {
-    fn default() -> Self {
-        Self {
-            borders: Some(Color::Yellow),
-            waveform: Some(Color::Yellow),
-            playhead: Some(Color::LightRed),
-            current_time: Some(Color::Yellow),
-            total_duration: Some(Color::Yellow),
-            controls: Some(Color::Yellow),
-            controls_highlight: Some(Color::LightRed),
-            labels: Some(Color::Yellow),
-            background: Some(Color::Black),
-            highlight: Some(Color::LightRed),
-        }
-    }
-}
-
-impl Default for FftTheme {
-    fn default() -> Self {
-        Self {
-            axes: Some(Color::Yellow),
-            axes_labels: Some(Color::Yellow),
-            borders: Some(Color::Yellow),
-            labels: Some(Color::Yellow),
-            mid_fft: Some(Color::Yellow),
-            side_fft: Some(Color::LightGreen),
-            background: Some(Color::Black),
-            highlight: Some(Color::LightRed),
-        }
-    }
-}
-
-impl Default for LufsTheme {
-    fn default() -> Self {
-        Self {
-            axis: Some(Color::Yellow),
-            chart: Some(Color::Yellow),
-            labels: Some(Color::Yellow),
-            foreground: Some(Color::Yellow),
-            numbers: Some(Color::Yellow),
-            borders: Some(Color::Yellow),
-            background: Some(Color::Black),
-            highlight: Some(Color::LightRed),
-        }
-    }
-}
-
-impl Default for DevicesTheme {
-    fn default() -> Self {
-        Self {
-            background: Some(Color::Black),
-            foreground: Some(Color::Yellow),
-            borders: Some(Color::Yellow),
-            highlight: Some(Color::LightRed),
-        }
-    }
-}
-
-impl Default for ExplorerTheme {
-    fn default() -> Self {
-        Self {
-            background: Some(Color::Black),
-            borders: Some(Color::Yellow),
-            item_foreground: Some(Color::Yellow),
-            highlight_item_foreground: Some(Color::LightRed),
-            dir_foreground: Some(Color::Yellow),
-            highlight_dir_foreground: Some(Color::LightRed),
-        }
-    }
-}
-
-impl Default for ErrorTheme {
-    fn default() -> Self {
-        Self {
-            background: Some(Color::Black),
-            foreground: Some(Color::LightRed),
-            borders: Some(Color::LightRed),
         }
     }
 }
@@ -648,11 +582,11 @@ impl App {
                     .title_bottom(self.get_flashing_controls_text().left_aligned())
                     // current position and total duration
                     .title_bottom(
-                        Line::styled(format!("{:0>2}:{:0>5.2}", current_min, current_sec), ct)
+                        Line::styled(format!("{:0>2}:{:0>4.1}", current_min, current_sec), ct)
                             .centered(),
                     )
                     .title_bottom(
-                        Line::styled(format!("{:0>2}:{:0>5.2}", total_min, total_sec), td)
+                        Line::styled(format!("{:0>2}:{:0>4.1}", total_min, total_sec), td)
                             .right_aligned(),
                     )
                     .title(upper_right_title)
@@ -1062,7 +996,7 @@ impl App {
         self.current_directory = self.explorer.cwd().clone();
 
         loop {
-            std::thread::sleep(Duration::from_millis(8));
+            std::thread::sleep(Duration::from_millis(16));
             // receive audio file
             if let Ok(af) = self.audio_file_rx.try_recv() {
                 self.audio_file = af;

@@ -78,10 +78,11 @@ impl Analyzer {
     }
 
     pub fn get_waveform(&self, samples: &[f32]) -> Vec<(f64, f64)> {
-        let samples_in_one_ms = self.sample_rate as usize / 1000;
-        let iter = samples.iter().step_by(samples_in_one_ms).map(|x| *x as f64);
+        let div = 64;
+        let samples_in_one_ms = self.sample_rate as f64 / 1000.;
+        let iter = samples.iter().step_by(div).map(|x| *x as f64);
         (0..15 * 1000)
-            .map(|x| x as f64)
+            .map(|x| (x * div) as f64 / samples_in_one_ms)
             .zip(iter)
             .collect::<Vec<(f64, f64)>>()
     }
