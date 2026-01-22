@@ -52,28 +52,6 @@ pub struct AudioFile {
     playback_position_tx: Sender<usize>,
 }
 
-impl AudioFile {
-    pub fn title(&self) -> &str {
-        &self.title
-    }
-
-    pub fn samples(&self) -> &Samples {
-        &self.samples
-    }
-
-    pub fn mid_samples(&self) -> &Samples {
-        &self.mid_samples
-    }
-
-    pub fn side_samples(&self) -> &Samples {
-        &self.side_samples
-    }
-
-    pub fn duration(&self) -> &Duration {
-        &self.duration
-    }
-}
-
 impl Iterator for AudioFile {
     type Item = f32;
 
@@ -132,6 +110,26 @@ impl Source for AudioFile {
 }
 
 impl AudioFile {
+    pub fn title(&self) -> &str {
+        &self.title
+    }
+
+    pub fn samples(&self) -> &Samples {
+        &self.samples
+    }
+
+    pub fn mid_samples(&self) -> &Samples {
+        &self.mid_samples
+    }
+
+    pub fn side_samples(&self) -> &Samples {
+        &self.side_samples
+    }
+
+    pub fn duration(&self) -> &Duration {
+        &self.duration
+    }
+
     pub fn new(playback_position_tx: Sender<usize>) -> Self {
         AudioFile {
             title: "".to_string(),
@@ -147,7 +145,7 @@ impl AudioFile {
     }
 
     /// creates a new `AudioFile` from file
-    fn from_file(path: &PathBuf, playback_position_tx: Sender<usize>) -> Result<Self> {
+    pub fn from_file(path: &PathBuf, playback_position_tx: Sender<usize>) -> Result<Self> {
         // get file name
         let title = path.file_name().unwrap().to_string_lossy().to_string();
         let (samples, sample_rate, channels) = Self::decode_file(path)?;

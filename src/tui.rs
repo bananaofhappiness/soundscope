@@ -976,7 +976,7 @@ impl App {
     }
 
     /// The main loop
-    fn run(mut self, mut terminal: DefaultTerminal) -> Result<()> {
+    fn run(mut self, mut terminal: DefaultTerminal, startup_file: Option<PathBuf>) -> Result<()> {
         // apply theme
         // check if config directory exists
         match config_dir() {
@@ -994,6 +994,10 @@ impl App {
         }
 
         self.current_directory = self.explorer.cwd().clone();
+
+        if let Some(f) = startup_file {
+            self.select_audio_file(f);
+        }
 
         loop {
             std::thread::sleep(Duration::from_millis(16));
@@ -1173,7 +1177,13 @@ impl App {
                 self.ui.show_explorer = !self.ui.show_explorer
             }
             // select file
-            KeyCode::Enter if self.ui.show_explorer => self.select_audio_file(),
+            KeyCode::Enter if self.ui.show_explorer => {
+                let file = self.explorer.current();
+                let file_path = self.explorer.current().path().clone();
+                if file.is_file() {
+                    self.select_audio_file(file_path)
+                }
+            }
             KeyCode::Enter if self.ui.show_themes_list => self.select_theme_file(),
             // show side fft
             KeyCode::Char('s') => self.ui.show_side_fft = !self.ui.show_side_fft,
@@ -1331,12 +1341,7 @@ impl App {
         self.ui.error_timer = Some(Instant::now());
     }
 
-    fn select_audio_file(&mut self) {
-        let file = self.explorer.current();
-        let file_path = self.explorer.current().path().clone();
-        if !file.is_file() {
-            return;
-        }
+    fn select_audio_file(&mut self, file_path: PathBuf) {
         // reset everything
         self.reset_charts();
 
@@ -1555,7 +1560,6 @@ impl App {
         let max_freq_log = 20000f32.log10();
         let log_range = max_freq_log - min_freq_log;
 
-        // let x = x.clamp(0, max_x);
         let t = x as f32 / max_x as f32;
         let log_freq = min_freq_log + t * log_range;
         let x = 10f32.powf(log_freq);
@@ -1577,6 +1581,7 @@ pub fn run(
     playback_position_rx: Receiver<usize>,
     error_rx: Receiver<String>,
     latest_captured_samples: RBuffer,
+    startup_file: Option<PathBuf>,
 ) -> Result<()> {
     let terminal = ratatui::init();
     ratatui::crossterm::execute!(
@@ -1591,7 +1596,7 @@ pub fn run(
         error_rx,
         latest_captured_samples,
     )?
-    .run(terminal);
+    .run(terminal, startup_file);
     ratatui::restore();
     app_result
 }

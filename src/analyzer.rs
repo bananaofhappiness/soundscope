@@ -1,5 +1,6 @@
 //! This module is responsible for analyzing audio files.
 //! Taking samples it returns the loudness and spectrum.
+
 use ebur128::{EbuR128, Mode};
 use eyre::Result;
 use spectrum_analyzer::{
@@ -77,12 +78,17 @@ impl Analyzer {
             .collect()
     }
 
+    // TODO: Min-Max decimation
     pub fn get_waveform(&self, samples: &[f32]) -> Vec<(f64, f64)> {
-        let div = 64;
         let samples_in_one_ms = self.sample_rate as f64 / 1000.;
-        let iter = samples.iter().step_by(div).map(|x| *x as f64);
-        (0..15 * 1000)
-            .map(|x| (x * div) as f64 / samples_in_one_ms)
+        let power_of_two = 2f64.powf(f64::floor(f64::log2(samples_in_one_ms)));
+        let coef = power_of_two / samples_in_one_ms;
+        let iter = samples
+            .iter()
+            .step_by(power_of_two as usize)
+            .map(|x| *x as f64);
+        (0..(15000 as f64 / coef) as usize)
+            .map(|x| x as f64 * coef)
             .zip(iter)
             .collect::<Vec<(f64, f64)>>()
     }
