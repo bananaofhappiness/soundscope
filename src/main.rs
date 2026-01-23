@@ -33,7 +33,6 @@ fn main() -> Result<()> {
 
     // just a place holder audio_file to initialize app
     let args: Vec<String> = env::args().collect();
-    println!("{:?}", args);
 
     let audio_file = AudioFile::new(playback_position_tx);
 
@@ -44,7 +43,7 @@ fn main() -> Result<()> {
         println!("{:?}", f);
         env::set_current_dir(
             f.parent()
-                .filter(|&s| s != "")
+                .filter(|&s| s.to_str().unwrap() != "")
                 .unwrap_or(&current_working_dir),
         )?;
     };

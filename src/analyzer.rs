@@ -79,18 +79,38 @@ impl Analyzer {
     }
 
     // TODO: Min-Max decimation
-    pub fn get_waveform(&self, samples: &[f32]) -> Vec<(f64, f64)> {
-        let samples_in_one_ms = self.sample_rate as f64 / 1000.;
-        let power_of_two = 2f64.powf(f64::floor(f64::log2(samples_in_one_ms)));
-        let coef = power_of_two / samples_in_one_ms;
-        let iter = samples
-            .iter()
-            .step_by(power_of_two as usize)
-            .map(|x| *x as f64);
-        (0..(15000 as f64 / coef) as usize)
-            .map(|x| x as f64 * coef)
-            .zip(iter)
-            .collect::<Vec<(f64, f64)>>()
+    pub fn get_waveform(&self, samples: &[f32], waveform_window: f64) -> Vec<(f64, f64)> {
+        let window = (waveform_window * 1000.) as usize;
+        let samples_per_point = samples.len() as f64 / window as f64;
+
+        let mut points = Vec::with_capacity(window * 2);
+
+        for i in 0..window {
+            let start = (i as f64 * samples_per_point) as usize;
+            let end = ((i + 1) as f64 * samples_per_point) as usize;
+            let chunk = &samples[start..end.min(samples.len())];
+
+            if chunk.is_empty() {
+                continue;
+            }
+
+            let mut min = f32::MAX;
+            let mut max = f32::MIN;
+            for &s in chunk {
+                if s < min {
+                    min = s;
+                }
+                if s > max {
+                    max = s;
+                }
+            }
+
+            let x = i as f64;
+            points.push((x, min as f64));
+            points.push((x, max as f64));
+        }
+
+        points
     }
 
     pub fn add_samples(&mut self, samples: &[f32]) -> Result<(), ebur128::Error> {
@@ -167,7 +187,7 @@ mod tests {
         let analyzer = Analyzer::default();
         let samples: Vec<f32> = (0..44100).map(|i| (i as f32 / 44100.0).sin()).collect();
 
-        let waveform = analyzer.get_waveform(&samples);
+        let waveform = analyzer.get_waveform(&samples, 15.);
 
         // Should have data points
         assert!(!waveform.is_empty());

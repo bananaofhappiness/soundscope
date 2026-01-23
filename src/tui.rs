@@ -207,6 +207,16 @@ struct GlobalTheme {
     highlight: Option<Color>,
 }
 
+impl Default for GlobalTheme {
+    fn default() -> Self {
+        Self {
+            background: Color::Black,
+            foreground: Color::Indexed(221),
+            highlight: Some(Color::Indexed(160)),
+        }
+    }
+}
+
 /// Used to define the theme for the waveform display.
 #[derive(Deserialize, Default)]
 struct WaveformTheme {
@@ -293,19 +303,19 @@ struct ExplorerTheme {
 }
 
 /// Used to define the theme for the error popup.
-#[derive(Deserialize, Default)]
+#[derive(Deserialize)]
 struct ErrorTheme {
     background: Option<Color>,
     foreground: Option<Color>,
     borders: Option<Color>,
 }
 
-impl Default for GlobalTheme {
+impl Default for ErrorTheme {
     fn default() -> Self {
         Self {
-            background: Color::Black,
-            foreground: Color::Indexed(221),
-            highlight: Some(Color::LightRed),
+            background: Some(Color::Black),
+            foreground: Some(Color::Indexed(160)),
+            borders: Some(Color::Indexed(160)),
         }
     }
 }
@@ -494,8 +504,10 @@ impl App {
         let ct = s.fg(self.ui.theme.waveform.current_time.unwrap());
         let td = s.fg(self.ui.theme.waveform.total_duration.unwrap());
         let wv = s.fg(self.ui.theme.waveform.waveform.unwrap());
+
         // playhead is just a function that looks like a vertical line
         let samples_in_one_ms = self.audio_file.sample_rate() / 1000;
+
         let mut playhead_chart = [
             (self.waveform.playhead as f64 / samples_in_one_ms as f64, 1.),
             (
@@ -546,23 +558,22 @@ impl App {
         // render chart
         let upper_right_title = match self.settings.mode {
             Mode::Player => Line::from(vec![
-                "C".bold().style(hl),
+                "c".bold().style(hl),
                 "hange Mode: ".to_span().style(lb),
                 self.settings.mode.to_span().style(lb),
-                " T".bold().style(hl),
+                " t".bold().style(hl),
                 "heme".to_span().style(lb),
             ])
             .right_aligned(),
             _ => Line::from(vec![
-                "D".bold().style(hl),
+                "d".bold().style(hl),
                 "evice: ".to_span().style(lb),
                 self.ui.device_name.to_span().style(lb),
                 " ".to_span(),
-                "C".bold().style(hl),
+                "c".bold().style(hl),
                 "hange Mode: ".to_span().style(lb),
                 self.settings.mode.to_span().style(lb),
-                " ".to_span(),
-                "T".bold().style(hl),
+                " t".bold().style(hl),
                 "heme".to_span().style(lb),
             ])
             .right_aligned(),
@@ -734,13 +745,13 @@ impl App {
             Dataset::default()
                 // highlight the letter M so the user knows they must press M to toggle it
                 // same with Side fft
-                .name(vec!["M".bold().style(hl), "id Frequency".into()])
+                .name(vec!["m".bold().style(hl), "id frequencies".into()])
                 .marker(symbols::Marker::Braille)
                 .graph_type(GraphType::Line)
                 .style(mf)
                 .data(mid_fft),
             Dataset::default()
-                .name(vec!["S".bold().style(hl), "ide Frequency".into()])
+                .name(vec!["s".bold().style(hl), "ide frequencies".into()])
                 .marker(symbols::Marker::Braille)
                 .graph_type(GraphType::Line)
                 .style(sf)
@@ -750,10 +761,10 @@ impl App {
         let chart = Chart::new(datasets)
             // the title uses the same highlighting technique
             .block(Block::bordered().style(bd).title(vec![
-                "F".to_span().style(hl).bold(),
+                "f".to_span().style(hl).bold(),
                 "requencies ".to_span().style(lb).bold(),
-                "L".to_span().style(hl),
-                "UFS".to_span().style(lb),
+                "l".to_span().style(hl),
+                "ufs".to_span().style(lb),
             ]))
             .x_axis(
                 Axis::default()
@@ -865,10 +876,10 @@ impl App {
         // paragraphs
         let lufs_paragraph = Paragraph::new(lufs_text)
             .block(Block::bordered().style(bd).title(vec![
-                "F".to_span().style(hl),
+                "f".to_span().style(hl),
                 "requencies ".to_span().style(lb),
-                "L".to_span().style(hl).bold(),
-                "UFS".to_span().style(lb).bold(),
+                "l".to_span().style(hl).bold(),
+                "ufs".to_span().style(lb).bold(),
             ]))
             .alignment(Alignment::Center);
         let true_peak_paragraph = Paragraph::new(true_peak_text)
@@ -1079,7 +1090,9 @@ impl App {
         self.fft_data.mid_fft = self.device_analyzer.get_fft(&mid_samples[lb..15 * sr]);
         self.fft_data.side_fft = self.device_analyzer.get_fft(&side_samples[lb..15 * sr]);
 
-        self.waveform.chart = self.device_analyzer.get_waveform(&mid_samples);
+        self.waveform.chart = self
+            .device_analyzer
+            .get_waveform(&mid_samples, self.ui.waveform_window);
         self.waveform.at_end = false;
         self.waveform.at_zero = false;
 
@@ -1123,7 +1136,9 @@ impl App {
         // if at zero load first 15 seconds to show
         if self.waveform.at_zero {
             let waveform_samples = &self.audio_file.mid_samples()[0..window * sr];
-            self.waveform.chart = self.device_analyzer.get_waveform(waveform_samples);
+            self.waveform.chart = self
+                .device_analyzer
+                .get_waveform(waveform_samples, self.ui.waveform_window);
         }
         let waveform_left_bound = pos.saturating_sub((half_window * sr as f64) as usize);
         let waveform_right_bound =
@@ -1133,14 +1148,18 @@ impl App {
             self.waveform.at_end = true;
             let waveform_samples =
                 &self.audio_file.mid_samples()[mid_samples_len - window * sr..mid_samples_len];
-            self.waveform.chart = self.device_analyzer.get_waveform(waveform_samples);
+            self.waveform.chart = self
+                .device_analyzer
+                .get_waveform(waveform_samples, self.ui.waveform_window);
         // if not at the beginning load 15 seconds and scroll
         } else if waveform_left_bound != 0 {
             self.waveform.at_zero = false;
             self.waveform.at_end = false;
             let waveform_samples =
                 &self.audio_file.mid_samples()[waveform_left_bound..waveform_right_bound];
-            self.waveform.chart = self.device_analyzer.get_waveform(waveform_samples);
+            self.waveform.chart = self
+                .device_analyzer
+                .get_waveform(waveform_samples, self.ui.waveform_window);
         } else {
             self.waveform.at_end = false;
             self.waveform.at_zero = true;
