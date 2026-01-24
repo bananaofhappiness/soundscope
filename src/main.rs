@@ -7,6 +7,8 @@ use crossbeam::channel::{bounded, unbounded};
 use eyre::Result;
 use ringbuffer::{AllocRingBuffer, RingBuffer};
 use std::{
+    env,
+    path::PathBuf,
     sync::{Arc, Mutex},
     thread,
 };
@@ -30,7 +32,21 @@ fn main() -> Result<()> {
     let mut player = AudioPlayer::new(playback_position_tx.clone())?;
 
     // just a place holder audio_file to initialize app
+    let args: Vec<String> = env::args().collect();
+
     let audio_file = AudioFile::new(playback_position_tx);
+
+    let mut startup_file = args.get(1).map(PathBuf::from);
+    if let Some(f) = startup_file {
+        let current_working_dir = env::current_dir()?;
+        startup_file = Some(f.canonicalize()?);
+        println!("{:?}", f);
+        env::set_current_dir(
+            f.parent()
+                .filter(|&s| s.to_str().unwrap() != "")
+                .unwrap_or(&current_working_dir),
+        )?;
+    };
 
     let mut buf = AllocRingBuffer::new(44100usize * 30);
     buf.fill(0.0);
@@ -44,6 +60,7 @@ fn main() -> Result<()> {
             playback_position_rx,
             error_rx,
             latest_captured_samples,
+            startup_file,
         )
     });
     player.run(player_command_rx, audio_file_tx, error_tx)
