@@ -78,16 +78,17 @@ impl Analyzer {
             .collect()
     }
 
-    // TODO: Min-Max decimation
     pub fn get_waveform(&self, samples: &[f32], waveform_window: f64) -> Vec<(f64, f64)> {
         let window = (waveform_window * 1000.) as usize;
         let samples_per_point = samples.len() as f64 / window as f64;
 
         let mut points = Vec::with_capacity(window * 2);
 
+        // min-max decimation
         for i in 0..window {
             let start = (i as f64 * samples_per_point) as usize;
             let end = ((i + 1) as f64 * samples_per_point) as usize;
+            // chunk is 2 points. every point contains sample_per_point samples.
             let chunk = &samples[start..end.min(samples.len())];
 
             if chunk.is_empty() {
@@ -105,6 +106,8 @@ impl Analyzer {
                 }
             }
 
+            // now we have min and max samples assign to every point on the x-axis
+            // of the waveform chart so that ratatui renders a whole line from max to min
             let x = i as f64;
             points.push((x, min as f64));
             points.push((x, max as f64));
@@ -192,9 +195,29 @@ mod tests {
         // Should have data points
         assert!(!waveform.is_empty());
 
-        // Check that x values are sequential
-        for i in 1..waveform.len().min(100) {
-            assert!(waveform[i].0 > waveform[i - 1].0);
+        // With 15 seconds window, we expect 15000 points (15 * 1000)
+        // Each point has min and max, so total should be 30000
+        let expected_points = 15_000 * 2;
+        assert_eq!(waveform.len(), expected_points);
+
+        // Check that we have pairs of (x, min) and (x, max) for each x
+        for i in 0..15_000 {
+            let min_idx = i * 2;
+            let max_idx = i * 2 + 1;
+
+            // Both points should have the same x coordinate
+            assert_eq!(waveform[min_idx].0, waveform[max_idx].0);
+            assert_eq!(waveform[min_idx].0, i as f64);
+
+            // Min should be <= max (or equal if constant)
+            assert!(waveform[min_idx].1 <= waveform[max_idx].1);
+        }
+
+        // x values should be sequential integers (starting from i=2 to avoid underflow)
+        for i in 2..15_000 {
+            let min_idx = i * 2;
+            let prev_min_idx = (i - 1) * 2;
+            assert_eq!(waveform[min_idx].0, waveform[prev_min_idx].0 + 1.0);
         }
     }
 

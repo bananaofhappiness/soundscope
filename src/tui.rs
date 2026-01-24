@@ -1868,18 +1868,18 @@ mod tests {
 
         theme.apply_global_as_default();
         assert!(theme.fft.mid_fft == Some(Color::LightCyan));
-        assert!(theme.fft.side_fft == Some(Color::LightRed));
+        assert!(theme.fft.side_fft == Some(Color::Indexed(160)));
         assert!(theme.fft.labels == Some(Color::LightCyan));
 
-        assert!(theme.waveform.playhead == Some(Color::LightRed));
-        assert!(theme.waveform.highlight == Some(Color::LightRed));
+        assert!(theme.waveform.playhead == Some(Color::Indexed(160)));
+        assert!(theme.waveform.highlight == Some(Color::Indexed(160)));
         assert!(theme.waveform.current_time == Some(Color::LightCyan));
 
         assert!(theme.lufs.numbers == Some(Color::LightCyan));
 
         assert!(theme.devices.background == Some(Color::Magenta));
 
-        assert!(theme.explorer.highlight_dir_foreground == Some(Color::LightRed));
+        assert!(theme.explorer.highlight_dir_foreground == Some(Color::Indexed(160)));
         assert!(theme.explorer.item_foreground == Some(Color::LightCyan));
     }
 }
