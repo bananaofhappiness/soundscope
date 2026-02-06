@@ -1189,8 +1189,20 @@ impl App {
         // get fft
         let fft_left_bound = pos.saturating_sub(16384);
         if fft_left_bound != 0 {
-            let mid_samples = &self.audio_file.mid_samples()[fft_left_bound..pos];
-            let side_samples = &self.audio_file.side_samples()[fft_left_bound..pos];
+            let mid_samples_len = self.audio_file.mid_samples().len();
+            let side_samples_len = self.audio_file.side_samples().len();
+
+            // check bounds to prevent panic when file was changed
+            let mid_samples = if pos <= mid_samples_len && fft_left_bound < mid_samples_len {
+                &self.audio_file.mid_samples()[fft_left_bound..pos]
+            } else {
+                &[]
+            };
+            let side_samples = if pos <= side_samples_len && fft_left_bound < side_samples_len {
+                &self.audio_file.side_samples()[fft_left_bound..pos]
+            } else {
+                &[]
+            };
 
             self.fft_data.mid_fft = match self.file_analyzer.get_fft(mid_samples) {
                 Ok(fft) => fft,
@@ -1221,19 +1233,23 @@ impl App {
             for i in 0..self.lufs.len() - 1 {
                 self.lufs[i] = self.lufs[i + 1];
             }
-            if let Err(err) = self
-                .file_analyzer
-                .add_samples(&self.audio_file.samples()[lufs_left_bound..pos])
-            {
-                self.handle_error(format!("Could not get samples for LUFS analyzer: {}", err));
-            };
-            self.lufs[299] = match self.file_analyzer.get_shortterm_lufs() {
-                Ok(lufs) => lufs,
-                Err(err) => {
-                    self.handle_error(format!("Error getting short-term LUFS: {}", err));
-                    0.0
-                }
-            };
+            let samples_len = self.audio_file.samples().len();
+            // check bounds to prevent panic when file was changed
+            if pos <= samples_len && lufs_left_bound < samples_len {
+                if let Err(err) = self
+                    .file_analyzer
+                    .add_samples(&self.audio_file.samples()[lufs_left_bound..pos])
+                {
+                    self.handle_error(format!("Could not get samples for LUFS analyzer: {}", err));
+                };
+                self.lufs[299] = match self.file_analyzer.get_shortterm_lufs() {
+                    Ok(lufs) => lufs,
+                    Err(err) => {
+                        self.handle_error(format!("Error getting short-term LUFS: {}", err));
+                        0.0
+                    }
+                };
+            }
         }
     }
 
@@ -1503,6 +1519,7 @@ impl App {
         self.waveform.chart.clear();
         self.lufs = [-50.; 300];
         self.is_playing_audio = false;
+        self.waveform.playhead = 0;
     }
 
     fn load_theme(&mut self, path: &PathBuf) -> Option<Theme> {
