@@ -80,19 +80,19 @@ impl Analyzer {
 
     pub fn get_waveform(&self, samples: &[f32], waveform_window: f64) -> Vec<(f64, f64)> {
         let window = (waveform_window * 1000.) as usize;
+        // point=symbol in termintal
         let samples_per_point = samples.len() as f64 / window as f64;
 
-        let mut points = Vec::with_capacity(window * 2);
+        let mut points = Vec::with_capacity(samples.len() * 2);
 
         // min-max decimation
         for i in 0..window {
             let start = (i as f64 * samples_per_point) as usize;
             let end = ((i + 1) as f64 * samples_per_point) as usize;
-            // chunk is 2 points. every point contains sample_per_point samples.
             let chunk = &samples[start..end.min(samples.len())];
 
             if chunk.is_empty() {
-                continue;
+                break;
             }
 
             let mut min = f32::MAX;
@@ -107,7 +107,7 @@ impl Analyzer {
             }
 
             // now we have min and max samples assign to every point on the x-axis
-            // of the waveform chart so that ratatui renders a whole line from max to min
+            // of the waveform chart so that ratatui renders a straight line from max to min
             let x = i as f64;
             points.push((x, min as f64));
             points.push((x, max as f64));

@@ -337,8 +337,6 @@ struct FFTData {
 struct WaveForm {
     chart: Vec<(f64, f64)>,
     playhead: usize,
-    at_zero: bool,
-    at_end: bool,
 }
 
 impl Default for WaveForm {
@@ -346,8 +344,6 @@ impl Default for WaveForm {
         Self {
             chart: vec![(0., 0.)],
             playhead: 0,
-            at_zero: true,
-            at_end: false,
         }
     }
 }
@@ -508,36 +504,30 @@ impl App {
         // playhead is just a function that looks like a vertical line
         let samples_in_one_ms = self.audio_file.sample_rate() / 1000;
 
-        let mut playhead_chart = [
-            (self.waveform.playhead as f64 / samples_in_one_ms as f64, 1.),
-            (
-                self.waveform.playhead as f64 / samples_in_one_ms as f64 + 0.01,
-                -1.,
-            ),
-        ];
-        if self.waveform.at_end {
-            let chart_x_position = self.get_relative_playhead_pos(samples_in_one_ms);
-            playhead_chart = [(chart_x_position, 1.), (chart_x_position + 0.01, -1.)];
-        } else if !self.waveform.at_zero {
-            // if not at zero then place the playhead right at the middle of a chart
-            playhead_chart = self.get_middle_playhead_pos(samples_in_one_ms);
-        }
-        if !matches!(self.settings.mode, Mode::Player) {
-            playhead_chart = [(-1., -1.), (-1., -1.)];
-        }
+        let playhead_chart = if !matches!(self.settings.mode, Mode::Player) {
+            [(-1., -1.), (-1., -1.)]
+        } else {
+            [
+                (self.waveform.playhead as f64 / samples_in_one_ms as f64, 1.),
+                (
+                    self.waveform.playhead as f64 / samples_in_one_ms as f64,
+                    -1.,
+                ),
+            ]
+        };
 
         // get current playback time in seconds
         let playhead_position_in_milis = Duration::from_millis(
             (self.waveform.playhead as f64 / self.audio_file.sample_rate() as f64 * 1000.) as u64,
         );
-        let current_sec = playhead_position_in_milis.as_secs_f64();
-        let current_min = (current_sec / 60.) as u32;
-        let current_sec = current_sec % 60.;
+        let current_sec = playhead_position_in_milis.as_secs();
+        let current_min = current_sec / 60;
+        let current_sec = current_sec % 60;
 
         // get total audio file duration
-        let total_sec = self.audio_file.duration().as_secs_f64();
-        let total_min = (total_sec / 60.) as u32;
-        let total_sec = total_sec % 60.;
+        let total_sec = self.audio_file.duration().as_secs();
+        let total_min = total_sec / 60;
+        let total_sec = total_sec % 60;
 
         // make datasets
         // first one to render a waveform
@@ -579,12 +569,26 @@ impl App {
             .right_aligned(),
         };
         let title = self.audio_file.title();
+
         let x_window = match self.settings.mode {
             Mode::Microphone | Mode::_System => [
                 15000. - (self.ui.waveform_window as usize * 1000) as f64,
                 15000.,
             ],
-            _ => [0., (self.ui.waveform_window as usize * 1000) as f64],
+            _ => {
+                let current_sec = playhead_position_in_milis.as_millis();
+                let half_window = self.ui.waveform_window * 500.;
+                [
+                    (current_sec as f64 - half_window)
+                        .min(
+                            self.waveform.chart.len() as f64 / 2. - self.ui.waveform_window * 1000.,
+                        )
+                        .max(0.),
+                    (current_sec as f64 + half_window)
+                        .min(self.waveform.chart.len() as f64 / 2.)
+                        .max(self.ui.waveform_window * 1000.),
+                ]
+            }
         };
         let chart = Chart::new(datasets)
             .block(
@@ -593,11 +597,11 @@ impl App {
                     .title_bottom(self.get_flashing_controls_text().left_aligned())
                     // current position and total duration
                     .title_bottom(
-                        Line::styled(format!("{:0>2}:{:0>4.1}", current_min, current_sec), ct)
+                        Line::styled(format!("{:0>2}:{:0>2}", current_min, current_sec), ct)
                             .centered(),
                     )
                     .title_bottom(
-                        Line::styled(format!("{:0>2}:{:0>4.1}", total_min, total_sec), td)
+                        Line::styled(format!("{:0>2}:{:0>2}", total_min, total_sec), td)
                             .right_aligned(),
                     )
                     .title(upper_right_title)
@@ -608,54 +612,6 @@ impl App {
             .y_axis(Axis::default().bounds([-1., 1.]));
 
         frame.render_widget(chart, area);
-    }
-
-    fn get_relative_playhead_pos(&self, samples_in_one_ms: u32) -> f64 {
-        // if at last 15 sec of the audion the playhead should move from the middle to the end of the chart
-        let total_samples = self.audio_file.mid_samples().len();
-        let chart_duration_seconds = self.ui.waveform_window; // make a var not to hard code and be able to to add resizing waveform window if needed
-        let chart_middle_seconds = chart_duration_seconds / 2.0;
-
-        // calculate the absolute sample position where the playhead starts scrolling from the middle of the chart to the end
-        // this is when playback enters the last `chart_middle_seconds` (default is 7.5s) of the total audio duration.
-        let scroll_start_absolute_samples = total_samples
-            .saturating_sub((chart_middle_seconds * self.audio_file.sample_rate() as f64) as usize);
-
-        // calculate playhead's position relative to the start of this scroll phase
-        // since `self.waveform.playhead` is the absolute current playback position.
-        let relative_samples_in_scroll_phase = self
-            .waveform
-            .playhead
-            .saturating_sub(scroll_start_absolute_samples);
-
-        // map this relative sample position to the chart's X-axis range for the playhead.
-        // the conversion from samples to chart units (milliseconds) uses the same 1/samles_in_one_ms scale
-        // as other playhead positions in this function.
-        let mut chart_x_position = (chart_middle_seconds * 1000.)
-            + (relative_samples_in_scroll_phase as f64 / samples_in_one_ms as f64);
-
-        // Ensure the playhead does not exceed the chart's upper bound.
-        chart_x_position = f64::min(chart_x_position, chart_duration_seconds * 1000.);
-        chart_x_position
-    }
-
-    fn get_middle_playhead_pos(&self, samples_in_one_ms: u32) -> [(f64, f64); 2] {
-        [
-            (
-                f64::min(
-                    self.waveform.playhead as f64 / samples_in_one_ms as f64,
-                    1000. * self.ui.waveform_window / 2.,
-                ),
-                1.,
-            ),
-            (
-                f64::min(
-                    self.waveform.playhead as f64 / samples_in_one_ms as f64,
-                    1000. * self.ui.waveform_window / 2.,
-                ) + 0.01,
-                -1.,
-            ),
-        ]
     }
 
     fn get_flashing_controls_text(&self) -> Line<'_> {
@@ -1011,7 +967,7 @@ impl App {
         }
 
         loop {
-            std::thread::sleep(Duration::from_millis(16));
+            std::thread::sleep(Duration::from_millis(8));
             // receive audio file
             if let Ok(af) = self.audio_file_rx.try_recv() {
                 self.audio_file = af;
@@ -1019,6 +975,10 @@ impl App {
                 if self.audio_file.duration().as_secs_f64() < 15. {
                     self.ui.waveform_window = self.audio_file.duration().as_secs_f64()
                 }
+                self.waveform.chart = self.file_analyzer.get_waveform(
+                    &self.audio_file.samples(),
+                    self.audio_file.duration().as_secs_f64(),
+                )
             }
 
             // receive playback position
@@ -1085,23 +1045,30 @@ impl App {
     fn analyze_microphone_input(&mut self) {
         let samples = self.latest_captured_samples.lock().unwrap().to_vec();
         let (mid_samples, side_samples) = audio_player::get_mid_and_side_samples(&samples);
-        let sr = self.device_analyzer.sample_rate() as usize;
-        let lb = 15 * sr - 2usize.pow(14);
-        self.fft_data.mid_fft = self.device_analyzer.get_fft(&mid_samples[lb..15 * sr]);
-        self.fft_data.side_fft = self.device_analyzer.get_fft(&side_samples[lb..15 * sr]);
+        let sample_rate = self.device_analyzer.sample_rate() as usize;
+        let left_bound = 15 * sample_rate - 2usize.pow(14);
 
-        self.waveform.chart = self
+        // get fft
+        self.fft_data.mid_fft = self
             .device_analyzer
-            .get_waveform(&mid_samples, self.ui.waveform_window);
-        self.waveform.at_end = false;
-        self.waveform.at_zero = false;
+            .get_fft(&mid_samples[left_bound..15 * sample_rate]);
+        self.fft_data.side_fft = self
+            .device_analyzer
+            .get_fft(&side_samples[left_bound..15 * sample_rate]);
 
+        // get waveform
+        self.waveform.chart = self.device_analyzer.get_waveform(&mid_samples, 15.);
+
+        // get lufs
         for i in 0..self.lufs.len() - 1 {
             self.lufs[i] = self.lufs[i + 1];
         }
 
-        let lb = 30 * sr - 2usize.pow(14);
-        if let Err(err) = self.device_analyzer.add_samples(&samples[lb..30 * sr]) {
+        let lb = 30 * sample_rate - 2usize.pow(14);
+        if let Err(err) = self
+            .device_analyzer
+            .add_samples(&samples[lb..30 * sample_rate])
+        {
             self.handle_error(format!("Could not get samples for LUFS analyzer: {}", err));
         };
         self.lufs[299] = match self.device_analyzer.get_shortterm_lufs() {
@@ -1116,7 +1083,8 @@ impl App {
     fn analyze_audio_file_samples(&mut self, pos: usize) {
         // if using mid side we must divide the position by 2
         let pos = pos / self.audio_file.channels() as usize;
-        let sr = self.audio_file.sample_rate() as usize;
+        //get waveform
+        self.waveform.playhead = pos;
         // get fft
         let fft_left_bound = pos.saturating_sub(16384);
         if fft_left_bound != 0 {
@@ -1126,43 +1094,6 @@ impl App {
 
             self.fft_data.mid_fft = self.file_analyzer.get_fft(mid_samples);
             self.fft_data.side_fft = self.file_analyzer.get_fft(side_samples);
-        }
-
-        //get waveform
-        let window = self.ui.waveform_window as usize;
-        let half_window = self.ui.waveform_window / 2.;
-        let mid_samples_len = self.audio_file.mid_samples().len();
-        self.waveform.playhead = pos;
-        // if at zero load first 15 seconds to show
-        if self.waveform.at_zero {
-            let waveform_samples = &self.audio_file.mid_samples()[0..window * sr];
-            self.waveform.chart = self
-                .device_analyzer
-                .get_waveform(waveform_samples, self.ui.waveform_window);
-        }
-        let waveform_left_bound = pos.saturating_sub((half_window * sr as f64) as usize);
-        let waveform_right_bound =
-            usize::min(pos + (half_window * sr as f64) as usize, mid_samples_len);
-        // if at end load last `window` seconds and dont scroll
-        if waveform_right_bound == mid_samples_len {
-            self.waveform.at_end = true;
-            let waveform_samples =
-                &self.audio_file.mid_samples()[mid_samples_len - window * sr..mid_samples_len];
-            self.waveform.chart = self
-                .device_analyzer
-                .get_waveform(waveform_samples, self.ui.waveform_window);
-        // if not at the beginning load 15 seconds and scroll
-        } else if waveform_left_bound != 0 {
-            self.waveform.at_zero = false;
-            self.waveform.at_end = false;
-            let waveform_samples =
-                &self.audio_file.mid_samples()[waveform_left_bound..waveform_right_bound];
-            self.waveform.chart = self
-                .device_analyzer
-                .get_waveform(waveform_samples, self.ui.waveform_window);
-        } else {
-            self.waveform.at_end = false;
-            self.waveform.at_zero = true;
         }
 
         // get lufs lufs uses all channels
@@ -1456,8 +1387,6 @@ impl App {
         self.fft_data.mid_fft.clear();
         self.fft_data.side_fft.clear();
         self.waveform.chart.clear();
-        self.waveform.at_zero = true;
-        self.waveform.at_end = false;
         self.lufs = [-50.; 300];
         self.is_playing_audio = false;
     }

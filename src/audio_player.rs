@@ -62,7 +62,7 @@ impl Iterator for AudioFile {
         } else {
             None
         };
-        if pos.is_multiple_of(4096)
+        if pos.is_multiple_of(2048)
             && let Err(_err) = self.playback_position_tx.send(pos)
         {
             // TODO: log sending error
