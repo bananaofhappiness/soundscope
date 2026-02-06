@@ -148,7 +148,6 @@ After saving your theme into `.theme` file and placing it into `{YOUR_CONFIG_DIR
 
 ---
 ## 🐛 Known Issues
-- The application crashes when trying to select a microphone with low sample rate (at least ≤16000).
 
 ---
 ## 🛣 Roadmap

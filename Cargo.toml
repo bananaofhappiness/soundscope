@@ -1,6 +1,6 @@
 [package]
 name = "soundscope"
-version = "1.6.0"
+version = "1.7.0"
 edition = "2024"
 description = "A command-line tool for analyzing audio files and real-time input (FFT, LUFS)"
 repository = "https://github.com/bananaofhappiness/soundscope"
@@ -29,3 +29,8 @@ strip = true
 codegen-units = 1
 panic = "abort"
 lto = "thin"
+
+[profile.profiling]
+inherits = "release"
+debug = 1
+strip = false

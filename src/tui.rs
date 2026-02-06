@@ -382,6 +382,8 @@ struct App {
     waveform: WaveForm,
     /// LUFS chart.
     lufs: [f64; 300],
+    /// Track if render is needed to avoid unnecessary redraws
+    needs_render: bool,
 
     settings: Settings,
     //UI
@@ -422,6 +424,7 @@ impl App {
             ui: UI::default(),
             current_directory: PathBuf::from(""),
             mouse_position: None,
+            needs_render: true,
         })
     }
 
@@ -494,7 +497,6 @@ impl App {
         let s = Style::default().bg(self.ui.theme.waveform.background.unwrap());
         let lb = s.fg(self.ui.theme.waveform.labels.unwrap());
         let bd = s.fg(self.ui.theme.waveform.borders.unwrap());
-        let _ct = s.fg(self.ui.theme.waveform.controls.unwrap());
         let hl = s.fg(self.ui.theme.waveform.highlight.unwrap());
         let pl = s.fg(self.ui.theme.waveform.playhead.unwrap());
         let ct = s.fg(self.ui.theme.waveform.current_time.unwrap());
@@ -507,27 +509,40 @@ impl App {
         let playhead_chart = if !matches!(self.settings.mode, Mode::Player) {
             [(-1., -1.), (-1., -1.)]
         } else {
-            [
-                (self.waveform.playhead as f64 / samples_in_one_ms as f64, 1.),
-                (
-                    self.waveform.playhead as f64 / samples_in_one_ms as f64,
-                    -1.,
-                ),
-            ]
+            let playhead_x = self.waveform.playhead as f64 / samples_in_one_ms as f64;
+            [(playhead_x, 1.), (playhead_x, -1.)]
         };
 
         // get current playback time in seconds
-        let playhead_position_in_milis = Duration::from_millis(
-            (self.waveform.playhead as f64 / self.audio_file.sample_rate() as f64 * 1000.) as u64,
-        );
-        let current_sec = playhead_position_in_milis.as_secs();
-        let current_min = current_sec / 60;
-        let current_sec = current_sec % 60;
+        let playhead_ms =
+            (self.waveform.playhead as f64 / self.audio_file.sample_rate() as f64 * 1000.) as u64;
+        let current_total_sec = playhead_ms / 1000;
+        let current_min = current_total_sec / 60;
+        let current_sec = current_total_sec % 60;
 
         // get total audio file duration
-        let total_sec = self.audio_file.duration().as_secs();
-        let total_min = total_sec / 60;
-        let total_sec = total_sec % 60;
+        let total_duration = self.audio_file.duration().as_secs();
+        let total_min = total_duration / 60;
+        let total_sec = total_duration % 60;
+
+        let (x_min, x_max) = match self.settings.mode {
+            Mode::Microphone | Mode::_System => {
+                let window_millis = self.ui.waveform_window as usize * 1000;
+                (15000. - window_millis as f64, 15000.)
+            }
+            _ => {
+                let half_window = self.ui.waveform_window * 500.;
+                let playhead_millis = playhead_ms as f64;
+                let max_x = self.waveform.chart.len() as f64 / 2.;
+                let min_bound = (playhead_millis - half_window)
+                    .min(max_x - self.ui.waveform_window * 1000.)
+                    .max(0.);
+                let max_bound = (playhead_millis + half_window)
+                    .min(max_x)
+                    .max(self.ui.waveform_window * 1000.);
+                (min_bound, max_bound)
+            }
+        };
 
         // make datasets
         // first one to render a waveform
@@ -546,11 +561,13 @@ impl App {
         ];
 
         // render chart
+        let title = self.audio_file.title();
+        let mode_text = self.settings.mode.to_span().style(lb);
         let upper_right_title = match self.settings.mode {
             Mode::Player => Line::from(vec![
                 "c".bold().style(hl),
                 "hange Mode: ".to_span().style(lb),
-                self.settings.mode.to_span().style(lb),
+                mode_text,
                 " t".bold().style(hl),
                 "heme".to_span().style(lb),
             ])
@@ -562,40 +579,19 @@ impl App {
                 " ".to_span(),
                 "c".bold().style(hl),
                 "hange Mode: ".to_span().style(lb),
-                self.settings.mode.to_span().style(lb),
+                mode_text,
                 " t".bold().style(hl),
                 "heme".to_span().style(lb),
             ])
             .right_aligned(),
         };
-        let title = self.audio_file.title();
 
-        let x_window = match self.settings.mode {
-            Mode::Microphone | Mode::_System => [
-                15000. - (self.ui.waveform_window as usize * 1000) as f64,
-                15000.,
-            ],
-            _ => {
-                let current_sec = playhead_position_in_milis.as_millis();
-                let half_window = self.ui.waveform_window * 500.;
-                [
-                    (current_sec as f64 - half_window)
-                        .min(
-                            self.waveform.chart.len() as f64 / 2. - self.ui.waveform_window * 1000.,
-                        )
-                        .max(0.),
-                    (current_sec as f64 + half_window)
-                        .min(self.waveform.chart.len() as f64 / 2.)
-                        .max(self.ui.waveform_window * 1000.),
-                ]
-            }
-        };
+        // build the chart widget
         let chart = Chart::new(datasets)
             .block(
                 Block::bordered()
                     .title(title.to_span().style(lb))
                     .title_bottom(self.get_flashing_controls_text().left_aligned())
-                    // current position and total duration
                     .title_bottom(
                         Line::styled(format!("{:0>2}:{:0>2}", current_min, current_sec), ct)
                             .centered(),
@@ -608,7 +604,7 @@ impl App {
                     .style(bd),
             )
             .style(wv)
-            .x_axis(Axis::default().bounds(x_window))
+            .x_axis(Axis::default().bounds([x_min, x_max]))
             .y_axis(Axis::default().bounds([-1., 1.]));
 
         frame.render_widget(chart, area);
@@ -966,8 +962,12 @@ impl App {
             self.select_audio_file(f);
         }
 
+        terminal.draw(|f| self.draw(f))?;
+
         loop {
             std::thread::sleep(Duration::from_millis(8));
+            self.needs_render = false;
+
             // receive audio file
             if let Ok(af) = self.audio_file_rx.try_recv() {
                 self.audio_file = af;
@@ -976,22 +976,98 @@ impl App {
                     self.ui.waveform_window = self.audio_file.duration().as_secs_f64()
                 }
                 self.waveform.chart = self.file_analyzer.get_waveform(
-                    &self.audio_file.samples(),
+                    self.audio_file.samples(),
                     self.audio_file.duration().as_secs_f64(),
-                )
+                );
+                self.needs_render = true;
             }
 
             // receive playback position
+            let prev_playhead = self.waveform.playhead;
             if let Ok(pos) = self.playback_position_rx.try_recv()
                 && self.is_file_selected
                 && matches!(self.settings.mode, Mode::Player)
             {
                 self.analyze_audio_file_samples(pos);
+                // render only if playhead position changed
+                self.needs_render = prev_playhead != self.waveform.playhead;
             }
 
             // use ringbuf to analyze data if the `Mode` is not `Mode::Player`
             if matches!(self.settings.mode, Mode::Microphone) {
                 self.analyze_microphone_input();
+                self.needs_render = true; // Always render in microphone mode
+            }
+
+            // check if flashing controls need update (timers)
+            let t = 100; // flash duration in ms
+            let left_arrow_flash = self
+                .ui
+                .left_arrow_timer
+                .map(|timer| timer.elapsed().as_millis());
+            let right_arrow_flash = self
+                .ui
+                .right_arrow_timer
+                .map(|timer| timer.elapsed().as_millis());
+            let plus_sign_flash = self
+                .ui
+                .plus_sign_timer
+                .map(|timer| timer.elapsed().as_millis());
+            let minus_sign_flash = self
+                .ui
+                .minus_sign_timer
+                .map(|timer| timer.elapsed().as_millis());
+
+            // render if currently flashing or just stopped flashing (was <t, now >=t)
+            let needs_flash_update = left_arrow_flash.is_some_and(|ms| ms < t)
+                || right_arrow_flash.is_some_and(|ms| ms < t)
+                || plus_sign_flash.is_some_and(|ms| ms < t)
+                || minus_sign_flash.is_some_and(|ms| ms < t);
+
+            if needs_flash_update {
+                self.needs_render = true;
+            }
+
+            // clean up expired timers and trigger final render
+            let mut timers_need_cleanup = false;
+            if left_arrow_flash.is_some_and(|ms| ms >= t) {
+                self.ui.left_arrow_timer = None;
+                timers_need_cleanup = true;
+            }
+            if right_arrow_flash.is_some_and(|ms| ms >= t) {
+                self.ui.right_arrow_timer = None;
+                timers_need_cleanup = true;
+            }
+            if plus_sign_flash.is_some_and(|ms| ms >= t) {
+                self.ui.plus_sign_timer = None;
+                timers_need_cleanup = true;
+            }
+            if minus_sign_flash.is_some_and(|ms| ms >= t) {
+                self.ui.minus_sign_timer = None;
+                timers_need_cleanup = true;
+            }
+
+            if timers_need_cleanup {
+                self.needs_render = true;
+            }
+
+            // check if error message needs update
+            if self
+                .ui
+                .error_timer
+                .is_some_and(|timer| timer.elapsed().as_millis() < 5000)
+            {
+                self.needs_render = true;
+            }
+
+            // clean up expired error timer and trigger final render
+            if self
+                .ui
+                .error_timer
+                .is_some_and(|timer| timer.elapsed().as_millis() >= 5000)
+            {
+                self.ui.error_timer = None;
+                self.needs_render = true;
             }
 
             // event reader
@@ -1015,6 +1091,7 @@ impl App {
                         if let Err(err) = self.handle_input(key) {
                             self.handle_error(format!("{}", err));
                         }
+                        self.needs_render = true;
                     }
                     Event::Mouse(m) => {
                         if matches!(m.kind, MouseEventKind::Moved) {
@@ -1026,19 +1103,26 @@ impl App {
                         } else {
                             self.mouse_position = None
                         }
+                        self.needs_render = true;
                     }
                     _ => (),
                 }
 
                 if self.ui.show_explorer {
                     self.explorer.handle(&event)?;
+                    self.needs_render = true;
                 }
 
                 if self.ui.show_themes_list {
                     self.explorer.handle(&event)?;
+                    self.needs_render = true;
                 }
             }
-            terminal.draw(|f| self.draw(f))?;
+
+            // render only if something changed
+            if self.needs_render {
+                terminal.draw(|f| self.draw(f))?;
+            }
         }
     }
 
@@ -1049,15 +1133,32 @@ impl App {
         let left_bound = 15 * sample_rate - 2usize.pow(14);
 
         // get fft
-        self.fft_data.mid_fft = self
+        self.fft_data.mid_fft = match self
             .device_analyzer
-            .get_fft(&mid_samples[left_bound..15 * sample_rate]);
-        self.fft_data.side_fft = self
+            .get_fft(&mid_samples[left_bound..15 * sample_rate])
+        {
+            Ok(fft) => fft,
+            Err(err) => {
+                self.handle_error(format!("Error getting frequencies: {}. Perhaps your microphone's sample rate is too low.", err));
+                vec![(0., 0.)]
+            }
+        };
+        self.fft_data.side_fft = match self
             .device_analyzer
-            .get_fft(&side_samples[left_bound..15 * sample_rate]);
+            .get_fft(&side_samples[left_bound..15 * sample_rate])
+        {
+            Ok(fft) => fft,
+            Err(err) => {
+                self.handle_error(format!("Error getting frequencies: {}. Perhaps your microphone's sample rate is too low.", err));
+                vec![(0., 0.)]
+            }
+        };
 
         // get waveform
         self.waveform.chart = self.device_analyzer.get_waveform(&mid_samples, 15.);
+
+        let samples = self.latest_captured_samples.lock().unwrap().to_vec();
+        let sample_rate = self.device_analyzer.sample_rate() as usize;
 
         // get lufs
         for i in 0..self.lufs.len() - 1 {
@@ -1083,20 +1184,37 @@ impl App {
     fn analyze_audio_file_samples(&mut self, pos: usize) {
         // if using mid side we must divide the position by 2
         let pos = pos / self.audio_file.channels() as usize;
-        //get waveform
         self.waveform.playhead = pos;
+
         // get fft
         let fft_left_bound = pos.saturating_sub(16384);
         if fft_left_bound != 0 {
-            let audio_file = &self.audio_file;
-            let mid_samples = &audio_file.mid_samples()[fft_left_bound..pos];
-            let side_samples = &audio_file.side_samples()[fft_left_bound..pos];
+            let mid_samples = &self.audio_file.mid_samples()[fft_left_bound..pos];
+            let side_samples = &self.audio_file.side_samples()[fft_left_bound..pos];
 
-            self.fft_data.mid_fft = self.file_analyzer.get_fft(mid_samples);
-            self.fft_data.side_fft = self.file_analyzer.get_fft(side_samples);
+            self.fft_data.mid_fft = match self.file_analyzer.get_fft(mid_samples) {
+                Ok(fft) => fft,
+                Err(_err) => {
+                    // can't log the error because this fn takes a mutable reference
+                    // but we already have 2 shared references.
+                    // but it doesn't really matter(?), this message is mostly for microphone input
+                    // self.handle_error(format!("Error getting frequencies: {}. Perhaps your microphone's sample rate is too low.", err));
+                    vec![(0., 0.)]
+                }
+            };
+            self.fft_data.side_fft = match self.file_analyzer.get_fft(side_samples) {
+                Ok(fft) => fft,
+                Err(_err) => {
+                    // can't log the error because this fn takes a mutable reference
+                    // but we already have 2 shared references.
+                    // but it doesn't really matter(?), this message is mostly for microphone input
+                    // self.handle_error(format!("Error getting frequencies: {}. Perhaps your microphone's sample rate is too low.", err));
+                    vec![(0., 0.)]
+                }
+            };
         }
 
-        // get lufs lufs uses all channels
+        // get lufs lufs uses all channels (update every frame for accuracy)
         let pos = pos * self.audio_file.channels() as usize;
         let lufs_left_bound = pos.saturating_sub(16384);
         if lufs_left_bound != 0 {
@@ -1362,16 +1480,12 @@ impl App {
         let bd = s.fg(self.ui.theme.error.borders.unwrap());
         let fg = s.fg(self.ui.theme.error.foreground.unwrap());
         let message = self.ui.error_text.clone();
-        // show error for 5 seconds
-        match self.ui.error_timer {
-            Some(error_timer) => {
-                if error_timer.elapsed().as_millis() > 5000 {
-                    self.ui.error_timer = None;
-                    return;
-                }
-            }
-            None => return,
+
+        // render only if timer is active (cleanup happens in main loop)
+        if self.ui.error_timer.is_none() {
+            return;
         }
+
         let error_popup_area = Self::get_error_popup_area(f.area());
         f.render_widget(Clear, error_popup_area);
         f.render_widget(
