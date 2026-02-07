@@ -4,7 +4,7 @@ All notable changes to this project will be documented in this file.
 
 ---
 ## [1.7.1] - 2026-02-07
-Follow-up to 1.7.0 performance work.
+A follow-up to 1.7.0 performance work.
 
 ### Fixes
 
