@@ -33,7 +33,7 @@ impl Analyzer {
         Ok(())
     }
 
-    pub fn get_fft(&self, samples: &[f32]) -> Vec<(f64, f64)> {
+    pub fn get_fft(&self, samples: &[f32]) -> Result<Vec<(f64, f64)>> {
         // apply hann window for smoothing
         let hann_window = hann_window(samples);
 
@@ -43,71 +43,56 @@ impl Analyzer {
             self.sample_rate,
             FrequencyLimit::Range(20.0, 20000.0),
             Some(&scale_20_times_log10),
-        )
-        .unwrap();
+        )?;
 
-        // convert OrderaleF32 to f64
-        let fft_vec = spectrum
-            .data()
-            .iter()
-            .map(|(x, y)| (x.val() as f64, y.val() as f64))
-            .collect::<Vec<(f64, f64)>>();
-        // transform to log scale
-        Self::transform_to_log_scale(&fft_vec)
-    }
-
-    fn transform_to_log_scale(fft_data: &[(f64, f64)]) -> Vec<(f64, f64)> {
-        // set frequency range
         let min_freq_log = 20_f64.log10();
         let max_freq_log = 20000_f64.log10();
         let log_range = max_freq_log - min_freq_log;
+        let chart_width = 100.0;
 
-        // set chart width to 100 (from 0 to 100)
-        let chart_width = 100.;
-        fft_data
+        // convert to f64 and transform to log scale
+        let fft_vec = spectrum
+            .data()
             .iter()
             .map(|(freq, val)| {
+                let freq = freq.val() as f64;
+                let val = val.val() as f64;
+
                 let log_freq = freq.log10();
-                // normalize frequency to range [0.0, 1.0]
                 let normalized_pos = (log_freq - min_freq_log) / log_range;
-                // Scale normalized position to chart width
                 let chart_x = normalized_pos * chart_width;
 
-                (chart_x, *val)
+                (chart_x, val)
             })
-            .collect()
+            .collect();
+
+        Ok(fft_vec)
     }
 
     pub fn get_waveform(&self, samples: &[f32], waveform_window: f64) -> Vec<(f64, f64)> {
         let window = (waveform_window * 1000.) as usize;
         let samples_per_point = samples.len() as f64 / window as f64;
 
+        // pre-allocate with 2 points per window position
         let mut points = Vec::with_capacity(window * 2);
 
         // min-max decimation
+        let samples_len = samples.len();
+
         for i in 0..window {
             let start = (i as f64 * samples_per_point) as usize;
-            let end = ((i + 1) as f64 * samples_per_point) as usize;
-            // chunk is 2 points. every point contains sample_per_point samples.
-            let chunk = &samples[start..end.min(samples.len())];
+            let end = ((i + 1) as f64 * samples_per_point).ceil() as usize;
+            let end = end.min(samples_len);
 
-            if chunk.is_empty() {
-                continue;
+            if start >= samples_len {
+                break;
             }
 
-            let mut min = f32::MAX;
-            let mut max = f32::MIN;
-            for &s in chunk {
-                if s < min {
-                    min = s;
-                }
-                if s > max {
-                    max = s;
-                }
-            }
+            let chunk = &samples[start..end];
 
-            // now we have min and max samples assign to every point on the x-axis
-            // of the waveform chart so that ratatui renders a whole line from max to min
+            let min = chunk.iter().copied().reduce(f32::min).unwrap_or(0.0);
+            let max = chunk.iter().copied().reduce(f32::max).unwrap_or(0.0);
+
             let x = i as f64;
             points.push((x, min as f64));
             points.push((x, max as f64));
@@ -153,16 +138,6 @@ mod tests {
     use super::*;
 
     #[test]
-    /// Checks if the transformation to log scale works correctly and frequencies are in a given range
-    fn test_transform_to_log_scale() {
-        let input = vec![(20.0, -10.0), (100.0, -5.0), (1000.0, 0.0), (20000.0, 5.0)];
-
-        let result = Analyzer::transform_to_log_scale(&input);
-
-        assert!((result[0].0 - 0.0).abs() < 1e-6); // 20Hz → 0
-        assert!((result[3].0 - 100.0).abs() < 1e-6); // 20kHz → 100
-    }
-    #[test]
     /// Tests the FFT functionality with a simple sine wave
     fn test_get_fft() {
         let analyzer = Analyzer::default();
@@ -181,7 +156,7 @@ mod tests {
         let fft_result = analyzer.get_fft(&samples);
 
         // Should have some data points
-        assert!(!fft_result.is_empty());
+        assert!(!fft_result.unwrap().is_empty());
     }
 
     #[test]
@@ -259,21 +234,5 @@ mod tests {
 
         let result = analyzer.create_loudness_meter(6, 96000); // 5.1 surround, 96kHz
         assert!(result.is_ok());
-    }
-
-    #[test]
-    /// Tests edge cases for transform_to_log_scale
-    fn test_transform_to_log_scale_edge_cases() {
-        // Empty input
-        let empty_input: Vec<(f64, f64)> = vec![];
-        let result = Analyzer::transform_to_log_scale(&empty_input);
-        assert!(result.is_empty());
-
-        // Single frequency
-        let single_input = vec![(1000.0, -3.0)];
-        let result = Analyzer::transform_to_log_scale(&single_input);
-        assert_eq!(result.len(), 1);
-        assert!(result[0].0 >= 0.0 && result[0].0 <= 100.0);
-        assert_eq!(result[0].1, -3.0);
     }
 }

@@ -14,6 +14,20 @@ use std::{
 };
 
 fn main() -> Result<()> {
+    let args: Vec<String> = env::args().collect();
+
+    // Handle help flag
+    if args.len() > 1 && (args[1] == "-h" || args[1] == "--help") {
+        print_help();
+        return Ok(());
+    }
+
+    // Handle version flag
+    if args.len() > 1 && (args[1] == "-v" || args[1] == "--version") {
+        println!("soundscope {}", env!("CARGO_PKG_VERSION"));
+        return Ok(());
+    }
+
     #[cfg(target_os = "linux")]
     suppress_alsa_messages();
     // create a tui sender that sends signals when the file is stopped, selected etc.
@@ -32,8 +46,6 @@ fn main() -> Result<()> {
     let mut player = AudioPlayer::new(playback_position_tx.clone())?;
 
     // just a place holder audio_file to initialize app
-    let args: Vec<String> = env::args().collect();
-
     let audio_file = AudioFile::new(playback_position_tx);
 
     let mut startup_file = args.get(1).map(PathBuf::from);
@@ -64,6 +76,17 @@ fn main() -> Result<()> {
         )
     });
     player.run(player_command_rx, audio_file_tx, error_tx)
+}
+
+fn print_help() {
+    println!("Usage: soundscope [OPTIONS] [FILE]");
+    println!();
+    println!("Arguments:");
+    println!("  [FILE]  Audio file to open on startup");
+    println!();
+    println!("Options:");
+    println!("  -h, --help     Print help");
+    println!("  -v, --version  Print version");
 }
 
 // The code below suppresses ALSA error messages
