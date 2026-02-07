@@ -148,6 +148,7 @@ After saving your theme into `.theme` file and placing it into `{YOUR_CONFIG_DIR
 
 ---
 ## 🐛 Known Issues
+- In `.m4a` files, the playhead may gradually drift further to the right over time.
 
 ---
 ## 🛣 Roadmap

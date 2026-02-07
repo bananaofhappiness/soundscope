@@ -1380,9 +1380,10 @@ impl App {
         if index > devices.len() - 1 {
             return Err(eyre!("Invalid device index: {}", index + 1));
         }
-        if self.audio_capture_stream.is_some() {
-            self.audio_capture_stream.as_ref().unwrap().pause().unwrap();
-            self.audio_capture_stream = None
+
+        if let Some(stream) = &self.audio_capture_stream {
+            stream.pause().unwrap();
+            self.audio_capture_stream = None;
         }
         let device = devices[index].1.clone();
         let audio_device = AudioDevice::new(Some(device));
