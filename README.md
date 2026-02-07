@@ -148,6 +148,7 @@ After saving your theme into `.theme` file and placing it into `{YOUR_CONFIG_DIR
 
 ---
 ## 🐛 Known Issues
+- Rapidly seeking through an audio file may cause lag, resulting in the playhead being in an incorrect position. Pausing playback and waiting for the playhead to return to the correct spot before resuming usually resolves the issue.
 - In `.m4a` files, the playhead may gradually drift further to the right over time.
 
 ---

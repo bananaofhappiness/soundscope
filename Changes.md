@@ -26,3 +26,5 @@ All notable changes to this project will be documented in this file.
 - Added one-time waveform pre-computation when loading audio files instead of calculating on the fly.
 
 ### Known Issues
+- Rapidly seeking through an audio file may cause lag, resulting in the playhead being in an incorrect position. Pausing playback and waiting for the playhead to return to the correct spot before resuming usually resolves the issue.
+- In `.m4a` files, the playhead may gradually drift further to the right over time.
