@@ -1187,38 +1187,6 @@ impl App {
         self.waveform.playhead = pos;
 
         // get fft
-        if self.ui.show_fft_chart {
-            self.get_fft(pos);
-        }
-
-        // get lufs lufs uses all channels (update every frame for accuracy)
-        let pos = pos * self.audio_file.channels() as usize;
-        let lufs_left_bound = pos.saturating_sub(16384);
-        if lufs_left_bound != 0 {
-            for i in 0..self.lufs.len() - 1 {
-                self.lufs[i] = self.lufs[i + 1];
-            }
-            let samples_len = self.audio_file.samples().len();
-            // check bounds to prevent panic when file was changed
-            if pos <= samples_len && lufs_left_bound < samples_len {
-                if let Err(err) = self
-                    .file_analyzer
-                    .add_samples(&self.audio_file.samples()[lufs_left_bound..pos])
-                {
-                    self.handle_error(format!("Could not get samples for LUFS analyzer: {}", err));
-                };
-                self.lufs[299] = match self.file_analyzer.get_shortterm_lufs() {
-                    Ok(lufs) => lufs,
-                    Err(err) => {
-                        self.handle_error(format!("Error getting short-term LUFS: {}", err));
-                        0.0
-                    }
-                };
-            }
-        }
-    }
-
-    fn get_fft(&mut self, pos: usize) {
         let fft_left_bound = pos.saturating_sub(16384);
         if fft_left_bound != 0 {
             let mid_samples_len = self.audio_file.mid_samples().len();
@@ -1256,6 +1224,32 @@ impl App {
                     vec![(0., 0.)]
                 }
             };
+        }
+
+        // get lufs lufs uses all channels (update every frame for accuracy)
+        let pos = pos * self.audio_file.channels() as usize;
+        let lufs_left_bound = pos.saturating_sub(16384);
+        if lufs_left_bound != 0 {
+            for i in 0..self.lufs.len() - 1 {
+                self.lufs[i] = self.lufs[i + 1];
+            }
+            let samples_len = self.audio_file.samples().len();
+            // check bounds to prevent panic when file was changed
+            if pos <= samples_len && lufs_left_bound < samples_len {
+                if let Err(err) = self
+                    .file_analyzer
+                    .add_samples(&self.audio_file.samples()[lufs_left_bound..pos])
+                {
+                    self.handle_error(format!("Could not get samples for LUFS analyzer: {}", err));
+                };
+                self.lufs[299] = match self.file_analyzer.get_shortterm_lufs() {
+                    Ok(lufs) => lufs,
+                    Err(err) => {
+                        self.handle_error(format!("Error getting short-term LUFS: {}", err));
+                        0.0
+                    }
+                };
+            }
         }
     }
 
