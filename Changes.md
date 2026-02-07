@@ -3,12 +3,7 @@
 All notable changes to this project will be documented in this file.
 
 ---
-<<<<<<< HEAD
-## [1.7.1] - 2026-02-07
-A follow-up to 1.7.0 performance work.
-=======
-## [1.7.0] - 2026-02-06
->>>>>>> parent of d2f4c85 (don't compute fft when not showing frequency spectrum)
+## [1.7.0] - 2026-02-07
 
 ### Fixes
 - Fixed potential panic in `get_fft` when spectrum computation fails (usually caused by using a microphone with low sample rate).
