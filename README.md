@@ -12,6 +12,12 @@ Soundscope is a crossplatform CLI tool for analyzing audio files.
 
 ## 🚀 Installation
 
+### Using pacman (on Arch Linux)
+
+```
+sudo pacman -S soundscope
+```
+
 ### Using Cargo
 
 ```
