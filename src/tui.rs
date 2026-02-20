@@ -17,7 +17,8 @@ use ratatui::{
     style::{Color, Style, Stylize},
     text::{Line, Span, ToLine, ToSpan},
     widgets::{
-        Axis, Block, BorderType, Chart, Clear, Dataset, GraphType, List, ListItem, Paragraph, Wrap,
+        Axis, Block, BorderType, Cell, Chart, Clear, Dataset, GraphType, List, ListItem, Paragraph,
+        Row, Table, Wrap,
     },
 };
 use ratatui_explorer::FileExplorer;
@@ -35,6 +36,16 @@ use std::{
 
 pub type RBuffer = Arc<Mutex<AllocRingBuffer<f32>>>;
 
+/// Files with extensions listed here will be shown in the explorer
+const EXPLORER_FILE_EXTENSIONS: [&'static str; 21] = [
+    "wav", "wave", "aiff", "aif", "flac", // Uncompressed / Lossless
+    "mp3", "mp2", "mp1", "mpa", "aac", // MPEG Audio
+    "m4a", "m4b", "mp4", "m4r", "m4p", // MP4 / M4A Family (AAC / ALAC)
+    "ogg", "oga", "ogv", // OGG Family
+    "caf", "alac",  // Apple formats
+    "theme", // Theme file
+];
+
 /// Settings like showing/hiding UI elements.
 struct UI {
     theme: Theme,
@@ -46,7 +57,7 @@ struct UI {
     show_lufs: bool,
     show_waveform: bool,
     show_themes_list: bool,
-    show_help: bool,
+    show_help_message: bool,
     error_text: String,
     error_timer: Option<Instant>,
     device_name: String,
@@ -74,7 +85,7 @@ impl Default for UI {
             show_lufs: true,
             show_waveform: true,
             show_themes_list: false,
-            show_help: false,
+            show_help_message: false,
             error_text: String::new(),
             error_timer: None,
             device_name: String::new(),
@@ -116,9 +127,10 @@ struct Theme {
     waveform: WaveformTheme,
     fft: FftTheme,
     lufs: LufsTheme,
-    devices: DevicesTheme,
+    devices: DeviceListTheme,
     explorer: ExplorerTheme,
     error: ErrorTheme,
+    help: HelpMessageTheme,
 }
 
 /// Uses [fill] to conviniently fill all fields of a struct.
@@ -199,6 +211,13 @@ impl Theme {
             background <- bg,
             foreground <- fg,
             borders <- fg,
+        );
+
+        fill_fields!(self.help.
+            background <- bg,
+            foreground <- fg,
+            borders <- fg,
+            highlight <- hl,
         );
     }
 }
@@ -293,7 +312,7 @@ struct LufsTheme {
 
 /// Used to define the theme for the devices list.
 #[derive(Deserialize, Default)]
-struct DevicesTheme {
+struct DeviceListTheme {
     background: Option<Color>,
     foreground: Option<Color>,
     borders: Option<Color>,
@@ -327,6 +346,15 @@ impl Default for ErrorTheme {
             borders: Some(Color::Indexed(160)),
         }
     }
+}
+
+/// Used to define the theme for the devices list.
+#[derive(Deserialize, Default)]
+struct HelpMessageTheme {
+    background: Option<Color>,
+    foreground: Option<Color>,
+    borders: Option<Color>,
+    highlight: Option<Color>,
 }
 
 /// Settings for the [App]. Currently only the [Mode] is supported.
@@ -403,6 +431,15 @@ struct App {
     mouse_position: Option<(u16, u16)>,
 }
 
+macro_rules! help_message_row {
+    ($key:expr, $description:expr, $hl:expr) => {
+        Row::new(vec![
+            Cell::new($key.to_line().style($hl).centered()),
+            Cell::new($description.to_span()),
+        ])
+    };
+}
+
 impl App {
     fn new(
         audio_file: AudioFile,
@@ -428,7 +465,10 @@ impl App {
             waveform: WaveForm::default(),
             lufs: [-50.; 300],
             settings: Settings::default(),
-            explorer: FileExplorer::with_theme(ratatui_explorer::Theme::default())?,
+            explorer: FileExplorer::with_theme(
+                ratatui_explorer::Theme::default()
+                    .with_block(Block::bordered().border_type(BorderType::Rounded)),
+            )?,
             ui: UI::default(),
             current_directory: PathBuf::from(""),
             mouse_position: None,
@@ -532,12 +572,22 @@ impl App {
 
         // render explorer
         if self.ui.show_explorer || self.ui.show_themes_list {
+            self.explorer.filter(|f| {
+                if let Some(extension) = f.path().extension() {
+                    let extension = extension.to_str().unwrap_or_default();
+                    return EXPLORER_FILE_EXTENSIONS.contains(&extension);
+                };
+                false
+            });
             let area = Self::get_explorer_popup_area(area, 50, 70);
             f.render_widget(Clear, area);
             f.render_widget(&self.explorer.widget(), area);
         }
         if self.ui.show_devices_list {
             self.render_devices_list(f);
+        }
+        if self.ui.show_help_message {
+            self.render_help_message(f);
         }
     }
 
@@ -1350,7 +1400,7 @@ impl App {
         match key.code {
             // show explorer
             KeyCode::Char('e')
-                if matches!(self.settings.mode, Mode::Player) && !self.ui.show_help =>
+                if matches!(self.settings.mode, Mode::Player) && !self.ui.show_help_message =>
             {
                 self.explorer.set_cwd(&self.current_directory).unwrap();
                 self.ui.show_explorer = !self.ui.show_explorer
@@ -1383,7 +1433,9 @@ impl App {
             // move playhead right and left
             KeyCode::Right
                 if matches!(self.settings.mode, Mode::Player)
-                    && !(self.ui.show_devices_list || self.ui.show_explorer) =>
+                    && !(self.ui.show_devices_list
+                        || self.ui.show_explorer
+                        || self.ui.show_themes_list) =>
             {
                 self.ui.right_arrow_timer = Some(Instant::now());
                 self.lufs = [-50.; 300];
@@ -1394,7 +1446,9 @@ impl App {
             }
             KeyCode::Left
                 if matches!(self.settings.mode, Mode::Player)
-                    && !(self.ui.show_devices_list || self.ui.show_explorer) =>
+                    && !(self.ui.show_devices_list
+                        || self.ui.show_explorer
+                        || self.ui.show_themes_list) =>
             {
                 self.ui.left_arrow_timer = Some(Instant::now());
                 self.lufs = [-50.; 300];
@@ -1421,7 +1475,7 @@ impl App {
                 .unwrap(),
             // show devices
             KeyCode::Char('d')
-                if matches!(self.settings.mode, Mode::Microphone) && !self.ui.show_help =>
+                if matches!(self.settings.mode, Mode::Microphone) && !self.ui.show_help_message =>
             {
                 self.ui.show_devices_list = !self.ui.show_devices_list
             }
@@ -1465,8 +1519,10 @@ impl App {
                 self.ui.minus_sign_timer = Some(Instant::now());
                 self.ui.waveform_window = f64::min(self.ui.waveform_window + 1., bound);
             }
-            KeyCode::Char('h') if !self.ui.show_devices_list && !self.ui.show_explorer => {
-                self.ui.show_help = !self.ui.show_help
+            KeyCode::Char('h') | KeyCode::Char('?') | KeyCode::F(1)
+                if !self.ui.show_devices_list && !self.ui.show_explorer =>
+            {
+                self.ui.show_help_message = !self.ui.show_help_message
             }
             _ => (),
         }
@@ -1582,6 +1638,48 @@ impl App {
                 .wrap(Wrap { trim: true }),
             error_popup_area,
         );
+    }
+
+    fn render_help_message(&self, f: &mut Frame) {
+        let s = Style::default()
+            .fg(self.ui.theme.help.foreground.unwrap())
+            .bg(self.ui.theme.help.background.unwrap());
+        let bd = s.fg(self.ui.theme.help.borders.unwrap());
+        let hl = s.fg(self.ui.theme.help.highlight.unwrap());
+
+        let vertical = Layout::vertical([Constraint::Length(18)]).flex(Flex::Center);
+        let horizontal = Layout::horizontal([Constraint::Length(38)]).flex(Flex::Center);
+        let [area] = vertical.areas(f.area());
+        let [area] = horizontal.areas(area);
+
+        f.render_widget(Clear, area);
+        let rows = vec![
+            help_message_row!["1", "Toggle waveform", hl],
+            help_message_row!["2", "Toggle spectrum", hl],
+            help_message_row!["3", "Toggle LUFS", hl],
+            help_message_row!["e", "Toggle explorer", hl],
+            help_message_row!["m", "Change mode", hl],
+            help_message_row!["d", "Toggle device list", hl],
+            help_message_row!["t", "Select theme", hl],
+            help_message_row!["?/h/F1", "Show this window", hl],
+            help_message_row!["q/ctrl+c", "Quit", hl],
+            help_message_row!["M", "Toggle mid frequencies", hl],
+            help_message_row!["S", "Toggle side frequencies", hl],
+            help_message_row!["Right", "Jump forward 5s", hl],
+            help_message_row!["Left", "Jump back 5s", hl],
+            help_message_row!["Space", "Play/Pause", hl],
+            help_message_row!["-/_", "Zoom waveform in", hl],
+            help_message_row!["=/+", "Zoom waveform out", hl],
+        ];
+        let widths = [Constraint::Percentage(30), Constraint::Percentage(70)];
+        let paragraph = Table::new(rows, widths).style(s).block(
+            Block::bordered()
+                .border_type(BorderType::Rounded)
+                .title("Help")
+                .style(bd),
+        );
+
+        f.render_widget(paragraph, area);
     }
 
     fn reset_charts(&mut self) {
@@ -1952,9 +2050,10 @@ mod tests {
             waveform: WaveformTheme::default(),
             fft: FftTheme::default(),
             lufs: LufsTheme::default(),
-            devices: DevicesTheme::default(),
+            devices: DeviceListTheme::default(),
             explorer: ExplorerTheme::default(),
             error: ErrorTheme::default(),
+            help: HelpMessageTheme::default(),
         };
         theme.global.foreground = Color::LightCyan;
         theme.global.background = Color::Magenta;

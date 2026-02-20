@@ -124,6 +124,12 @@ highlight_dir_foreground = "LightRed"
 background = "Black"
 foreground = "LightRed"
 borders = "LightRed"
+
+[help]
+background = "Black"
+foreground = "Yellow"
+borders = "Yellow"
+highlight = "LightRed"
 ```
 
 Only global foreground and global background colors are mandatory. You can pass the ANSI-256 color number (see [this cheat sheet](https://www.ditig.com/256-colors-cheat-sheet)) or HEX color code (prefixed with `#`) or use one of the predefined colors below:
