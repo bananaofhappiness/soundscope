@@ -4,6 +4,7 @@ use crate::{
     analyzer::Analyzer,
     audio_capture::{self, AudioDevice, list_input_devs},
     audio_player::{self, AudioFile, PlayerCommand},
+    builtin_themes, // Add builtin_themes import
 };
 use cpal::{Stream, traits::StreamTrait as _};
 use crossbeam::channel::{Receiver, Sender};
@@ -37,7 +38,7 @@ use std::{
 pub type RBuffer = Arc<Mutex<AllocRingBuffer<f32>>>;
 
 /// Files with extensions listed here will be shown in the explorer
-const EXPLORER_FILE_EXTENSIONS: [&'static str; 21] = [
+const EXPLORER_FILE_EXTENSIONS: [&str; 21] = [
     "wav", "wave", "aiff", "aif", "flac", // Uncompressed / Lossless
     "mp3", "mp2", "mp1", "mpa", "aac", // MPEG Audio
     "m4a", "m4b", "mp4", "m4r", "m4p", // MP4 / M4A Family (AAC / ALAC)
@@ -71,6 +72,8 @@ struct UI {
     chart_rect: Option<Rect>,
     /// Track if render is needed to avoid unnecessary redraws
     needs_render: bool,
+    /// Selected theme index in themes list
+    selected_theme_index: usize,
 }
 
 impl Default for UI {
@@ -96,6 +99,7 @@ impl Default for UI {
             minus_sign_timer: None,
             chart_rect: None,
             needs_render: true,
+            selected_theme_index: 0,
         }
     }
 }
@@ -122,15 +126,15 @@ impl Display for Mode {
 /// Defines theme using .theme file
 /// Otherwise, uses default values.
 #[derive(Deserialize, Default)]
-struct Theme {
-    global: GlobalTheme,
-    waveform: WaveformTheme,
-    fft: FftTheme,
-    lufs: LufsTheme,
-    devices: DeviceListTheme,
-    explorer: ExplorerTheme,
-    error: ErrorTheme,
-    help: HelpMessageTheme,
+pub struct Theme {
+    pub global: GlobalTheme,
+    pub waveform: WaveformTheme,
+    pub fft: FftTheme,
+    pub lufs: LufsTheme,
+    pub devices: DeviceListTheme,
+    pub explorer: ExplorerTheme,
+    pub error: ErrorTheme,
+    pub help: HelpMessageTheme,
 }
 
 /// Uses [fill] to conviniently fill all fields of a struct.
@@ -150,7 +154,7 @@ fn fill<T>(field: &mut Option<T>, default: T) {
 
 impl Theme {
     /// Sets `self.global.foreground` and `self.global.background` for every field that was not defined in a .theme file.
-    fn apply_global_as_default(&mut self) {
+    pub fn apply_global_as_default(&mut self) {
         let fg = self.global.foreground;
         let bg = self.global.background;
         self.global.highlight = self.global.highlight.or(Some(fg));
@@ -224,15 +228,15 @@ impl Theme {
 
 /// Used to set default values of every UI element if they are not specified in the config file.
 #[derive(Deserialize)]
-struct GlobalTheme {
-    background: Color,
+pub struct GlobalTheme {
+    pub background: Color,
     /// It is default value for everything that is not a background,
     /// Except for SideFFT, which is LightGreen, and playhead position, which is LightRed
-    foreground: Color,
+    pub foreground: Color,
     /// Color used to highlight corresponding characters
     /// Like highlighting L in LUFS to let the user know
     /// that pressing L will open the LUFS meter
-    highlight: Option<Color>,
+    pub highlight: Option<Color>,
 }
 
 impl Default for GlobalTheme {
@@ -247,95 +251,80 @@ impl Default for GlobalTheme {
 
 /// Used to define the theme for the waveform display.
 #[derive(Deserialize, Default)]
-struct WaveformTheme {
-    borders: Option<Color>,
-    waveform: Option<Color>,
-    playhead: Option<Color>,
+pub struct WaveformTheme {
+    pub borders: Option<Color>,
+    pub waveform: Option<Color>,
+    pub playhead: Option<Color>,
     /// Current playing time and total duration
-    current_time: Option<Color>,
-    total_duration: Option<Color>,
+    pub current_time: Option<Color>,
+    pub total_duration: Option<Color>,
     /// Buttons like <-, +, -, ->
-    controls: Option<Color>,
-    controls_highlight: Option<Color>,
-    labels: Option<Color>,
+    pub controls: Option<Color>,
+    pub controls_highlight: Option<Color>,
+    pub labels: Option<Color>,
     /// Background of the chart
-    background: Option<Color>,
-    highlight: Option<Color>,
+    pub background: Option<Color>,
+    pub highlight: Option<Color>,
 }
 
 /// Used to define the theme for the FFT display.
-#[derive(Deserialize)]
-struct FftTheme {
-    borders: Option<Color>,
+#[derive(Deserialize, Default)]
+pub struct FftTheme {
+    pub borders: Option<Color>,
     /// Frequencies and LUFS tabs text
-    labels: Option<Color>,
-    axes: Option<Color>,
-    axes_labels: Option<Color>,
-    mid_fft: Option<Color>,
-    side_fft: Option<Color>,
+    pub labels: Option<Color>,
+    pub axes: Option<Color>,
+    pub axes_labels: Option<Color>,
+    pub mid_fft: Option<Color>,
+    pub side_fft: Option<Color>,
     /// Background of the chart
-    background: Option<Color>,
-    highlight: Option<Color>,
-}
-
-impl Default for FftTheme {
-    fn default() -> Self {
-        FftTheme {
-            borders: None,
-            labels: None,
-            axes: None,
-            axes_labels: None,
-            mid_fft: None,
-            side_fft: Some(Color::Indexed(170)),
-            background: None,
-            highlight: None,
-        }
-    }
+    pub background: Option<Color>,
+    pub highlight: Option<Color>,
 }
 
 /// Used to define the theme for the LUFS display.
 #[derive(Deserialize, Default)]
-struct LufsTheme {
-    axis: Option<Color>,
-    chart: Option<Color>,
+pub struct LufsTheme {
+    pub axis: Option<Color>,
+    pub chart: Option<Color>,
     /// Frequencies and LUFS tabs text
-    labels: Option<Color>,
+    pub labels: Option<Color>,
     /// Text color on the left
-    foreground: Option<Color>,
+    pub foreground: Option<Color>,
     /// Color of the numbers on the left
-    numbers: Option<Color>,
-    borders: Option<Color>,
+    pub numbers: Option<Color>,
+    pub borders: Option<Color>,
     /// Background of the chart
-    background: Option<Color>,
-    highlight: Option<Color>,
+    pub background: Option<Color>,
+    pub highlight: Option<Color>,
 }
 
 /// Used to define the theme for the devices list.
 #[derive(Deserialize, Default)]
-struct DeviceListTheme {
-    background: Option<Color>,
-    foreground: Option<Color>,
-    borders: Option<Color>,
-    highlight: Option<Color>,
+pub struct DeviceListTheme {
+    pub background: Option<Color>,
+    pub foreground: Option<Color>,
+    pub borders: Option<Color>,
+    pub highlight: Option<Color>,
 }
 
 /// Used to define the theme for the explorer.
 #[derive(Deserialize, Default)]
-struct ExplorerTheme {
-    background: Option<Color>,
-    borders: Option<Color>,
-    item_foreground: Option<Color>,
-    highlight_item_foreground: Option<Color>,
-    dir_foreground: Option<Color>,
-    highlight_dir_foreground: Option<Color>,
+pub struct ExplorerTheme {
+    pub background: Option<Color>,
+    pub borders: Option<Color>,
+    pub item_foreground: Option<Color>,
+    pub highlight_item_foreground: Option<Color>,
+    pub dir_foreground: Option<Color>,
+    pub highlight_dir_foreground: Option<Color>,
 }
 
 /// Used to define the theme for the error popup.
 #[derive(Deserialize)]
-struct ErrorTheme {
-    background: Option<Color>,
-    foreground: Option<Color>,
-    borders: Option<Color>,
+pub struct ErrorTheme {
+    pub background: Option<Color>,
+    pub foreground: Option<Color>,
+    pub borders: Option<Color>,
 }
 
 impl Default for ErrorTheme {
@@ -350,11 +339,11 @@ impl Default for ErrorTheme {
 
 /// Used to define the theme for the devices list.
 #[derive(Deserialize, Default)]
-struct HelpMessageTheme {
-    background: Option<Color>,
-    foreground: Option<Color>,
-    borders: Option<Color>,
-    highlight: Option<Color>,
+pub struct HelpMessageTheme {
+    pub background: Option<Color>,
+    pub foreground: Option<Color>,
+    pub borders: Option<Color>,
+    pub highlight: Option<Color>,
 }
 
 /// Settings for the [App]. Currently only the [Mode] is supported.
@@ -492,7 +481,8 @@ impl App {
             .with_highlight_item_style(ihl)
             .with_dir_style(ds)
             .with_highlight_dir_style(dhl)
-            .add_default_title();
+            .add_default_title()
+            .with_block(Block::bordered().border_type(BorderType::Rounded));
         self.explorer.set_theme(explorer_theme);
         self.ui.theme = theme;
     }
@@ -571,7 +561,7 @@ impl App {
         self.render_error_message(f);
 
         // render explorer
-        if self.ui.show_explorer || self.ui.show_themes_list {
+        if self.ui.show_explorer {
             self.explorer.filter(|f| {
                 if let Some(extension) = f.path().extension() {
                     let extension = extension.to_str().unwrap_or_default();
@@ -579,12 +569,15 @@ impl App {
                 };
                 false
             });
-            let area = Self::get_explorer_popup_area(area, 50, 70);
+            let area = Self::get_explorer_popup_area_percentage(area, 50, 70);
             f.render_widget(Clear, area);
             f.render_widget(&self.explorer.widget(), area);
         }
         if self.ui.show_devices_list {
             self.render_devices_list(f);
+        }
+        if self.ui.show_themes_list {
+            self.render_themes_list(f);
         }
         if self.ui.show_help_message {
             self.render_help_message(f);
@@ -1000,7 +993,7 @@ impl App {
             .bg(self.ui.theme.devices.background.unwrap());
         let bd = s.fg(self.ui.theme.devices.borders.unwrap());
         let hl = s.fg(self.ui.theme.devices.highlight.unwrap());
-        let area = Self::get_explorer_popup_area(f.area(), 20, 30);
+        let area = Self::get_explorer_popup_area_percentage(f.area(), 20, 30);
         f.render_widget(Clear, area);
         let devs = list_input_devs();
         let list_items: Vec<ListItem> = devs
@@ -1020,6 +1013,77 @@ impl App {
             Block::bordered()
                 .border_type(BorderType::Rounded)
                 .title("Devices")
+                .style(bd),
+        );
+
+        f.render_widget(list, area);
+    }
+
+    fn render_themes_list(&self, f: &mut Frame) {
+        let s = Style::default()
+            .fg(self.ui.theme.devices.foreground.unwrap())
+            .bg(self.ui.theme.devices.background.unwrap());
+        let bd = s.fg(self.ui.theme.devices.borders.unwrap());
+        let hl = s.fg(self.ui.theme.devices.highlight.unwrap());
+        let area = Self::get_explorer_popup_area_lenght(f.area(), 20, 40);
+        f.render_widget(Clear, area);
+
+        let themes = builtin_themes::list_themes();
+
+        let mut list_items: Vec<ListItem> = themes
+            .iter()
+            .enumerate()
+            .map(|(i, name)| {
+                let num = format!("[{}]", i + 1);
+                let name = format!(" {}", name);
+                let is_selected = i + 1 == self.ui.selected_theme_index;
+
+                let item_style = if is_selected {
+                    hl.bg(self.ui.theme.devices.background.unwrap())
+                } else {
+                    s
+                };
+
+                let num = num.bold().reset().style(item_style);
+                let name = name.bold().reset().style(item_style);
+                ListItem::from(num + name)
+            })
+            .collect();
+
+        // Add Default Theme option at the beginning
+        let default_num = "[0]".to_string();
+        let default_name = " Default Theme";
+        let is_default_selected = self.ui.selected_theme_index == 0;
+
+        let default_style = if is_default_selected {
+            hl.bg(self.ui.theme.devices.background.unwrap())
+        } else {
+            s
+        };
+
+        let default_num = default_num.bold().reset().style(default_style);
+        let default_name = default_name.bold().reset().style(default_style);
+        list_items.insert(0, ListItem::from(default_num + default_name));
+
+        // Add Custom Theme option at the end
+        let custom_num = format!("[{}]", themes.len() + 1);
+        let custom_name = " Custom Theme";
+        let is_custom_selected = self.ui.selected_theme_index == themes.len() + 1;
+
+        let custom_style = if is_custom_selected {
+            hl.bg(self.ui.theme.devices.background.unwrap())
+        } else {
+            s
+        };
+
+        let custom_num = custom_num.bold().reset().style(custom_style);
+        let custom_name = custom_name.bold().reset().style(custom_style);
+        list_items.push(ListItem::from(custom_num + custom_name));
+
+        let list = List::new(list_items).style(s).block(
+            Block::bordered()
+                .border_type(BorderType::Rounded)
+                .title("Themes")
                 .style(bd),
         );
 
@@ -1223,8 +1287,13 @@ impl App {
                 // if let Event::Key(key) = event {
                 match event {
                     Event::Key(key) => {
-                        // quit
-                        if key.code == KeyCode::Char('q') {
+                        // quit (only if not in any popup)
+                        if key.code == KeyCode::Char('q')
+                            && !self.ui.show_themes_list
+                            && !self.ui.show_explorer
+                            && !self.ui.show_devices_list
+                            && !self.ui.show_help_message
+                        {
                             self.player_command_tx.send(PlayerCommand::Quit)?;
                             return Ok(());
                         }
@@ -1252,11 +1321,6 @@ impl App {
                 }
 
                 if self.ui.show_explorer {
-                    self.explorer.handle(&event)?;
-                    self.ui.needs_render = true;
-                }
-
-                if self.ui.show_themes_list {
                     self.explorer.handle(&event)?;
                     self.ui.needs_render = true;
                 }
@@ -1413,7 +1477,6 @@ impl App {
                     self.select_audio_file(file_path)
                 }
             }
-            KeyCode::Enter if self.ui.show_themes_list => self.select_theme_file(),
             // show side fft
             KeyCode::Char('S') => self.ui.show_side_fft = !self.ui.show_side_fft,
             // show mid fft
@@ -1457,14 +1520,21 @@ impl App {
                     //TODO: log sending error
                 }
             }
-            KeyCode::Char('1') if !self.ui.show_devices_list => {
+            KeyCode::Char('1') if !self.ui.show_devices_list && !self.ui.show_themes_list => {
                 self.ui.show_waveform = !self.ui.show_waveform
             }
-            KeyCode::Char('2') if !self.ui.show_devices_list => {
+            KeyCode::Char('2') if !self.ui.show_devices_list && !self.ui.show_themes_list => {
                 self.ui.show_fft_chart = !self.ui.show_fft_chart
             }
-            KeyCode::Char('3') if !self.ui.show_devices_list => {
+            KeyCode::Char('3') if !self.ui.show_devices_list && !self.ui.show_themes_list => {
                 self.ui.show_lufs = !self.ui.show_lufs
+            }
+            // Quick selection with numbers 0-9 when themes list is open
+            KeyCode::Char(c) if self.ui.show_themes_list && c.is_ascii_digit() => {
+                let index = (c as usize) - ('0' as usize);
+                if let Err(err) = self.select_theme(index) {
+                    self.handle_error(format!("Failed to select theme: {}", err));
+                }
             }
             // this sends a test error
             // only in debug mode
@@ -1500,11 +1570,50 @@ impl App {
                     self.handle_error(format!("Failed to select device: {}", err));
                 }
             }
-            KeyCode::Char('t') => {
-                self.explorer
-                    .set_cwd(config_dir().unwrap().join("soundscope"))
-                    .unwrap();
+            // Arrow key navigation for themes list
+            KeyCode::Up if self.ui.show_themes_list => {
+                let themes = builtin_themes::list_themes();
+                let total_items = themes.len() + 2; // +1 for Default Theme, +1 for Custom Theme
+                if self.ui.selected_theme_index > 0 {
+                    self.ui.selected_theme_index -= 1;
+                } else {
+                    self.ui.selected_theme_index = total_items - 1; // Wrap to end
+                }
+                self.ui.needs_render = true;
+            }
+            KeyCode::Down if self.ui.show_themes_list => {
+                let themes = builtin_themes::list_themes();
+                let total_items = themes.len() + 2; // +1 for Default Theme, +1 for Custom Theme
+                if self.ui.selected_theme_index < total_items - 1 {
+                    self.ui.selected_theme_index += 1;
+                } else {
+                    self.ui.selected_theme_index = 0; // Wrap to beginning
+                }
+                self.ui.needs_render = true;
+            }
+            KeyCode::Enter if self.ui.show_themes_list => {
+                if let Err(err) = self.select_theme(self.ui.selected_theme_index) {
+                    self.handle_error(format!("Failed to select theme: {}", err));
+                }
+            }
+            KeyCode::Char('t')
+                if !self.ui.show_help_message
+                    && !self.ui.show_devices_list
+                    && !self.ui.show_explorer =>
+            {
                 self.ui.show_themes_list = !self.ui.show_themes_list;
+            }
+            KeyCode::Esc | KeyCode::Char('q') if self.ui.show_themes_list => {
+                self.ui.show_themes_list = false;
+            }
+            KeyCode::Esc | KeyCode::Char('q') if self.ui.show_explorer => {
+                self.ui.show_explorer = false;
+            }
+            KeyCode::Esc | KeyCode::Char('q') if self.ui.show_devices_list => {
+                self.ui.show_devices_list = false;
+            }
+            KeyCode::Esc | KeyCode::Char('q') if self.ui.show_help_message => {
+                self.ui.show_help_message = false;
             }
             KeyCode::Char('=') | KeyCode::Char('+') => {
                 self.ui.plus_sign_timer = Some(Instant::now());
@@ -1520,7 +1629,9 @@ impl App {
                 self.ui.waveform_window = f64::min(self.ui.waveform_window + 1., bound);
             }
             KeyCode::Char('h') | KeyCode::Char('?') | KeyCode::F(1)
-                if !self.ui.show_devices_list && !self.ui.show_explorer =>
+                if !self.ui.show_devices_list
+                    && !self.ui.show_explorer
+                    && !self.ui.show_themes_list =>
             {
                 self.ui.show_help_message = !self.ui.show_help_message
             }
@@ -1575,6 +1686,72 @@ impl App {
         Ok(())
     }
 
+    fn select_theme(&mut self, index: usize) -> Result<()> {
+        let themes = builtin_themes::list_themes();
+
+        // Check if index is for "Default Theme" (first option, index 0)
+        if index == 0 {
+            let mut theme = Theme::default();
+            theme.apply_global_as_default();
+            self.set_theme(theme);
+
+            // Save theme choice to .current_theme file
+            if let Some(mut config_path) = config_dir() {
+                config_path.push("soundscope");
+                std::fs::create_dir_all(&config_path).unwrap();
+                let current_theme_file = config_path.join(".current_theme");
+                if let Err(err) = fs::write(&current_theme_file, "DEFAULT") {
+                    self.handle_error(format!("Error saving theme choice: {err}"));
+                }
+            }
+
+            self.ui.show_themes_list = false;
+            return Ok(());
+        }
+
+        // Check if index is for "Custom Theme" (last option)
+        if index == themes.len() + 1 {
+            // Open explorer for custom theme selection
+            if let Some(config_path) = config_dir() {
+                self.explorer
+                    .set_cwd(config_path.join("soundscope"))
+                    .unwrap();
+                self.ui.show_themes_list = false;
+                self.ui.show_explorer = true;
+            }
+            return Ok(());
+        }
+
+        // Check if index is valid for built-in themes
+        // index 1 to themes.len() map to themes[0] to themes[themes.len()-1]
+        if index < 1 || index > themes.len() {
+            return Err(eyre!("Invalid theme index: {}", index));
+        }
+
+        // Get theme name and load it (index - 1 because 0 is default)
+        let theme_name = themes[index - 1];
+        if let Some(mut theme) = builtin_themes::get_by_name(theme_name) {
+            theme.apply_global_as_default();
+            self.set_theme(theme);
+
+            // Save theme choice to .current_theme file
+            if let Some(mut config_path) = config_dir() {
+                config_path.push("soundscope");
+                std::fs::create_dir_all(&config_path).unwrap();
+                let current_theme_file = config_path.join(".current_theme");
+                // Save as "builtin:theme_name" format
+                let theme_identifier = format!("builtin:{}", theme_name);
+                if let Err(err) = fs::write(&current_theme_file, &theme_identifier) {
+                    self.handle_error(format!("Error saving theme choice: {err}"));
+                }
+            }
+
+            self.ui.show_themes_list = false;
+        }
+
+        Ok(())
+    }
+
     fn handle_error(&mut self, message: String) {
         self.ui.error_text = message;
         self.ui.error_timer = Some(Instant::now());
@@ -1593,20 +1770,17 @@ impl App {
         }
     }
 
-    fn select_theme_file(&mut self) {
-        let file = self.explorer.current();
-        let file_path = self.explorer.current().path().clone();
-        if !file.is_file() {
-            return;
-        }
-        let mut theme = self.load_theme(&file_path).unwrap_or_default();
-        theme.apply_global_as_default();
-        self.set_theme(theme);
-    }
-
-    fn get_explorer_popup_area(area: Rect, percent_x: u16, percent_y: u16) -> Rect {
+    fn get_explorer_popup_area_percentage(area: Rect, percent_x: u16, percent_y: u16) -> Rect {
         let vertical = Layout::vertical([Constraint::Percentage(percent_y)]).flex(Flex::Center);
         let horizontal = Layout::horizontal([Constraint::Percentage(percent_x)]).flex(Flex::Center);
+        let [area] = vertical.areas(area);
+        let [area] = horizontal.areas(area);
+        area
+    }
+
+    fn get_explorer_popup_area_lenght(area: Rect, length_x: u16, length_y: u16) -> Rect {
+        let vertical = Layout::vertical([Constraint::Length(length_x)]).flex(Flex::Center);
+        let horizontal = Layout::horizontal([Constraint::Length(length_y)]).flex(Flex::Center);
         let [area] = vertical.areas(area);
         let [area] = horizontal.areas(area);
         area
@@ -1647,11 +1821,7 @@ impl App {
         let bd = s.fg(self.ui.theme.help.borders.unwrap());
         let hl = s.fg(self.ui.theme.help.highlight.unwrap());
 
-        let vertical = Layout::vertical([Constraint::Length(18)]).flex(Flex::Center);
-        let horizontal = Layout::horizontal([Constraint::Length(38)]).flex(Flex::Center);
-        let [area] = vertical.areas(f.area());
-        let [area] = horizontal.areas(area);
-
+        let area = Self::get_explorer_popup_area_lenght(f.area(), 20, 40);
         f.render_widget(Clear, area);
         let rows = vec![
             help_message_row!["1", "Toggle waveform", hl],
@@ -1670,6 +1840,12 @@ impl App {
             help_message_row!["Space", "Play/Pause", hl],
             help_message_row!["-/_", "Zoom waveform in", hl],
             help_message_row!["=/+", "Zoom waveform out", hl],
+            help_message_row!["1-9", "Select device/theme", hl],
+            help_message_row![
+                "Up/Down",
+                "Navigate in explorer, device list and theme list",
+                hl
+            ],
         ];
         let widths = [Constraint::Percentage(30), Constraint::Percentage(70)];
         let paragraph = Table::new(rows, widths).style(s).block(
@@ -1732,15 +1908,30 @@ impl App {
         let current_theme_file = path.join(".current_theme");
         if current_theme_file.exists() {
             // read contents of current_theme file
-            // this is the name of the theme {name}.theme
+            // this is the name of the theme {name}.theme or "builtin:theme_name"
             match std::fs::read_to_string(&current_theme_file) {
                 Ok(theme_file) => {
                     if theme_file == "DEFAULT" {
                         let mut theme = Theme::default();
                         theme.apply_global_as_default();
                         self.set_theme(theme)
+                    } else if theme_file.starts_with("builtin:") {
+                        // Load builtin theme
+                        let theme_name = theme_file.strip_prefix("builtin:").unwrap();
+                        if let Some(mut theme) = builtin_themes::get_by_name(theme_name) {
+                            theme.apply_global_as_default();
+                            self.set_theme(theme);
+                        } else {
+                            self.handle_error(format!(
+                                "Builtin theme '{}' not found. Applying default theme.",
+                                theme_name
+                            ));
+                            let mut theme = Theme::default();
+                            theme.apply_global_as_default();
+                            self.set_theme(theme);
+                        }
                     } else {
-                        let theme_file = path.join(theme_file);
+                        let theme_file = path.join(&theme_file);
                         let mut theme = if theme_file.exists() {
                             self.load_theme(&theme_file).unwrap_or_default()
                         } else {
@@ -1890,7 +2081,7 @@ mod tests {
     #[test]
     fn test_get_explorer_popup_area() {
         let area = Rect::new(0, 0, 100, 50);
-        let popup_area = App::get_explorer_popup_area(area, 50, 70);
+        let popup_area = App::get_explorer_popup_area_percentage(area, 50, 70);
 
         // Should be centered and smaller than original area
         assert!(popup_area.width <= area.width);

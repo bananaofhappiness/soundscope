@@ -91,7 +91,7 @@ labels = "Yellow"
 axes = "Yellow"
 axes_labels = "Yellow"
 mid_fft = "Yellow"
-side_fft = "170" # Orchid
+side_fft = "LightRed"
 
 [lufs]
 axis = "Yellow"

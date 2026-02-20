@@ -1,6 +1,7 @@
 mod analyzer;
 mod audio_capture;
 mod audio_player;
+mod builtin_themes;
 mod tui;
 use crate::audio_player::{AudioFile, AudioPlayer, PlaybackPosition, PlayerCommand};
 use crossbeam::channel::{bounded, unbounded};
