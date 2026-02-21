@@ -4,10 +4,10 @@ use crate::{
     analyzer::Analyzer,
     audio_capture::{self, AudioDevice, list_input_devs},
     audio_player::{self, AudioFile, PlayerCommand},
+    builtin_themes, // Add builtin_themes import
 };
 use cpal::{Stream, traits::StreamTrait as _};
 use crossbeam::channel::{Receiver, Sender};
-use dirs::config_dir;
 use eyre::{Result, eyre};
 use ratatui::{
     DefaultTerminal,
@@ -16,7 +16,10 @@ use ratatui::{
     prelude::*,
     style::{Color, Style, Stylize},
     text::{Line, Span, ToLine, ToSpan},
-    widgets::{Axis, Block, Chart, Clear, Dataset, GraphType, List, ListItem, Paragraph, Wrap},
+    widgets::{
+        Axis, Block, BorderType, Cell, Chart, Clear, Dataset, GraphType, List, ListItem, Paragraph,
+        Row, Table, Wrap,
+    },
 };
 use ratatui_explorer::FileExplorer;
 use ringbuffer::{AllocRingBuffer, RingBuffer};
@@ -25,20 +28,23 @@ use serde::Deserialize;
 use std::{
     fmt::Display,
     fs::{self, File},
-    io::Read,
+    io::{Read, Write},
     path::PathBuf,
     sync::{Arc, Mutex},
     time::{Duration, Instant},
 };
 
-/// Uses [fill] to conviniently fill all fields of a struct.
-macro_rules! fill_fields {
-    ($self:ident.$section:ident.$($field:ident => $value:expr),* $(,)?) => {
-        $( fill(&mut $self.$section.$field, $value); )*
-    };
-}
-
 pub type RBuffer = Arc<Mutex<AllocRingBuffer<f32>>>;
+
+/// Files with extensions listed here will be shown in the explorer
+const EXPLORER_FILE_EXTENSIONS: [&str; 21] = [
+    "wav", "wave", "aiff", "aif", "flac", // Uncompressed / Lossless
+    "mp3", "mp2", "mp1", "mpa", "aac", // MPEG Audio
+    "m4a", "m4b", "mp4", "m4r", "m4p", // MP4 / M4A Family (AAC / ALAC)
+    "ogg", "oga", "ogv", // OGG Family
+    "caf", "alac",  // Apple formats
+    "theme", // Theme file
+];
 
 /// Settings like showing/hiding UI elements.
 struct UI {
@@ -49,7 +55,9 @@ struct UI {
     show_side_fft: bool,
     show_devices_list: bool,
     show_lufs: bool,
+    show_waveform: bool,
     show_themes_list: bool,
+    show_help_message: bool,
     error_text: String,
     error_timer: Option<Instant>,
     device_name: String,
@@ -61,6 +69,12 @@ struct UI {
     minus_sign_timer: Option<Instant>,
     // Used to be able to hover fft chart to get more precise frequencies
     chart_rect: Option<Rect>,
+    /// Track if render is needed to avoid unnecessary redraws
+    needs_render: bool,
+    /// Selected theme index in themes list
+    selected_theme_index: usize,
+    /// Selected device index in devices list
+    selected_device_index: usize,
 }
 
 impl Default for UI {
@@ -72,8 +86,10 @@ impl Default for UI {
             show_mid_fft: true,
             show_side_fft: false,
             show_devices_list: false,
-            show_lufs: false,
+            show_lufs: true,
+            show_waveform: true,
             show_themes_list: false,
+            show_help_message: false,
             error_text: String::new(),
             error_timer: None,
             device_name: String::new(),
@@ -83,6 +99,9 @@ impl Default for UI {
             plus_sign_timer: None,
             minus_sign_timer: None,
             chart_rect: None,
+            needs_render: true,
+            selected_theme_index: 0,
+            selected_device_index: 0,
         }
     }
 }
@@ -109,14 +128,22 @@ impl Display for Mode {
 /// Defines theme using .theme file
 /// Otherwise, uses default values.
 #[derive(Deserialize, Default)]
-struct Theme {
-    global: GlobalTheme,
-    waveform: WaveformTheme,
-    fft: FftTheme,
-    lufs: LufsTheme,
-    devices: DevicesTheme,
-    explorer: ExplorerTheme,
-    error: ErrorTheme,
+pub struct Theme {
+    pub global: GlobalTheme,
+    pub waveform: WaveformTheme,
+    pub fft: FftTheme,
+    pub lufs: LufsTheme,
+    pub devices: DeviceListTheme,
+    pub explorer: ExplorerTheme,
+    pub error: ErrorTheme,
+    pub help: HelpMessageTheme,
+}
+
+/// Uses [fill] to conviniently fill all fields of a struct.
+macro_rules! fill_fields {
+    ($self:ident.$section:ident.$($field:ident <- $value:expr),* $(,)?) => {
+        $( fill(&mut $self.$section.$field, $value); )*
+    };
 }
 
 /// Used to set `default: T` to a `field` if it is not set (it is None).
@@ -129,82 +156,89 @@ fn fill<T>(field: &mut Option<T>, default: T) {
 
 impl Theme {
     /// Sets `self.global.foreground` and `self.global.background` for every field that was not defined in a .theme file.
-    fn apply_global_as_default(&mut self) {
+    pub fn apply_global_as_default(&mut self) {
         let fg = self.global.foreground;
         let bg = self.global.background;
         self.global.highlight = self.global.highlight.or(Some(fg));
         let hl = self.global.highlight.unwrap();
 
         fill_fields!(self.waveform.
-            borders => fg,
-            controls => fg,
-            controls_highlight => hl,
-            labels => fg,
-            playhead => hl,
-            current_time => fg,
-            total_duration => fg,
-            waveform => fg,
-            background => bg,
-            highlight => hl,
+            borders <- fg,
+            controls <- fg,
+            controls_highlight <- hl,
+            labels <- fg,
+            playhead <- hl,
+            current_time <- fg,
+            total_duration <- fg,
+            waveform <- fg,
+            background <- bg,
+            highlight <- hl,
         );
 
         fill_fields!(self.lufs.
-            axis => fg,
-            chart => fg,
-            foreground => fg,
-            labels => fg,
-            numbers => fg,
-            borders => fg,
-            background => bg,
-            highlight => hl,
+            axis <- fg,
+            chart <- fg,
+            foreground <- fg,
+            labels <- fg,
+            numbers <- fg,
+            borders <- fg,
+            background <- bg,
+            highlight <- hl,
         );
 
         fill_fields!(self.fft.
-            axes => fg,
-            axes_labels => fg,
-            borders => fg,
-            labels => fg,
-            mid_fft => fg,
-            side_fft => hl,
-            background => bg,
-            highlight => hl,
+            axes <- fg,
+            axes_labels <- fg,
+            borders <- fg,
+            labels <- fg,
+            mid_fft <- fg,
+            side_fft <- hl,
+            background <- bg,
+            highlight <- hl,
         );
 
         fill_fields!(self.explorer.
-            background => bg,
-            borders => fg,
-            dir_foreground => fg,
-            item_foreground => fg,
-            highlight_dir_foreground => hl,
-            highlight_item_foreground => hl,
+            background <- bg,
+            borders <- fg,
+            dir_foreground <- fg,
+            item_foreground <- fg,
+            highlight_dir_foreground <- hl,
+            highlight_item_foreground <- hl,
         );
 
         fill_fields!(self.devices.
-            background => bg,
-            foreground => fg,
-            borders => fg,
-            highlight => hl,
+            background <- bg,
+            foreground <- fg,
+            borders <- fg,
+            highlight <- hl,
         );
 
         fill_fields!(self.error.
-            background => bg,
-            foreground => fg,
-            borders => fg,
+            background <- bg,
+            foreground <- fg,
+            borders <- fg,
+        );
+
+        fill_fields!(self.help.
+            background <- bg,
+            foreground <- fg,
+            borders <- fg,
+            highlight <- hl,
         );
     }
 }
 
 /// Used to set default values of every UI element if they are not specified in the config file.
 #[derive(Deserialize)]
-struct GlobalTheme {
-    background: Color,
+pub struct GlobalTheme {
+    pub background: Color,
     /// It is default value for everything that is not a background,
     /// Except for SideFFT, which is LightGreen, and playhead position, which is LightRed
-    foreground: Color,
+    pub foreground: Color,
     /// Color used to highlight corresponding characters
     /// Like highlighting L in LUFS to let the user know
     /// that pressing L will open the LUFS meter
-    highlight: Option<Color>,
+    pub highlight: Option<Color>,
 }
 
 impl Default for GlobalTheme {
@@ -219,95 +253,80 @@ impl Default for GlobalTheme {
 
 /// Used to define the theme for the waveform display.
 #[derive(Deserialize, Default)]
-struct WaveformTheme {
-    borders: Option<Color>,
-    waveform: Option<Color>,
-    playhead: Option<Color>,
+pub struct WaveformTheme {
+    pub borders: Option<Color>,
+    pub waveform: Option<Color>,
+    pub playhead: Option<Color>,
     /// Current playing time and total duration
-    current_time: Option<Color>,
-    total_duration: Option<Color>,
+    pub current_time: Option<Color>,
+    pub total_duration: Option<Color>,
     /// Buttons like <-, +, -, ->
-    controls: Option<Color>,
-    controls_highlight: Option<Color>,
-    labels: Option<Color>,
+    pub controls: Option<Color>,
+    pub controls_highlight: Option<Color>,
+    pub labels: Option<Color>,
     /// Background of the chart
-    background: Option<Color>,
-    highlight: Option<Color>,
+    pub background: Option<Color>,
+    pub highlight: Option<Color>,
 }
 
 /// Used to define the theme for the FFT display.
-#[derive(Deserialize)]
-struct FftTheme {
-    borders: Option<Color>,
+#[derive(Deserialize, Default)]
+pub struct FftTheme {
+    pub borders: Option<Color>,
     /// Frequencies and LUFS tabs text
-    labels: Option<Color>,
-    axes: Option<Color>,
-    axes_labels: Option<Color>,
-    mid_fft: Option<Color>,
-    side_fft: Option<Color>,
+    pub labels: Option<Color>,
+    pub axes: Option<Color>,
+    pub axes_labels: Option<Color>,
+    pub mid_fft: Option<Color>,
+    pub side_fft: Option<Color>,
     /// Background of the chart
-    background: Option<Color>,
-    highlight: Option<Color>,
-}
-
-impl Default for FftTheme {
-    fn default() -> Self {
-        FftTheme {
-            borders: None,
-            labels: None,
-            axes: None,
-            axes_labels: None,
-            mid_fft: None,
-            side_fft: Some(Color::Indexed(170)),
-            background: None,
-            highlight: None,
-        }
-    }
+    pub background: Option<Color>,
+    pub highlight: Option<Color>,
 }
 
 /// Used to define the theme for the LUFS display.
 #[derive(Deserialize, Default)]
-struct LufsTheme {
-    axis: Option<Color>,
-    chart: Option<Color>,
+pub struct LufsTheme {
+    pub axis: Option<Color>,
+    pub chart: Option<Color>,
     /// Frequencies and LUFS tabs text
-    labels: Option<Color>,
+    pub labels: Option<Color>,
     /// Text color on the left
-    foreground: Option<Color>,
+    pub foreground: Option<Color>,
     /// Color of the numbers on the left
-    numbers: Option<Color>,
-    borders: Option<Color>,
+    pub numbers: Option<Color>,
+    pub borders: Option<Color>,
     /// Background of the chart
-    background: Option<Color>,
-    highlight: Option<Color>,
+    pub background: Option<Color>,
+    pub highlight: Option<Color>,
 }
 
 /// Used to define the theme for the devices list.
 #[derive(Deserialize, Default)]
-struct DevicesTheme {
-    background: Option<Color>,
-    foreground: Option<Color>,
-    borders: Option<Color>,
-    highlight: Option<Color>,
+pub struct DeviceListTheme {
+    pub background: Option<Color>,
+    pub foreground: Option<Color>,
+    pub borders: Option<Color>,
+    pub highlight: Option<Color>,
 }
 
 /// Used to define the theme for the explorer.
 #[derive(Deserialize, Default)]
-struct ExplorerTheme {
-    background: Option<Color>,
-    borders: Option<Color>,
-    item_foreground: Option<Color>,
-    highlight_item_foreground: Option<Color>,
-    dir_foreground: Option<Color>,
-    highlight_dir_foreground: Option<Color>,
+pub struct ExplorerTheme {
+    pub background: Option<Color>,
+    pub borders: Option<Color>,
+    pub item_foreground: Option<Color>,
+    pub highlight_item_foreground: Option<Color>,
+    pub dir_foreground: Option<Color>,
+    pub highlight_dir_foreground: Option<Color>,
 }
 
 /// Used to define the theme for the error popup.
 #[derive(Deserialize)]
-struct ErrorTheme {
-    background: Option<Color>,
-    foreground: Option<Color>,
-    borders: Option<Color>,
+pub struct ErrorTheme {
+    pub background: Option<Color>,
+    pub foreground: Option<Color>,
+    pub borders: Option<Color>,
 }
 
 impl Default for ErrorTheme {
@@ -318,6 +337,15 @@ impl Default for ErrorTheme {
             borders: Some(Color::Indexed(160)),
         }
     }
+}
+
+/// Used to define the theme for the devices list.
+#[derive(Deserialize, Default)]
+pub struct HelpMessageTheme {
+    pub background: Option<Color>,
+    pub foreground: Option<Color>,
+    pub borders: Option<Color>,
+    pub highlight: Option<Color>,
 }
 
 /// Settings for the [App]. Currently only the [Mode] is supported.
@@ -335,14 +363,16 @@ struct FFTData {
 
 /// Waveform data for the UI.
 struct WaveForm {
-    chart: Vec<(f64, f64)>,
+    audio_file_chart: Vec<(f64, f64)>,
+    microphone_input_chart: Vec<(f64, f64)>,
     playhead: usize,
 }
 
 impl Default for WaveForm {
     fn default() -> Self {
         Self {
-            chart: vec![(0., 0.)],
+            audio_file_chart: vec![(0., 0.)],
+            microphone_input_chart: vec![(0., 0.)],
             playhead: 0,
         }
     }
@@ -382,9 +412,6 @@ struct App {
     waveform: WaveForm,
     /// LUFS chart.
     lufs: [f64; 300],
-    /// Track if render is needed to avoid unnecessary redraws
-    needs_render: bool,
-
     settings: Settings,
     //UI
     explorer: FileExplorer,
@@ -393,6 +420,15 @@ struct App {
     current_directory: PathBuf,
     // Used to print info about fft chart when it's hovered
     mouse_position: Option<(u16, u16)>,
+}
+
+macro_rules! help_message_row {
+    ($key:expr, $description:expr, $hl:expr) => {
+        Row::new(vec![
+            Cell::new($key.to_line().style($hl).centered()),
+            Cell::new($description.to_span()),
+        ])
+    };
 }
 
 impl App {
@@ -420,11 +456,13 @@ impl App {
             waveform: WaveForm::default(),
             lufs: [-50.; 300],
             settings: Settings::default(),
-            explorer: FileExplorer::with_theme(ratatui_explorer::Theme::default())?,
+            explorer: FileExplorer::with_theme(
+                ratatui_explorer::Theme::default()
+                    .with_block(Block::bordered().border_type(BorderType::Rounded)),
+            )?,
             ui: UI::default(),
             current_directory: PathBuf::from(""),
             mouse_position: None,
-            needs_render: true,
         })
     }
 
@@ -445,7 +483,8 @@ impl App {
             .with_highlight_item_style(ihl)
             .with_dir_style(ds)
             .with_highlight_dir_style(dhl)
-            .add_default_title();
+            .add_default_title()
+            .with_block(Block::bordered().border_type(BorderType::Rounded));
         self.explorer.set_theme(explorer_theme);
         self.ui.theme = theme;
     }
@@ -454,25 +493,76 @@ impl App {
     fn draw(&mut self, f: &mut Frame) {
         // split the area into waveform part and charts parts
         let area = f.area();
-        let layout = Layout::default()
-            .direction(Direction::Vertical)
-            .constraints([Constraint::Percentage(30), Constraint::Percentage(70)].as_ref())
-            .split(area);
-
         // make the background black
         let background = Paragraph::new("").style(self.ui.theme.global.background);
         f.render_widget(background, area);
-        self.render_waveform(f, layout[0]);
-        self.ui.chart_rect = Some(layout[1]);
 
-        // show charts based on user settings
-        if self.ui.show_lufs {
-            self.render_lufs(f, layout[1]);
-        } else if self.ui.show_fft_chart {
-            self.render_fft_chart(f, layout[1]);
-            if let Some((x, y)) = self.mouse_position {
-                self.render_fft_info(f, x, y)
+        // if we should show top window (waveform)
+        let top_constraint = if self.ui.show_waveform {
+            if self.ui.show_fft_chart || self.ui.show_lufs {
+                Constraint::Percentage(30)
+            } else {
+                Constraint::Percentage(100)
             }
+        } else {
+            Constraint::Length(0)
+        };
+
+        // if we should show bottom windows (spectrum & lufs)
+        let bottom_constraint = if self.ui.show_fft_chart || self.ui.show_lufs {
+            if self.ui.show_waveform {
+                Constraint::Percentage(70)
+            } else {
+                Constraint::Percentage(100)
+            }
+        } else {
+            Constraint::Length(0)
+        };
+
+        // devide frame into top and bottom windows
+        let vertical_chunks = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([top_constraint, bottom_constraint])
+            .split(area);
+
+        if self.ui.show_waveform {
+            self.render_waveform(f, vertical_chunks[0]);
+        }
+
+        // draw bottom windows
+        if self.ui.show_fft_chart || self.ui.show_lufs {
+            // if we should split bottom part to lufs and fft
+            // or fill the bottom part with only 1 of them
+            let left_constraint = if self.ui.show_fft_chart {
+                Constraint::Min(0)
+            } else {
+                Constraint::Length(0)
+            };
+            let right_constraint = if self.ui.show_lufs {
+                Constraint::Min(0)
+            } else {
+                Constraint::Length(0)
+            };
+
+            let horizontal_chunks = Layout::default()
+                .direction(Direction::Horizontal)
+                .constraints([left_constraint, right_constraint])
+                .split(vertical_chunks[1]);
+
+            if self.ui.show_fft_chart {
+                self.ui.chart_rect = Some(horizontal_chunks[0]);
+                self.render_fft_chart(f, horizontal_chunks[0]);
+                if let Some((x, y)) = self.mouse_position {
+                    self.render_fft_info(f, x, y)
+                }
+            }
+            if self.ui.show_lufs {
+                self.render_lufs(f, horizontal_chunks[1]);
+            }
+        }
+
+        if !(self.ui.show_waveform || self.ui.show_fft_chart || self.ui.show_lufs) {
+            self.render_empty_window(f, area);
         }
 
         // render error
@@ -483,14 +573,61 @@ impl App {
         self.render_error_message(f);
 
         // render explorer
-        if self.ui.show_explorer || self.ui.show_themes_list {
-            let area = Self::get_explorer_popup_area(area, 50, 70);
+        if self.ui.show_explorer {
+            self.explorer.filter(|f| {
+                if let Some(extension) = f.path().extension() {
+                    let extension = extension.to_str().unwrap_or_default();
+                    return EXPLORER_FILE_EXTENSIONS.contains(&extension);
+                };
+                false
+            });
+            let area = Self::get_popup_area_with_percentage(area, 50, 70);
             f.render_widget(Clear, area);
             f.render_widget(&self.explorer.widget(), area);
         }
         if self.ui.show_devices_list {
             self.render_devices_list(f);
         }
+        if self.ui.show_themes_list {
+            self.render_themes_list(f);
+        }
+        if self.ui.show_help_message {
+            self.render_help_message(f);
+        }
+    }
+
+    fn render_empty_window(&mut self, frame: &mut Frame, area: Rect) {
+        let s = Style::default().bg(self.ui.theme.global.background).fg(self
+            .ui
+            .theme
+            .global
+            .foreground);
+
+        let background = Paragraph::new("").style(s);
+        frame.render_widget(background, area);
+
+        let popout_area = Self::get_popup_area_with_lenght(frame.area(), 6, 30);
+        frame.render_widget(Clear, popout_area);
+
+        let paragraph = Paragraph::new(vec![
+            "No open windows!".to_line().centered(),
+            "1 | Toggle waveform".to_line().centered(),
+            "2 | Toggle spectrum".to_line().centered(),
+            "3 | Toggle LUFS   ".to_line().centered(),
+        ])
+        .block(Block::bordered().border_type(BorderType::Rounded))
+        .style(s);
+
+        frame.render_widget(paragraph, popout_area);
+
+        let big_text_area = Self::get_popup_area_with_lenght(frame.area(), 22, 100);
+        let big_text = tui_big_text::BigText::builder()
+            .pixel_size(tui_big_text::PixelSize::Full)
+            .style(s)
+            .centered()
+            .lines(vec!["Soundscope".to_line()])
+            .build();
+        frame.render_widget(big_text, big_text_area);
     }
 
     fn render_waveform(&mut self, frame: &mut Frame, area: Rect) {
@@ -533,7 +670,7 @@ impl App {
             _ => {
                 let half_window = self.ui.waveform_window * 500.;
                 let playhead_millis = playhead_ms as f64;
-                let max_x = self.waveform.chart.len() as f64 / 2.;
+                let max_x = self.waveform.audio_file_chart.len() as f64 / 2.;
                 let min_bound = (playhead_millis - half_window)
                     .min(max_x - self.ui.waveform_window * 1000.)
                     .max(0.);
@@ -552,7 +689,13 @@ impl App {
                 .marker(symbols::Marker::Braille)
                 .graph_type(GraphType::Line)
                 .style(wv)
-                .data(&self.waveform.chart),
+                .data({
+                    if matches!(self.settings.mode, Mode::Player) {
+                        &self.waveform.audio_file_chart
+                    } else {
+                        &self.waveform.microphone_input_chart
+                    }
+                }),
             Dataset::default()
                 .marker(symbols::Marker::Braille)
                 .graph_type(GraphType::Line)
@@ -565,11 +708,9 @@ impl App {
         let mode_text = self.settings.mode.to_span().style(lb);
         let upper_right_title = match self.settings.mode {
             Mode::Player => Line::from(vec![
-                "c".bold().style(hl),
-                "hange Mode: ".to_span().style(lb),
+                "m".bold().style(hl),
+                "ode: ".to_span().style(lb),
                 mode_text,
-                " t".bold().style(hl),
-                "heme".to_span().style(lb),
             ])
             .right_aligned(),
             _ => Line::from(vec![
@@ -577,11 +718,9 @@ impl App {
                 "evice: ".to_span().style(lb),
                 self.ui.device_name.to_span().style(lb),
                 " ".to_span(),
-                "c".bold().style(hl),
-                "hange Mode: ".to_span().style(lb),
+                "m".bold().style(hl),
+                "ode: ".to_span().style(lb),
                 mode_text,
-                " t".bold().style(hl),
-                "heme".to_span().style(lb),
             ])
             .right_aligned(),
         };
@@ -590,7 +729,8 @@ impl App {
         let chart = Chart::new(datasets)
             .block(
                 Block::bordered()
-                    .title(title.to_span().style(lb))
+                    .border_type(BorderType::Rounded)
+                    .title("¹".to_span().style(hl).bold() + title.to_span().style(lb))
                     .title_bottom(self.get_flashing_controls_text().left_aligned())
                     .title_bottom(
                         Line::styled(format!("{:0>2}:{:0>2}", current_min, current_sec), ct)
@@ -632,10 +772,6 @@ impl App {
             Some(timer) if timer.elapsed().as_millis() < t => "+".to_span().style(hl),
             _ => "+".to_span().style(s),
         };
-        // Line::from(format!(
-        //     "{} {} {:0>2}s {} {}",
-        //     left_arrow, minus, self.ui_settings.waveform_window, plus, right_arrow
-        // ))
         Line::from(vec![
             left_arrow,
             " ".to_span(),
@@ -659,25 +795,9 @@ impl App {
         let sf = s.fg(self.ui.theme.fft.side_fft.unwrap());
         let hl = s.fg(self.ui.theme.fft.highlight.unwrap());
         let x_labels = vec![
-            // frequencies are commented because their positions are off.
-            // they are not rendered where the corresponding frequencies are.
-            Span::styled("20Hz", fg.bold()),
-            // Span::raw("20Hz"),
-            // Span::raw(""),
-            // Span::raw(""),
-            // Span::raw("112.47"),
-            // Span::raw(""),
-            // Span::raw(""),
-            // Span::raw(""),
+            Span::styled("20Hz", fg),
             Span::styled("632.46Hz", fg),
-            // Span::raw(""),
-            // Span::raw(""),
-            // Span::raw(" "),
-            // Span::raw("3556.57"),
-            // Span::raw(""),
-            // Span::raw(""),
-            // Span::raw("20000Hz"),
-            Span::styled("20kHz", fg.bold()),
+            Span::styled("20kHz", fg),
         ];
 
         // if no data about frequencies then default to some low value
@@ -697,13 +817,11 @@ impl App {
             Dataset::default()
                 // highlight the letter M so the user knows they must press M to toggle it
                 // same with Side fft
-                .name(vec!["m".bold().style(hl), "id frequencies".into()])
                 .marker(symbols::Marker::Braille)
                 .graph_type(GraphType::Line)
                 .style(mf)
                 .data(mid_fft),
             Dataset::default()
-                .name(vec!["s".bold().style(hl), "ide frequencies".into()])
                 .marker(symbols::Marker::Braille)
                 .graph_type(GraphType::Line)
                 .style(sf)
@@ -711,13 +829,33 @@ impl App {
         ];
 
         let chart = Chart::new(datasets)
-            // the title uses the same highlighting technique
-            .block(Block::bordered().style(bd).title(vec![
-                "f".to_span().style(hl).bold(),
-                "requencies ".to_span().style(lb).bold(),
-                "l".to_span().style(hl),
-                "ufs".to_span().style(lb),
-            ]))
+            .block(
+                Block::bordered()
+                    .border_type(BorderType::Rounded)
+                    .style(bd)
+                    .title(vec![
+                        "²".to_span().style(hl).bold(),
+                        "spectrum".to_span().style(lb).bold(),
+                    ])
+                    .title({
+                        let mut mid = if self.ui.show_mid_fft {
+                            vec![
+                                "M".to_span().style(hl).bold(),
+                                "id".to_span().bold(),
+                                "/".to_span(),
+                            ]
+                        } else {
+                            vec!["M".to_span().style(hl), "id".to_span(), "/".to_span()]
+                        };
+                        let mut side = if self.ui.show_side_fft {
+                            vec!["S".to_span().style(hl).bold(), "ide".to_span().bold()]
+                        } else {
+                            vec!["S".to_span().style(hl), "ide".to_span()]
+                        };
+                        mid.append(&mut side);
+                        Line::from(mid).right_aligned()
+                    }),
+            )
             .x_axis(
                 Axis::default()
                     .title("Hz")
@@ -727,10 +865,10 @@ impl App {
             )
             .y_axis(
                 Axis::default()
-                    .title("Db")
+                    .title("dB")
                     .labels(vec![
-                        Span::raw("-78 Db").style(fg),
-                        Span::raw("-18 Db").style(fg),
+                        Span::raw("-78 dB").style(fg),
+                        Span::raw("-18 dB").style(fg),
                     ])
                     .style(ax)
                     .bounds([-150., 100.]),
@@ -751,7 +889,7 @@ impl App {
         let nb = s.fg(self.ui.theme.lufs.numbers.unwrap());
         let layout = Layout::default()
             .direction(Direction::Horizontal)
-            .constraints([Constraint::Percentage(20), Constraint::Percentage(80)].as_ref())
+            .constraints([Constraint::Percentage(80), Constraint::Percentage(20)].as_ref())
             .split(area);
         let data = self
             .lufs
@@ -779,21 +917,18 @@ impl App {
         let paragraph_layout = Layout::default()
             .direction(Direction::Vertical)
             .constraints([
-                Constraint::Ratio(1, 3),
-                Constraint::Ratio(1, 3),
-                Constraint::Ratio(1, 3),
+                Constraint::Ratio(1, 4),
+                Constraint::Ratio(1, 4),
+                Constraint::Ratio(1, 4),
+                Constraint::Ratio(1, 4),
             ])
-            .split(layout[0]);
+            .split(layout[1]);
 
         // get lufs text
-        let integrated = format!("{:06.2}", integrated_lufs);
-        let short_term = format!("{:06.2}", self.lufs[299]);
-        let integrated = integrated.to_span().style(nb);
-        let short_term = short_term.to_span().style(nb);
-        let lufs_text = vec![
-            "Short term LUFS:".bold().style(fg) + short_term,
-            "Intergrated LUFS:".bold().style(fg) + integrated,
-        ];
+        let integrated = format!("{:05.1}", integrated_lufs);
+        let short_term = format!("{:05.1}", self.lufs[299]);
+        let integrated_lufs_text = integrated.to_span().style(nb) + " LUFS".to_span();
+        let short_term_lufs_text = short_term.to_span().style(nb) + " LUFS".to_span();
 
         // get true peak
         let (tp_left, tp_right) = match self.file_analyzer.get_true_peak() {
@@ -805,12 +940,11 @@ impl App {
         };
 
         // get true peak text
-        let left = format!("{:.2}", tp_left);
-        let right = format!("{:.2}", tp_right);
+        let left = format!("{:.1}", tp_left);
+        let right = format!("{:.1}", tp_right);
         let left = left.to_span().style(nb);
         let right = right.to_span().style(nb);
         let true_peak_text = vec![
-            "True Peak".to_line().style(fg).bold(),
             "L: ".bold().style(fg) + left + " Db".bold().style(fg),
             "R: ".bold().style(fg) + right + " Db".bold().style(fg),
         ];
@@ -823,23 +957,45 @@ impl App {
                 0.0
             }
         };
-        let range_text = vec![("Range: ".bold() + format!("{:.2} LU", range).into()).style(fg)];
+        let range_text = format!("{:.1} LU", range);
 
         // paragraphs
-        let lufs_paragraph = Paragraph::new(lufs_text)
-            .block(Block::bordered().style(bd).title(vec![
-                "f".to_span().style(hl),
-                "requencies ".to_span().style(lb),
-                "l".to_span().style(hl).bold(),
-                "ufs".to_span().style(lb).bold(),
-            ]))
+        let lufs_paragraph = Paragraph::new(short_term_lufs_text)
+            .block(
+                Block::bordered()
+                    .border_type(BorderType::Rounded)
+                    .style(bd)
+                    .title_alignment(Alignment::Center)
+                    .title("Short term".bold()),
+            )
+            .alignment(Alignment::Center);
+        let integrated_paragraph = Paragraph::new(integrated_lufs_text)
+            .block(
+                Block::bordered()
+                    .border_type(BorderType::Rounded)
+                    .style(bd)
+                    .title_alignment(Alignment::Center)
+                    .title("Integrated".bold()),
+            )
             .alignment(Alignment::Center);
         let true_peak_paragraph = Paragraph::new(true_peak_text)
-            .block(Block::bordered().style(bd))
+            .block(
+                Block::bordered()
+                    .border_type(BorderType::Rounded)
+                    .style(bd)
+                    .title_alignment(Alignment::Center)
+                    .title("True Peak".bold()),
+            )
             .alignment(Alignment::Center)
             .style(bd);
         let range_paragraph = Paragraph::new(range_text)
-            .block(Block::bordered().style(bd))
+            .block(
+                Block::bordered()
+                    .border_type(BorderType::Rounded)
+                    .style(bd)
+                    .title_alignment(Alignment::Center)
+                    .title("Range".bold()),
+            )
             .alignment(Alignment::Center)
             .style(bd);
 
@@ -852,7 +1008,15 @@ impl App {
                 .data(&data),
         ];
         let chart = Chart::new(dataset)
-            .block(Block::bordered().style(bd))
+            .block(
+                Block::bordered()
+                    .border_type(BorderType::Rounded)
+                    .style(bd)
+                    .title(vec![
+                        "³".to_span().style(hl).bold(),
+                        "lufs".to_span().style(lb).bold(),
+                    ]),
+            )
             .x_axis(Axis::default().bounds([0., 300.]).style(ax))
             .y_axis(
                 Axis::default()
@@ -862,10 +1026,11 @@ impl App {
             )
             .style(s);
         f.render_widget(lufs_paragraph, paragraph_layout[0]);
-        f.render_widget(true_peak_paragraph, paragraph_layout[1]);
+        f.render_widget(integrated_paragraph, paragraph_layout[1]);
         f.render_widget(range_paragraph, paragraph_layout[2]);
+        f.render_widget(true_peak_paragraph, paragraph_layout[3]);
 
-        f.render_widget(chart, layout[1]);
+        f.render_widget(chart, layout[0]);
     }
 
     fn render_devices_list(&self, f: &mut Frame) {
@@ -874,7 +1039,7 @@ impl App {
             .bg(self.ui.theme.devices.background.unwrap());
         let bd = s.fg(self.ui.theme.devices.borders.unwrap());
         let hl = s.fg(self.ui.theme.devices.highlight.unwrap());
-        let area = Self::get_explorer_popup_area(f.area(), 20, 30);
+        let area = Self::get_popup_area_with_percentage(f.area(), 20, 30);
         f.render_widget(Clear, area);
         let devs = list_input_devs();
         let list_items: Vec<ListItem> = devs
@@ -883,16 +1048,96 @@ impl App {
             .map(|(i, (name, _dev))| {
                 let num = format!("[{}]", i + 1);
                 let name = format!(" {}", name);
-                // idk why .to_span doesn't work
-                // prolly cuz it takes &self but bold takes self
-                let num = num.bold().reset().style(hl);
-                let name = name.bold().reset().style(s);
+                let is_selected = i == self.ui.selected_device_index;
+
+                let item_style = if is_selected {
+                    hl.bg(self.ui.theme.devices.background.unwrap())
+                } else {
+                    s
+                };
+
+                let num = num.bold().reset().style(item_style);
+                let name = name.bold().reset().style(item_style);
                 ListItem::from(num + name)
             })
             .collect();
-        let list = List::new(list_items)
-            .style(s)
-            .block(Block::bordered().title("Devices").style(bd));
+        let list = List::new(list_items).style(s).block(
+            Block::bordered()
+                .border_type(BorderType::Rounded)
+                .title("Devices")
+                .style(bd),
+        );
+
+        f.render_widget(list, area);
+    }
+
+    fn render_themes_list(&self, f: &mut Frame) {
+        let s = Style::default()
+            .fg(self.ui.theme.devices.foreground.unwrap())
+            .bg(self.ui.theme.devices.background.unwrap());
+        let bd = s.fg(self.ui.theme.devices.borders.unwrap());
+        let hl = s.fg(self.ui.theme.devices.highlight.unwrap());
+        let area = Self::get_popup_area_with_lenght(f.area(), 21, 40);
+        f.render_widget(Clear, area);
+
+        let themes = builtin_themes::list_themes();
+
+        let mut list_items: Vec<ListItem> = themes
+            .iter()
+            .enumerate()
+            .map(|(i, name)| {
+                let num = format!("[{}]", i + 1);
+                let name = format!(" {}", name);
+                let is_selected = i + 1 == self.ui.selected_theme_index;
+
+                let item_style = if is_selected {
+                    hl.bg(self.ui.theme.devices.background.unwrap())
+                } else {
+                    s
+                };
+
+                let num = num.bold().reset().style(item_style);
+                let name = name.bold().reset().style(item_style);
+                ListItem::from(num + name)
+            })
+            .collect();
+
+        // Add Default Theme option at the beginning
+        let default_num = "[0]".to_string();
+        let default_name = " Default Theme";
+        let is_default_selected = self.ui.selected_theme_index == 0;
+
+        let default_style = if is_default_selected {
+            hl.bg(self.ui.theme.devices.background.unwrap())
+        } else {
+            s
+        };
+
+        let default_num = default_num.bold().reset().style(default_style);
+        let default_name = default_name.bold().reset().style(default_style);
+        list_items.insert(0, ListItem::from(default_num + default_name));
+
+        // Add Custom Theme option at the end
+        let custom_num = format!("[{}]", themes.len() + 1);
+        let custom_name = " Custom Theme";
+        let is_custom_selected = self.ui.selected_theme_index == themes.len() + 1;
+
+        let custom_style = if is_custom_selected {
+            hl.bg(self.ui.theme.devices.background.unwrap())
+        } else {
+            s
+        };
+
+        let custom_num = custom_num.bold().reset().style(custom_style);
+        let custom_name = custom_name.bold().reset().style(custom_style);
+        list_items.push(ListItem::from(custom_num + custom_name));
+
+        let list = List::new(list_items).style(s).block(
+            Block::bordered()
+                .border_type(BorderType::Rounded)
+                .title("Themes")
+                .style(bd),
+        );
 
         f.render_widget(list, area);
     }
@@ -926,7 +1171,7 @@ impl App {
         f.render_widget(Clear, area);
         f.render_widget(
             Paragraph::new(text).block(
-                Block::bordered().style(
+                Block::bordered().border_type(BorderType::Rounded).style(
                     Style::default().fg(self.ui.theme.global.foreground).bg(self
                         .ui
                         .theme
@@ -936,6 +1181,30 @@ impl App {
             ),
             area,
         );
+    }
+
+    fn receive_audio_file(&mut self, audio_file: AudioFile) {
+        self.audio_file = audio_file;
+        self.is_file_selected = true;
+        if self.audio_file.duration().as_secs_f64() < 15. {
+            self.ui.waveform_window = self.audio_file.duration().as_secs_f64()
+        }
+        self.waveform.audio_file_chart = self.file_analyzer.get_waveform(
+            self.audio_file.samples(),
+            self.audio_file.duration().as_secs_f64(),
+        );
+        // TODO: channels
+        if let Err(err) = self.file_analyzer.create_loudness_meter(
+            // self.audio_file.channels() as u32,
+            2,
+            self.audio_file.sample_rate(),
+        ) {
+            self.handle_error(format!(
+                "Could not create an analyzer for an audio file: {}",
+                err
+            ));
+        }
+        self.ui.needs_render = true;
     }
 
     /// The main loop
@@ -957,30 +1226,22 @@ impl App {
         }
 
         self.current_directory = self.explorer.cwd().clone();
+        terminal.draw(|f| self.draw(f))?;
 
         if let Some(f) = startup_file {
             self.select_audio_file(f);
+            // blocking audio file receiver
+            // blocking to ensure that audio file is loaded
+            // before we render TUI, so that waveform is rendered correctly
+            if let Ok(audio_file) = self.audio_file_rx.recv() {
+                self.receive_audio_file(audio_file);
+                terminal.draw(|f| self.draw(f))?;
+            }
         }
-
-        terminal.draw(|f| self.draw(f))?;
 
         loop {
             std::thread::sleep(Duration::from_millis(8));
-            self.needs_render = false;
-
-            // receive audio file
-            if let Ok(af) = self.audio_file_rx.try_recv() {
-                self.audio_file = af;
-                self.is_file_selected = true;
-                if self.audio_file.duration().as_secs_f64() < 15. {
-                    self.ui.waveform_window = self.audio_file.duration().as_secs_f64()
-                }
-                self.waveform.chart = self.file_analyzer.get_waveform(
-                    self.audio_file.samples(),
-                    self.audio_file.duration().as_secs_f64(),
-                );
-                self.needs_render = true;
-            }
+            self.ui.needs_render = false;
 
             // receive playback position
             let prev_playhead = self.waveform.playhead;
@@ -990,13 +1251,13 @@ impl App {
             {
                 self.analyze_audio_file_samples(pos);
                 // render only if playhead position changed
-                self.needs_render = prev_playhead != self.waveform.playhead;
+                self.ui.needs_render = prev_playhead != self.waveform.playhead;
             }
 
             // use ringbuf to analyze data if the `Mode` is not `Mode::Player`
             if matches!(self.settings.mode, Mode::Microphone) {
                 self.analyze_microphone_input();
-                self.needs_render = true; // Always render in microphone mode
+                self.ui.needs_render = true; // Always render in microphone mode
             }
 
             // check if flashing controls need update (timers)
@@ -1025,7 +1286,7 @@ impl App {
                 || minus_sign_flash.is_some_and(|ms| ms < t);
 
             if needs_flash_update {
-                self.needs_render = true;
+                self.ui.needs_render = true;
             }
 
             // clean up expired timers and trigger final render
@@ -1048,7 +1309,7 @@ impl App {
             }
 
             if timers_need_cleanup {
-                self.needs_render = true;
+                self.ui.needs_render = true;
             }
 
             // check if error message needs update
@@ -1057,7 +1318,7 @@ impl App {
                 .error_timer
                 .is_some_and(|timer| timer.elapsed().as_millis() < 5000)
             {
-                self.needs_render = true;
+                self.ui.needs_render = true;
             }
 
             // clean up expired error timer and trigger final render
@@ -1067,7 +1328,7 @@ impl App {
                 .is_some_and(|timer| timer.elapsed().as_millis() >= 5000)
             {
                 self.ui.error_timer = None;
-                self.needs_render = true;
+                self.ui.needs_render = true;
             }
 
             // event reader
@@ -1080,18 +1341,28 @@ impl App {
                     }
                 };
 
+                if self.ui.show_explorer {
+                    self.explorer.handle(&event)?;
+                    self.ui.needs_render = true;
+                }
+
                 // if let Event::Key(key) = event {
                 match event {
                     Event::Key(key) => {
-                        // quit
-                        if key.code == KeyCode::Char('q') {
+                        // quit (only if not in any popup)
+                        if key.code == KeyCode::Char('q')
+                            && !(self.ui.show_themes_list
+                                || self.ui.show_explorer
+                                || self.ui.show_devices_list
+                                || self.ui.show_help_message)
+                        {
                             self.player_command_tx.send(PlayerCommand::Quit)?;
                             return Ok(());
                         }
                         if let Err(err) = self.handle_input(key) {
                             self.handle_error(format!("{}", err));
                         }
-                        self.needs_render = true;
+                        self.ui.needs_render = true;
                     }
                     Event::Mouse(m) => {
                         if matches!(m.kind, MouseEventKind::Moved) {
@@ -1103,24 +1374,17 @@ impl App {
                         } else {
                             self.mouse_position = None
                         }
-                        self.needs_render = true;
+                        self.ui.needs_render = true;
+                    }
+                    Event::Resize(_, _) => {
+                        self.ui.needs_render = true;
                     }
                     _ => (),
-                }
-
-                if self.ui.show_explorer {
-                    self.explorer.handle(&event)?;
-                    self.needs_render = true;
-                }
-
-                if self.ui.show_themes_list {
-                    self.explorer.handle(&event)?;
-                    self.needs_render = true;
                 }
             }
 
             // render only if something changed
-            if self.needs_render {
+            if self.ui.needs_render {
                 terminal.draw(|f| self.draw(f))?;
             }
         }
@@ -1155,7 +1419,7 @@ impl App {
         };
 
         // get waveform
-        self.waveform.chart = self.device_analyzer.get_waveform(&mid_samples, 15.);
+        self.waveform.microphone_input_chart = self.device_analyzer.get_waveform(&mid_samples, 15.);
 
         let samples = self.latest_captured_samples.lock().unwrap().to_vec();
         let sample_rate = self.device_analyzer.sample_rate() as usize;
@@ -1256,23 +1520,29 @@ impl App {
     fn handle_input(&mut self, key: KeyEvent) -> Result<()> {
         match key.code {
             // show explorer
-            KeyCode::Char('e') if matches!(self.settings.mode, Mode::Player) => {
+            KeyCode::Char('e')
+                if matches!(self.settings.mode, Mode::Player) && !self.ui.show_help_message =>
+            {
                 self.explorer.set_cwd(&self.current_directory).unwrap();
                 self.ui.show_explorer = !self.ui.show_explorer
             }
-            // select file
+            // select audio file
             KeyCode::Enter if self.ui.show_explorer => {
                 let file = self.explorer.current();
                 let file_path = self.explorer.current().path().clone();
                 if file.is_file() {
-                    self.select_audio_file(file_path)
+                    if file_path.extension().unwrap() == "theme" {
+                        self.apply_theme_file(&file_path);
+                    } else {
+                        self.select_audio_file(file_path)
+                    }
                 }
             }
-            KeyCode::Enter if self.ui.show_themes_list => self.select_theme_file(),
+
             // show side fft
-            KeyCode::Char('s') => self.ui.show_side_fft = !self.ui.show_side_fft,
+            KeyCode::Char('S') => self.ui.show_side_fft = !self.ui.show_side_fft,
             // show mid fft
-            KeyCode::Char('m') => self.ui.show_mid_fft = !self.ui.show_mid_fft,
+            KeyCode::Char('M') => self.ui.show_mid_fft = !self.ui.show_mid_fft,
             // pause/play
             KeyCode::Char(' ') => {
                 if let Err(_err) = self.player_command_tx.send(PlayerCommand::ChangeState) {
@@ -1288,7 +1558,9 @@ impl App {
             // move playhead right and left
             KeyCode::Right
                 if matches!(self.settings.mode, Mode::Player)
-                    && !(self.ui.show_devices_list || self.ui.show_explorer) =>
+                    && !(self.ui.show_devices_list
+                        || self.ui.show_explorer
+                        || self.ui.show_themes_list) =>
             {
                 self.ui.right_arrow_timer = Some(Instant::now());
                 self.lufs = [-50.; 300];
@@ -1299,7 +1571,9 @@ impl App {
             }
             KeyCode::Left
                 if matches!(self.settings.mode, Mode::Player)
-                    && !(self.ui.show_devices_list || self.ui.show_explorer) =>
+                    && !(self.ui.show_devices_list
+                        || self.ui.show_explorer
+                        || self.ui.show_themes_list) =>
             {
                 self.ui.left_arrow_timer = Some(Instant::now());
                 self.lufs = [-50.; 300];
@@ -1308,29 +1582,41 @@ impl App {
                     //TODO: log sending error
                 }
             }
-            // change charts shown
-            // Probably enum will be more logical to use but this works fine
-            // and i will not change this
-            // as long as there are few charts
-            KeyCode::Char('l') => self.change_chart('l'),
-            KeyCode::Char('f') => self.change_chart('f'),
-            // this sends a test error
-            // only in debug mode
-            KeyCode::Char('y') => {
-                #[cfg(debug_assertions)]
-                {
-                    self.player_command_tx
-                        .send(PlayerCommand::ShowTestError)
-                        .unwrap()
+            KeyCode::Char('1') if !self.ui.show_devices_list && !self.ui.show_themes_list => {
+                self.ui.show_waveform = !self.ui.show_waveform
+            }
+            KeyCode::Char('2') if !self.ui.show_devices_list && !self.ui.show_themes_list => {
+                self.ui.show_fft_chart = !self.ui.show_fft_chart
+            }
+            KeyCode::Char('3') if !self.ui.show_devices_list && !self.ui.show_themes_list => {
+                self.ui.show_lufs = !self.ui.show_lufs
+            }
+            // Quick selection with numbers 0-9 when themes list is open
+            KeyCode::Char(c) if self.ui.show_themes_list && c.is_ascii_digit() => {
+                let index = (c as usize) - ('0' as usize);
+                if let Err(err) = self.select_theme(index) {
+                    self.handle_error(format!("Failed to select theme: {}", err));
                 }
             }
+            // this sends a test error
+            // only in debug mode
+            #[cfg(debug_assertions)]
+            KeyCode::Char('y') => self
+                .player_command_tx
+                .send(PlayerCommand::ShowTestError)
+                .unwrap(),
             // show devices
-            KeyCode::Char('d') if matches!(self.settings.mode, Mode::Microphone) => {
+            KeyCode::Char('d')
+                if matches!(self.settings.mode, Mode::Microphone) && !self.ui.show_help_message =>
+            {
                 self.ui.show_devices_list = !self.ui.show_devices_list
             }
-            // change mode. this will be replaced by normal settings selection tab
-            // TODO normal settings popup window with a list of options
-            KeyCode::Char('c') => {
+            // change mode
+            KeyCode::Char('m')
+                if !(self.ui.show_devices_list
+                    || self.ui.show_explorer
+                    || self.ui.show_themes_list) =>
+            {
                 self.settings.mode = if matches!(self.settings.mode, Mode::Microphone) {
                     self.reset_charts();
                     if let Some(stream) = self.audio_capture_stream.as_ref() {
@@ -1351,11 +1637,77 @@ impl App {
                     self.handle_error(format!("Failed to select device: {}", err));
                 }
             }
-            KeyCode::Char('t') => {
-                self.explorer
-                    .set_cwd(config_dir().unwrap().join("soundscope"))
-                    .unwrap();
+            // Arrow key navigation for devices list
+            KeyCode::Up if self.ui.show_devices_list => {
+                let devs = list_input_devs();
+                if !devs.is_empty() {
+                    if self.ui.selected_device_index > 0 {
+                        self.ui.selected_device_index -= 1;
+                    } else {
+                        self.ui.selected_device_index = devs.len() - 1; // Wrap to end
+                    }
+                    self.ui.needs_render = true;
+                }
+            }
+            KeyCode::Down if self.ui.show_devices_list => {
+                let devs = list_input_devs();
+                if !devs.is_empty() {
+                    if self.ui.selected_device_index < devs.len() - 1 {
+                        self.ui.selected_device_index += 1;
+                    } else {
+                        self.ui.selected_device_index = 0; // Wrap to beginning
+                    }
+                    self.ui.needs_render = true;
+                }
+            }
+            KeyCode::Enter if self.ui.show_devices_list => {
+                if let Err(err) = self.select_device(self.ui.selected_device_index) {
+                    self.handle_error(format!("Failed to select device: {}", err));
+                }
+            }
+            // Arrow key navigation for themes list
+            KeyCode::Up if self.ui.show_themes_list => {
+                let themes = builtin_themes::list_themes();
+                let total_items = themes.len() + 2; // +1 for Default Theme, +1 for Custom Theme
+                if self.ui.selected_theme_index > 0 {
+                    self.ui.selected_theme_index -= 1;
+                } else {
+                    self.ui.selected_theme_index = total_items - 1; // Wrap to end
+                }
+                self.ui.needs_render = true;
+            }
+            KeyCode::Down if self.ui.show_themes_list => {
+                let themes = builtin_themes::list_themes();
+                let total_items = themes.len() + 2; // +1 for Default Theme, +1 for Custom Theme
+                if self.ui.selected_theme_index < total_items - 1 {
+                    self.ui.selected_theme_index += 1;
+                } else {
+                    self.ui.selected_theme_index = 0; // Wrap to beginning
+                }
+                self.ui.needs_render = true;
+            }
+            KeyCode::Enter if self.ui.show_themes_list => {
+                if let Err(err) = self.select_theme(self.ui.selected_theme_index) {
+                    self.handle_error(format!("Failed to select theme: {}", err));
+                }
+            }
+            KeyCode::Char('t')
+                if !(self.ui.show_help_message
+                    || self.ui.show_devices_list
+                    || self.ui.show_explorer) =>
+            {
                 self.ui.show_themes_list = !self.ui.show_themes_list;
+            }
+            KeyCode::Esc | KeyCode::Char('q')
+                if self.ui.show_themes_list
+                    || self.ui.show_explorer
+                    || self.ui.show_devices_list
+                    || self.ui.show_help_message =>
+            {
+                self.ui.show_themes_list = false;
+                self.ui.show_explorer = false;
+                self.ui.show_devices_list = false;
+                self.ui.show_help_message = false;
             }
             KeyCode::Char('=') | KeyCode::Char('+') => {
                 self.ui.plus_sign_timer = Some(Instant::now());
@@ -1369,6 +1721,13 @@ impl App {
                 };
                 self.ui.minus_sign_timer = Some(Instant::now());
                 self.ui.waveform_window = f64::min(self.ui.waveform_window + 1., bound);
+            }
+            KeyCode::Char('h') | KeyCode::Char('?') | KeyCode::F(1)
+                if !(self.ui.show_devices_list
+                    || self.ui.show_explorer
+                    || self.ui.show_themes_list) =>
+            {
+                self.ui.show_help_message = !self.ui.show_help_message
             }
             _ => (),
         }
@@ -1421,6 +1780,65 @@ impl App {
         Ok(())
     }
 
+    fn select_theme(&mut self, index: usize) -> Result<()> {
+        let themes = builtin_themes::list_themes();
+
+        // Check if index is for "Default Theme" (first option, index 0)
+        if index == 0 {
+            let mut theme = Theme::default();
+            theme.apply_global_as_default();
+            self.set_theme(theme);
+
+            // Save theme choice to .current_theme file
+            if let Some(mut config_path) = config_dir() {
+                config_path.push("soundscope");
+                std::fs::create_dir_all(&config_path).unwrap();
+                let current_theme_file = config_path.join(".current_theme");
+                if let Err(err) = fs::write(&current_theme_file, "DEFAULT") {
+                    self.handle_error(format!("Error saving theme choice: {err}"));
+                }
+            }
+
+            self.ui.show_themes_list = false;
+            return Ok(());
+        }
+
+        // Check if index is for "Custom Theme" (last option)
+        if index == themes.len() + 1 {
+            // Open explorer for custom theme selection
+            if let Some(config_path) = config_dir() {
+                self.ui.show_explorer = true;
+                self.explorer
+                    .set_cwd(config_path.join("soundscope"))
+                    .unwrap();
+                self.ui.show_themes_list = false;
+            }
+            return Ok(());
+        }
+
+        // Get theme name and load it (index - 1 because 0 is default)
+        let theme_name = themes[index - 1];
+        if let Some(mut theme) = builtin_themes::get_by_name(theme_name) {
+            theme.apply_global_as_default();
+            self.set_theme(theme);
+
+            // Save theme choice to .current_theme file
+            if let Some(mut config_path) = config_dir() {
+                config_path.push("soundscope");
+                let current_theme_file = config_path.join(".current_theme");
+                // Save as "builtin:theme_name" format
+                let theme_identifier = format!("builtin:{}", theme_name);
+                if let Err(err) = fs::write(&current_theme_file, &theme_identifier) {
+                    self.handle_error(format!("Error saving theme choice: {err}"));
+                }
+            }
+
+            self.ui.show_themes_list = false;
+        }
+
+        Ok(())
+    }
+
     fn handle_error(&mut self, message: String) {
         self.ui.error_text = message;
         self.ui.error_timer = Some(Instant::now());
@@ -1429,6 +1847,7 @@ impl App {
     fn select_audio_file(&mut self, file_path: PathBuf) {
         // reset everything
         self.reset_charts();
+        self.ui.show_explorer = false;
 
         if let Err(_err) = self
             .player_command_tx
@@ -1437,49 +1856,28 @@ impl App {
             //TODO: log sending error
         }
 
-        // TODO: channels
-        if let Err(err) = self.file_analyzer.create_loudness_meter(
-            // self.audio_file.channels() as u32,
-            2,
-            self.audio_file.sample_rate(),
-        ) {
-            self.handle_error(format!(
-                "Could not create an analyzer for an audio file: {}",
-                err
-            ));
+        if let Ok(audio_file) = self.audio_file_rx.recv() {
+            self.receive_audio_file(audio_file);
         }
     }
 
-    fn select_theme_file(&mut self) {
-        let file = self.explorer.current();
-        let file_path = self.explorer.current().path().clone();
-        if !file.is_file() {
-            return;
-        }
-        let mut theme = self.load_theme(&file_path).unwrap_or_default();
+    fn apply_theme_file(&mut self, file_path: &PathBuf) {
+        let mut theme = self.load_theme(file_path).unwrap_or_default();
         theme.apply_global_as_default();
         self.set_theme(theme);
     }
 
-    fn change_chart(&mut self, c: char) {
-        match c {
-            // lufs
-            'l' => {
-                self.ui.show_fft_chart = false;
-                self.ui.show_lufs = true
-            }
-            // frequencies
-            'f' => {
-                self.ui.show_fft_chart = true;
-                self.ui.show_lufs = false
-            }
-            _ => (),
-        }
-    }
-
-    fn get_explorer_popup_area(area: Rect, percent_x: u16, percent_y: u16) -> Rect {
+    fn get_popup_area_with_percentage(area: Rect, percent_x: u16, percent_y: u16) -> Rect {
         let vertical = Layout::vertical([Constraint::Percentage(percent_y)]).flex(Flex::Center);
         let horizontal = Layout::horizontal([Constraint::Percentage(percent_x)]).flex(Flex::Center);
+        let [area] = vertical.areas(area);
+        let [area] = horizontal.areas(area);
+        area
+    }
+
+    fn get_popup_area_with_lenght(area: Rect, length_x: u16, length_y: u16) -> Rect {
+        let vertical = Layout::vertical([Constraint::Length(length_x)]).flex(Flex::Center);
+        let horizontal = Layout::horizontal([Constraint::Length(length_y)]).flex(Flex::Center);
         let [area] = vertical.areas(area);
         let [area] = horizontal.areas(area);
         area
@@ -1488,8 +1886,9 @@ impl App {
     fn get_error_popup_area(area: Rect) -> Rect {
         let vertical = Layout::vertical(Constraint::from_ratios([(5, 6), (1, 6)]));
         let horizontal = Layout::horizontal(Constraint::from_ratios([(1, 6), (5, 6)]));
-        let area = vertical.areas::<2>(area)[1];
-        horizontal.areas::<2>(area)[0]
+        let [_, area] = vertical.areas(area);
+        let [area, _] = horizontal.areas(area);
+        area
     }
 
     fn render_error_message(&mut self, f: &mut Frame) {
@@ -1507,17 +1906,63 @@ impl App {
         f.render_widget(Clear, error_popup_area);
         f.render_widget(
             Paragraph::new(message.to_line().style(fg))
-                .block(Block::bordered().style(bd))
+                .block(Block::bordered().border_type(BorderType::Rounded).style(bd))
                 .wrap(Wrap { trim: true }),
             error_popup_area,
         );
     }
 
+    fn render_help_message(&self, f: &mut Frame) {
+        let s = Style::default()
+            .fg(self.ui.theme.help.foreground.unwrap())
+            .bg(self.ui.theme.help.background.unwrap());
+        let bd = s.fg(self.ui.theme.help.borders.unwrap());
+        let hl = s.fg(self.ui.theme.help.highlight.unwrap());
+
+        let area = Self::get_popup_area_with_lenght(f.area(), 22, 42);
+        f.render_widget(Clear, area);
+        let rows = vec![
+            help_message_row!["1", "Toggle waveform", hl],
+            help_message_row!["2", "Toggle spectrum", hl],
+            help_message_row!["3", "Toggle LUFS", hl],
+            help_message_row!["e", "Toggle explorer", hl],
+            help_message_row!["m", "Change mode", hl],
+            help_message_row!["d", "Toggle device list", hl],
+            help_message_row!["t", "Select theme", hl],
+            help_message_row!["?/h/F1", "Show this window", hl],
+            help_message_row!["q/Ctrl+c", "Quit", hl],
+            help_message_row!["q/Escape", "Close pop-up window", hl],
+            help_message_row!["M", "Toggle mid frequencies", hl],
+            help_message_row!["S", "Toggle side frequencies", hl],
+            help_message_row!["Right", "Jump forward 5s", hl],
+            help_message_row!["Left", "Jump back 5s", hl],
+            help_message_row!["Space", "Play/Pause", hl],
+            help_message_row!["-/_", "Zoom waveform in", hl],
+            help_message_row!["=/+", "Zoom waveform out", hl],
+            help_message_row!["1-9", "Select device/theme", hl],
+            Row::new(vec![
+                Cell::new("Up/Down".to_line().style(hl).centered()),
+                Cell::new(vec![
+                    "Navigate in explorer,".to_line(),
+                    "device list and theme list".to_line(),
+                ]),
+            ])
+            .height(2),
+        ];
+        let widths = [Constraint::Percentage(30), Constraint::Percentage(70)];
+        let table = Table::new(rows, widths).style(s).block(
+            Block::bordered()
+                .border_type(BorderType::Rounded)
+                .title("Help")
+                .style(bd),
+        );
+
+        f.render_widget(table, area);
+    }
+
     fn reset_charts(&mut self) {
-        self.ui.show_explorer = false;
         self.fft_data.mid_fft.clear();
         self.fft_data.side_fft.clear();
-        self.waveform.chart.clear();
         self.lufs = [-50.; 300];
         self.is_playing_audio = false;
         self.waveform.playhead = 0;
@@ -1525,7 +1970,7 @@ impl App {
 
     fn load_theme(&mut self, path: &PathBuf) -> Option<Theme> {
         let name = path.file_name().unwrap().to_string_lossy().to_string();
-        let current_theme = path.parent().unwrap().join(".current_theme");
+        let current_theme = config_dir().unwrap().join("soundscope/.current_theme");
         if let Err(err) = fs::write(&current_theme, &name) {
             self.handle_error(format!("Error saving chosen theme: {err}"));
         }
@@ -1565,15 +2010,30 @@ impl App {
         let current_theme_file = path.join(".current_theme");
         if current_theme_file.exists() {
             // read contents of current_theme file
-            // this is the name of the theme {name}.theme
+            // this is the name of the theme {name}.theme or "builtin:theme_name"
             match std::fs::read_to_string(&current_theme_file) {
                 Ok(theme_file) => {
                     if theme_file == "DEFAULT" {
                         let mut theme = Theme::default();
                         theme.apply_global_as_default();
                         self.set_theme(theme)
+                    } else if theme_file.starts_with("builtin:") {
+                        // Load builtin theme
+                        let theme_name = theme_file.strip_prefix("builtin:").unwrap();
+                        if let Some(mut theme) = builtin_themes::get_by_name(theme_name) {
+                            theme.apply_global_as_default();
+                            self.set_theme(theme);
+                        } else {
+                            self.handle_error(format!(
+                                "Builtin theme '{}' not found. Applying default theme.",
+                                theme_name
+                            ));
+                            let mut theme = Theme::default();
+                            theme.apply_global_as_default();
+                            self.set_theme(theme);
+                        }
                     } else {
-                        let theme_file = path.join(theme_file);
+                        let theme_file = path.join(&theme_file);
                         let mut theme = if theme_file.exists() {
                             self.load_theme(&theme_file).unwrap_or_default()
                         } else {
@@ -1603,6 +2063,10 @@ impl App {
                 }
             }
         } else {
+            File::create(path.join(".current_theme"))
+                .unwrap()
+                .write_all(b"DEFAULT")
+                .unwrap();
             let mut theme = Theme::default();
             theme.apply_global_as_default();
             self.set_theme(theme)
@@ -1650,6 +2114,16 @@ impl App {
         let y = -18. + t * (-78. - -18.);
 
         (x, y)
+    }
+}
+
+fn config_dir() -> Option<PathBuf> {
+    if cfg!(target_os = "macos") {
+        // On macOS, use ~/.config instead of ~/Library/Application Support
+        let home = std::env::var("HOME").ok()?;
+        Some(PathBuf::from(home).join(".config"))
+    } else {
+        dirs::config_local_dir()
     }
 }
 
@@ -1710,28 +2184,6 @@ mod tests {
     }
 
     #[test]
-    fn test_change_chart() {
-        let (mut app, _, _) = create_test_app();
-
-        // Test switching to LUFS
-        app.change_chart('l');
-        assert!(!app.ui.show_fft_chart);
-        assert!(app.ui.show_lufs);
-
-        // Test switching to frequencies
-        app.change_chart('f');
-        assert!(app.ui.show_fft_chart);
-        assert!(!app.ui.show_lufs);
-
-        // Test invalid character (should do nothing)
-        let prev_fft = app.ui.show_fft_chart;
-        let prev_lufs = app.ui.show_lufs;
-        app.change_chart('x');
-        assert_eq!(app.ui.show_fft_chart, prev_fft);
-        assert_eq!(app.ui.show_lufs, prev_lufs);
-    }
-
-    #[test]
     fn test_handle_error() {
         let (mut app, _, _) = create_test_app();
         let error_message = "Test error message";
@@ -1745,7 +2197,7 @@ mod tests {
     #[test]
     fn test_get_explorer_popup_area() {
         let area = Rect::new(0, 0, 100, 50);
-        let popup_area = App::get_explorer_popup_area(area, 50, 70);
+        let popup_area = App::get_popup_area_with_percentage(area, 50, 70);
 
         // Should be centered and smaller than original area
         assert!(popup_area.width <= area.width);
@@ -1905,9 +2357,10 @@ mod tests {
             waveform: WaveformTheme::default(),
             fft: FftTheme::default(),
             lufs: LufsTheme::default(),
-            devices: DevicesTheme::default(),
+            devices: DeviceListTheme::default(),
             explorer: ExplorerTheme::default(),
             error: ErrorTheme::default(),
+            help: HelpMessageTheme::default(),
         };
         theme.global.foreground = Color::LightCyan;
         theme.global.background = Color::Magenta;
