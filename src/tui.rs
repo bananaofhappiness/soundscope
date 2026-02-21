@@ -29,7 +29,7 @@ use serde::Deserialize;
 use std::{
     fmt::Display,
     fs::{self, File},
-    io::Read,
+    io::{Read, Write},
     path::PathBuf,
     sync::{Arc, Mutex},
     time::{Duration, Instant},
@@ -1025,7 +1025,7 @@ impl App {
             .bg(self.ui.theme.devices.background.unwrap());
         let bd = s.fg(self.ui.theme.devices.borders.unwrap());
         let hl = s.fg(self.ui.theme.devices.highlight.unwrap());
-        let area = Self::get_explorer_popup_area_lenght(f.area(), 20, 40);
+        let area = Self::get_explorer_popup_area_lenght(f.area(), 21, 40);
         f.render_widget(Clear, area);
 
         let themes = builtin_themes::list_themes();
@@ -1712,20 +1712,13 @@ impl App {
         // Check if index is for "Custom Theme" (last option)
         if index == themes.len() + 1 {
             // Open explorer for custom theme selection
-            if let Some(config_path) = config_dir() {
-                self.explorer
-                    .set_cwd(config_path.join("soundscope"))
-                    .unwrap();
+            if let Some(mut config_path) = config_dir() {
+                config_path.push("soundscope");
+                self.explorer.set_cwd(config_path).unwrap();
                 self.ui.show_themes_list = false;
                 self.ui.show_explorer = true;
             }
             return Ok(());
-        }
-
-        // Check if index is valid for built-in themes
-        // index 1 to themes.len() map to themes[0] to themes[themes.len()-1]
-        if index < 1 || index > themes.len() {
-            return Err(eyre!("Invalid theme index: {}", index));
         }
 
         // Get theme name and load it (index - 1 because 0 is default)
@@ -1961,6 +1954,10 @@ impl App {
                 }
             }
         } else {
+            File::create(path.join(".current_theme"))
+                .unwrap()
+                .write(b"DEFAULT")
+                .unwrap();
             let mut theme = Theme::default();
             theme.apply_global_as_default();
             self.set_theme(theme)
