@@ -16,7 +16,10 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v5
       - name: Install Alsa
-        run: sudo apt-get update && sudo apt-get install -yqq libasound2-dev
+        run: | 
+          sudo apt-get update -yqq
+          sudo apt-get upgrade -yqq
+          sudo apt-get install -yqq libasound2-dev
       - name: Lint
         run: |
           cargo fmt --all -- --check
