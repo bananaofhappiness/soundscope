@@ -17,7 +17,9 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v5
       - name: Install Alsa
-        run: sudo apt-get install -yqq libasound2-dev
+        run: | 
+          sudo apt-get update -yqq
+          sudo apt-get install -yqq libasound2-dev
       - name: Cache cargo
         uses: Swatinem/rust-cache@v2
       - name: Publish crate
@@ -58,7 +60,9 @@ jobs:
         uses: actions/checkout@v5
       - name: Install Alsa (Linux only)
         if: matrix.platform.os == 'ubuntu-latest'
-        run: sudo apt-get install -yqq libasound2-dev
+        run: | 
+          sudo apt-get update -yqq
+          sudo apt-get install -yqq libasound2-dev
       - name: Cache cargo
         uses: Swatinem/rust-cache@v2
       - name: Build executable
