@@ -1,6 +1,6 @@
 # Soundscope — a CLI audio file analyzer tool.
-![](assets/soundscope-demo.gif)
 Soundscope is a crossplatform CLI tool for analyzing audio files.
+![](assets/soundscope-demo.gif)
 
 ---
 ## ✨ Features
