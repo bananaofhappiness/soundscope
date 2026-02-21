@@ -8,7 +8,6 @@ use crate::{
 };
 use cpal::{Stream, traits::StreamTrait as _};
 use crossbeam::channel::{Receiver, Sender};
-use dirs;
 use eyre::{Result, eyre};
 use ratatui::{
     DefaultTerminal,
@@ -74,6 +73,8 @@ struct UI {
     needs_render: bool,
     /// Selected theme index in themes list
     selected_theme_index: usize,
+    /// Selected device index in devices list
+    selected_device_index: usize,
 }
 
 impl Default for UI {
@@ -100,6 +101,7 @@ impl Default for UI {
             chart_rect: None,
             needs_render: true,
             selected_theme_index: 0,
+            selected_device_index: 0,
         }
     }
 }
@@ -923,8 +925,8 @@ impl App {
             .split(layout[1]);
 
         // get lufs text
-        let integrated = format!("{:06.2}", integrated_lufs);
-        let short_term = format!("{:06.2}", self.lufs[299]);
+        let integrated = format!("{:05.1}", integrated_lufs);
+        let short_term = format!("{:05.1}", self.lufs[299]);
         let integrated_lufs_text = integrated.to_span().style(nb) + " LUFS".to_span();
         let short_term_lufs_text = short_term.to_span().style(nb) + " LUFS".to_span();
 
@@ -938,8 +940,8 @@ impl App {
         };
 
         // get true peak text
-        let left = format!("{:.2}", tp_left);
-        let right = format!("{:.2}", tp_right);
+        let left = format!("{:.1}", tp_left);
+        let right = format!("{:.1}", tp_right);
         let left = left.to_span().style(nb);
         let right = right.to_span().style(nb);
         let true_peak_text = vec![
@@ -955,7 +957,7 @@ impl App {
                 0.0
             }
         };
-        let range_text = format!("{:.2} LU", range);
+        let range_text = format!("{:.1} LU", range);
 
         // paragraphs
         let lufs_paragraph = Paragraph::new(short_term_lufs_text)
@@ -1046,10 +1048,16 @@ impl App {
             .map(|(i, (name, _dev))| {
                 let num = format!("[{}]", i + 1);
                 let name = format!(" {}", name);
-                // idk why .to_span doesn't work
-                // prolly cuz it takes &self but bold takes self
-                let num = num.bold().reset().style(hl);
-                let name = name.bold().reset().style(s);
+                let is_selected = i == self.ui.selected_device_index;
+
+                let item_style = if is_selected {
+                    hl.bg(self.ui.theme.devices.background.unwrap())
+                } else {
+                    s
+                };
+
+                let num = num.bold().reset().style(item_style);
+                let name = name.bold().reset().style(item_style);
                 ListItem::from(num + name)
             })
             .collect();
@@ -1234,11 +1242,6 @@ impl App {
         loop {
             std::thread::sleep(Duration::from_millis(8));
             self.ui.needs_render = false;
-
-            // non-blocking audio file receiver
-            if let Ok(audio_file) = self.audio_file_rx.try_recv() {
-                self.receive_audio_file(audio_file);
-            }
 
             // receive playback position
             let prev_playhead = self.waveform.playhead;
@@ -1609,7 +1612,11 @@ impl App {
                 self.ui.show_devices_list = !self.ui.show_devices_list
             }
             // change mode
-            KeyCode::Char('m') => {
+            KeyCode::Char('m')
+                if !(self.ui.show_devices_list
+                    || self.ui.show_explorer
+                    || self.ui.show_themes_list) =>
+            {
                 self.settings.mode = if matches!(self.settings.mode, Mode::Microphone) {
                     self.reset_charts();
                     if let Some(stream) = self.audio_capture_stream.as_ref() {
@@ -1627,6 +1634,34 @@ impl App {
             KeyCode::Char(c) if self.ui.show_devices_list && c.is_ascii_digit() && c != '0' => {
                 let index = (c as usize) - ('1' as usize);
                 if let Err(err) = self.select_device(index) {
+                    self.handle_error(format!("Failed to select device: {}", err));
+                }
+            }
+            // Arrow key navigation for devices list
+            KeyCode::Up if self.ui.show_devices_list => {
+                let devs = list_input_devs();
+                if !devs.is_empty() {
+                    if self.ui.selected_device_index > 0 {
+                        self.ui.selected_device_index -= 1;
+                    } else {
+                        self.ui.selected_device_index = devs.len() - 1; // Wrap to end
+                    }
+                    self.ui.needs_render = true;
+                }
+            }
+            KeyCode::Down if self.ui.show_devices_list => {
+                let devs = list_input_devs();
+                if !devs.is_empty() {
+                    if self.ui.selected_device_index < devs.len() - 1 {
+                        self.ui.selected_device_index += 1;
+                    } else {
+                        self.ui.selected_device_index = 0; // Wrap to beginning
+                    }
+                    self.ui.needs_render = true;
+                }
+            }
+            KeyCode::Enter if self.ui.show_devices_list => {
+                if let Err(err) = self.select_device(self.ui.selected_device_index) {
                     self.handle_error(format!("Failed to select device: {}", err));
                 }
             }
@@ -1820,6 +1855,10 @@ impl App {
         {
             //TODO: log sending error
         }
+
+        if let Ok(audio_file) = self.audio_file_rx.recv() {
+            self.receive_audio_file(audio_file);
+        }
     }
 
     fn apply_theme_file(&mut self, file_path: &PathBuf) {
@@ -1847,8 +1886,9 @@ impl App {
     fn get_error_popup_area(area: Rect) -> Rect {
         let vertical = Layout::vertical(Constraint::from_ratios([(5, 6), (1, 6)]));
         let horizontal = Layout::horizontal(Constraint::from_ratios([(1, 6), (5, 6)]));
-        let area = vertical.areas::<2>(area)[1];
-        horizontal.areas::<2>(area)[0]
+        let [_, area] = vertical.areas(area);
+        let [area, _] = horizontal.areas(area);
+        area
     }
 
     fn render_error_message(&mut self, f: &mut Frame) {
@@ -1879,7 +1919,7 @@ impl App {
         let bd = s.fg(self.ui.theme.help.borders.unwrap());
         let hl = s.fg(self.ui.theme.help.highlight.unwrap());
 
-        let area = Self::get_popup_area_with_lenght(f.area(), 21, 40);
+        let area = Self::get_popup_area_with_lenght(f.area(), 22, 42);
         f.render_widget(Clear, area);
         let rows = vec![
             help_message_row!["1", "Toggle waveform", hl],
@@ -1890,7 +1930,8 @@ impl App {
             help_message_row!["d", "Toggle device list", hl],
             help_message_row!["t", "Select theme", hl],
             help_message_row!["?/h/F1", "Show this window", hl],
-            help_message_row!["q/ctrl+c", "Quit", hl],
+            help_message_row!["q/Ctrl+c", "Quit", hl],
+            help_message_row!["q/Escape", "Close pop-up window", hl],
             help_message_row!["M", "Toggle mid frequencies", hl],
             help_message_row!["S", "Toggle side frequencies", hl],
             help_message_row!["Right", "Jump forward 5s", hl],
@@ -1905,7 +1946,8 @@ impl App {
                     "Navigate in explorer,".to_line(),
                     "device list and theme list".to_line(),
                 ]),
-            ]),
+            ])
+            .height(2),
         ];
         let widths = [Constraint::Percentage(30), Constraint::Percentage(70)];
         let table = Table::new(rows, widths).style(s).block(
@@ -2023,7 +2065,7 @@ impl App {
         } else {
             File::create(path.join(".current_theme"))
                 .unwrap()
-                .write(b"DEFAULT")
+                .write_all(b"DEFAULT")
                 .unwrap();
             let mut theme = Theme::default();
             theme.apply_global_as_default();
@@ -2079,9 +2121,9 @@ fn config_dir() -> Option<PathBuf> {
     if cfg!(target_os = "macos") {
         // On macOS, use ~/.config instead of ~/Library/Application Support
         let home = std::env::var("HOME").ok()?;
-        return Some(PathBuf::from(home).join(".config"));
+        Some(PathBuf::from(home).join(".config"))
     } else {
-        return dirs::config_dir();
+        dirs::config_local_dir()
     }
 }
 

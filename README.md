@@ -38,26 +38,28 @@ Grab the latest release for your platform from the [**Releases page**](https://g
   ```
   soundscope path/to/audio.mp3
   ```
-- Open the **e**xplorer by pressing `e`.
-- Navigate to your audio file using arrow keys or `h`, `j`, `k`, `l` (Vim-style navigation).
-- Press `Enter` to select it.
-- Play or pause audio by pressing `Space`.
-- Turn **m**id and **s**ide frequencies on/off by pressing `m` and `s` respectively.
-- Press `l` to check **l**oudness (LUFS) and `f` to check **f**requencies.
-- Use the right and left arrow keys to move playhead 5 seconds forward or backward.
-- Alternatively, press `c` to **c**hange input mode from audio file to microphone.
-- In microphone mode, choose **d**evice using `d`.
-- When you are done, press `q` to **q**uit.
-- Change **t**heme by pressing `t`.
-- You can also hover over the FFT chart to see additional information about frequency and amplitude. Hold any mouse button to hide this information.
+- Press `h`, `?`, or `F1` to view the help popup with all available keyboard shortcuts.
 
 ---
-## 🎥 Demo Video
+## 🎨 Themes
 
-Watch the demo on [YouTube](https://youtu.be/AnvWPmRWa1Y?si=9-oT4GtchbH5fqJa).
+### Built-in Themes
+Soundscope comes with several pre-built themes that you can use directly without creating a custom theme file:
+- **Catppuccin** — Mocha, Macchiato, Frappé, Latte
+- **Dracula** — Classic dark theme with vibrant accents
+- **Gruvbox Dark** — Warm, retro color scheme
+- **Material Dark** — Based on Google's Material Design
+- **Monokai** — Classic dark theme with high contrast
+- **Nord** — Arctic, north-bluish color palette
+- **One Dark** / **One Light** — Popular themes from Atom/VSCode
+- **Solarized** — Dark and Light variants with precision colors
+- **Tokyo Night** — Inspired by Tokyo's neon nightlife
+- **Ayu Dark** — Bright colors comfortable for all-day use
+- **Black & White** / **White & Black** — Minimal monochrome themes
 
----
-## 🎨 Creating a custom theme
+Press `t` in the application to open the theme selection list and choose any of these built-in themes.
+
+### Creating a custom theme
 The theme is set in `.theme` file which must be placed in `{YOUR_CONFIG_DIRECTORY}/soundscope` directory. Under the hood it is a simple `.toml` file. Here is an example theme (which is default for the app) containing all possible variables:
 ```toml
 [global]
@@ -85,6 +87,8 @@ controls_highlight = "LightRed"
 labels = "Yellow"
 
 [fft]
+foreground = "Yellow"
+background = "Black"
 borders = "Yellow"
 # Frequencies and LUFS tabs text
 labels = "Yellow"
@@ -156,12 +160,15 @@ Only global foreground and global background colors are mandatory. You can pass 
 
 Color separators `-`, `_`, and ` ` are supported and names are case insensitive. For example, `Light-blue` or `light_blue` or `light Blue` are all valid.
 
-After saving your theme into `.theme` file and placing it into `{YOUR_CONFIG_DIRECTORY}/soundscope`, press `t` to open up the theme selection list and choose yours. 
+After saving your theme into `.theme` file and placing it into `{YOUR_CONFIG_DIRECTORY}/soundscope`, press `t` to open up the theme selection list and choose yours.
 
 ---
 ## 🐛 Known Issues
+
+**Note:** In some audio file formats (particularly `.m4a`, `.mp3`), the playhead may gradually drift slightly to the right of the waveform center over time. This is a known behavior in the [Symphonia](https://github.com/pdeljanov/Symphonia) library for formats that are not gapless. This does not affect the visualization itself.
+
+Other known issues:
 - Rapidly seeking through an audio file may cause lag, resulting in the playhead being in an incorrect position. Pausing playback and waiting for the playhead to return to the correct spot before resuming usually resolves the issue.
-- In `.m4a` files, the playhead may gradually drift further to the right over time.
 
 ---
 ## 🛣 Roadmap
@@ -185,9 +192,12 @@ This project is licensed under the **MIT License** — see [LICENSE](LICENSE) fo
 ---
 ## ☕ Support
 
-If you like **soundscope** and want to support its development:
+If you like **Soundscope** and want to support its development:
 
 - Ethereum (ERC-20): 0xe8f2dd8a2d3a6ba9c571aadc720b6f1bea47fe4a
+- Bitcoin: bc1qype09urnpfztgrw6af83a2g86jrfhf5tr8dwp8
+- Solana: 9YmZXS7uYJSY9AwLmVmbDTgAAp987W3mQ1P3U5MUQ9Sv
+- Tron: TSwN6uW67KrmwvGUmXjJVAykmaWQ5wRZnM
 - [Boosty](https://boosty.to/bananaofhappiness)
 
 Your support helps keep this project alive ❤️
