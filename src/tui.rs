@@ -8,7 +8,7 @@ use crate::{
 };
 use cpal::{Stream, traits::StreamTrait as _};
 use crossbeam::channel::{Receiver, Sender};
-use dirs::config_dir;
+use dirs;
 use eyre::{Result, eyre};
 use ratatui::{
     DefaultTerminal,
@@ -495,6 +495,7 @@ impl App {
         let background = Paragraph::new("").style(self.ui.theme.global.background);
         f.render_widget(background, area);
 
+        // if we should show top window (waveform)
         let top_constraint = if self.ui.show_waveform {
             if self.ui.show_fft_chart || self.ui.show_lufs {
                 Constraint::Percentage(30)
@@ -505,6 +506,7 @@ impl App {
             Constraint::Length(0)
         };
 
+        // if we should show bottom windows (spectrum & lufs)
         let bottom_constraint = if self.ui.show_fft_chart || self.ui.show_lufs {
             if self.ui.show_waveform {
                 Constraint::Percentage(70)
@@ -515,6 +517,7 @@ impl App {
             Constraint::Length(0)
         };
 
+        // devide frame into top and bottom windows
         let vertical_chunks = Layout::default()
             .direction(Direction::Vertical)
             .constraints([top_constraint, bottom_constraint])
@@ -524,7 +527,10 @@ impl App {
             self.render_waveform(f, vertical_chunks[0]);
         }
 
+        // draw bottom windows
         if self.ui.show_fft_chart || self.ui.show_lufs {
+            // if we should split bottom part to lufs and fft
+            // or fill the bottom part with only 1 of them
             let left_constraint = if self.ui.show_fft_chart {
                 Constraint::Min(0)
             } else {
@@ -553,6 +559,10 @@ impl App {
             }
         }
 
+        if !(self.ui.show_waveform || self.ui.show_fft_chart || self.ui.show_lufs) {
+            self.render_empty_window(f, area);
+        }
+
         // render error
         if let Ok(err) = self.error_rx.try_recv() {
             self.ui.error_text = err;
@@ -569,7 +579,7 @@ impl App {
                 };
                 false
             });
-            let area = Self::get_explorer_popup_area_percentage(area, 50, 70);
+            let area = Self::get_popup_area_with_percentage(area, 50, 70);
             f.render_widget(Clear, area);
             f.render_widget(&self.explorer.widget(), area);
         }
@@ -582,6 +592,40 @@ impl App {
         if self.ui.show_help_message {
             self.render_help_message(f);
         }
+    }
+
+    fn render_empty_window(&mut self, frame: &mut Frame, area: Rect) {
+        let s = Style::default().bg(self.ui.theme.global.background).fg(self
+            .ui
+            .theme
+            .global
+            .foreground);
+
+        let background = Paragraph::new("").style(s);
+        frame.render_widget(background, area);
+
+        let popout_area = Self::get_popup_area_with_lenght(frame.area(), 6, 30);
+        frame.render_widget(Clear, popout_area);
+
+        let paragraph = Paragraph::new(vec![
+            "No open windows!".to_line().centered(),
+            "1 | Toggle waveform".to_line().centered(),
+            "2 | Toggle spectrum".to_line().centered(),
+            "3 | Toggle LUFS   ".to_line().centered(),
+        ])
+        .block(Block::bordered().border_type(BorderType::Rounded))
+        .style(s);
+
+        frame.render_widget(paragraph, popout_area);
+
+        let big_text_area = Self::get_popup_area_with_lenght(frame.area(), 22, 100);
+        let big_text = tui_big_text::BigText::builder()
+            .pixel_size(tui_big_text::PixelSize::Full)
+            .style(s)
+            .centered()
+            .lines(vec!["Soundscope".to_line()])
+            .build();
+        frame.render_widget(big_text, big_text_area);
     }
 
     fn render_waveform(&mut self, frame: &mut Frame, area: Rect) {
@@ -789,7 +833,7 @@ impl App {
                     .style(bd)
                     .title(vec![
                         "²".to_span().style(hl).bold(),
-                        "frequencies ".to_span().style(lb).bold(),
+                        "spectrum".to_span().style(lb).bold(),
                     ])
                     .title({
                         let mut mid = if self.ui.show_mid_fft {
@@ -993,7 +1037,7 @@ impl App {
             .bg(self.ui.theme.devices.background.unwrap());
         let bd = s.fg(self.ui.theme.devices.borders.unwrap());
         let hl = s.fg(self.ui.theme.devices.highlight.unwrap());
-        let area = Self::get_explorer_popup_area_percentage(f.area(), 20, 30);
+        let area = Self::get_popup_area_with_percentage(f.area(), 20, 30);
         f.render_widget(Clear, area);
         let devs = list_input_devs();
         let list_items: Vec<ListItem> = devs
@@ -1025,7 +1069,7 @@ impl App {
             .bg(self.ui.theme.devices.background.unwrap());
         let bd = s.fg(self.ui.theme.devices.borders.unwrap());
         let hl = s.fg(self.ui.theme.devices.highlight.unwrap());
-        let area = Self::get_explorer_popup_area_lenght(f.area(), 21, 40);
+        let area = Self::get_popup_area_with_lenght(f.area(), 21, 40);
         f.render_widget(Clear, area);
 
         let themes = builtin_themes::list_themes();
@@ -1131,6 +1175,30 @@ impl App {
         );
     }
 
+    fn receive_audio_file(&mut self, audio_file: AudioFile) {
+        self.audio_file = audio_file;
+        self.is_file_selected = true;
+        if self.audio_file.duration().as_secs_f64() < 15. {
+            self.ui.waveform_window = self.audio_file.duration().as_secs_f64()
+        }
+        self.waveform.audio_file_chart = self.file_analyzer.get_waveform(
+            self.audio_file.samples(),
+            self.audio_file.duration().as_secs_f64(),
+        );
+        // TODO: channels
+        if let Err(err) = self.file_analyzer.create_loudness_meter(
+            // self.audio_file.channels() as u32,
+            2,
+            self.audio_file.sample_rate(),
+        ) {
+            self.handle_error(format!(
+                "Could not create an analyzer for an audio file: {}",
+                err
+            ));
+        }
+        self.ui.needs_render = true;
+    }
+
     /// The main loop
     fn run(mut self, mut terminal: DefaultTerminal, startup_file: Option<PathBuf>) -> Result<()> {
         // apply theme
@@ -1150,40 +1218,26 @@ impl App {
         }
 
         self.current_directory = self.explorer.cwd().clone();
+        terminal.draw(|f| self.draw(f))?;
 
         if let Some(f) = startup_file {
             self.select_audio_file(f);
+            // blocking audio file receiver
+            // blocking to ensure that audio file is loaded
+            // before we render TUI, so that waveform is rendered correctly
+            if let Ok(audio_file) = self.audio_file_rx.recv() {
+                self.receive_audio_file(audio_file);
+                terminal.draw(|f| self.draw(f))?;
+            }
         }
-
-        terminal.draw(|f| self.draw(f))?;
 
         loop {
             std::thread::sleep(Duration::from_millis(8));
             self.ui.needs_render = false;
 
-            // receive audio file
-            if let Ok(af) = self.audio_file_rx.try_recv() {
-                self.audio_file = af;
-                self.is_file_selected = true;
-                if self.audio_file.duration().as_secs_f64() < 15. {
-                    self.ui.waveform_window = self.audio_file.duration().as_secs_f64()
-                }
-                self.waveform.audio_file_chart = self.file_analyzer.get_waveform(
-                    self.audio_file.samples(),
-                    self.audio_file.duration().as_secs_f64(),
-                );
-                // TODO: channels
-                if let Err(err) = self.file_analyzer.create_loudness_meter(
-                    // self.audio_file.channels() as u32,
-                    2,
-                    self.audio_file.sample_rate(),
-                ) {
-                    self.handle_error(format!(
-                        "Could not create an analyzer for an audio file: {}",
-                        err
-                    ));
-                }
-                self.ui.needs_render = true;
+            // non-blocking audio file receiver
+            if let Ok(audio_file) = self.audio_file_rx.try_recv() {
+                self.receive_audio_file(audio_file);
             }
 
             // receive playback position
@@ -1284,15 +1338,20 @@ impl App {
                     }
                 };
 
+                if self.ui.show_explorer {
+                    self.explorer.handle(&event)?;
+                    self.ui.needs_render = true;
+                }
+
                 // if let Event::Key(key) = event {
                 match event {
                     Event::Key(key) => {
                         // quit (only if not in any popup)
                         if key.code == KeyCode::Char('q')
-                            && !self.ui.show_themes_list
-                            && !self.ui.show_explorer
-                            && !self.ui.show_devices_list
-                            && !self.ui.show_help_message
+                            && !(self.ui.show_themes_list
+                                || self.ui.show_explorer
+                                || self.ui.show_devices_list
+                                || self.ui.show_help_message)
                         {
                             self.player_command_tx.send(PlayerCommand::Quit)?;
                             return Ok(());
@@ -1318,11 +1377,6 @@ impl App {
                         self.ui.needs_render = true;
                     }
                     _ => (),
-                }
-
-                if self.ui.show_explorer {
-                    self.explorer.handle(&event)?;
-                    self.ui.needs_render = true;
                 }
             }
 
@@ -1469,14 +1523,19 @@ impl App {
                 self.explorer.set_cwd(&self.current_directory).unwrap();
                 self.ui.show_explorer = !self.ui.show_explorer
             }
-            // select file
+            // select audio file
             KeyCode::Enter if self.ui.show_explorer => {
                 let file = self.explorer.current();
                 let file_path = self.explorer.current().path().clone();
                 if file.is_file() {
-                    self.select_audio_file(file_path)
+                    if file_path.extension().unwrap() == "theme" {
+                        self.apply_theme_file(&file_path);
+                    } else {
+                        self.select_audio_file(file_path)
+                    }
                 }
             }
+
             // show side fft
             KeyCode::Char('S') => self.ui.show_side_fft = !self.ui.show_side_fft,
             // show mid fft
@@ -1549,6 +1608,7 @@ impl App {
             {
                 self.ui.show_devices_list = !self.ui.show_devices_list
             }
+            // change mode
             KeyCode::Char('m') => {
                 self.settings.mode = if matches!(self.settings.mode, Mode::Microphone) {
                     self.reset_charts();
@@ -1597,22 +1657,21 @@ impl App {
                 }
             }
             KeyCode::Char('t')
-                if !self.ui.show_help_message
-                    && !self.ui.show_devices_list
-                    && !self.ui.show_explorer =>
+                if !(self.ui.show_help_message
+                    || self.ui.show_devices_list
+                    || self.ui.show_explorer) =>
             {
                 self.ui.show_themes_list = !self.ui.show_themes_list;
             }
-            KeyCode::Esc | KeyCode::Char('q') if self.ui.show_themes_list => {
+            KeyCode::Esc | KeyCode::Char('q')
+                if self.ui.show_themes_list
+                    || self.ui.show_explorer
+                    || self.ui.show_devices_list
+                    || self.ui.show_help_message =>
+            {
                 self.ui.show_themes_list = false;
-            }
-            KeyCode::Esc | KeyCode::Char('q') if self.ui.show_explorer => {
                 self.ui.show_explorer = false;
-            }
-            KeyCode::Esc | KeyCode::Char('q') if self.ui.show_devices_list => {
                 self.ui.show_devices_list = false;
-            }
-            KeyCode::Esc | KeyCode::Char('q') if self.ui.show_help_message => {
                 self.ui.show_help_message = false;
             }
             KeyCode::Char('=') | KeyCode::Char('+') => {
@@ -1629,9 +1688,9 @@ impl App {
                 self.ui.waveform_window = f64::min(self.ui.waveform_window + 1., bound);
             }
             KeyCode::Char('h') | KeyCode::Char('?') | KeyCode::F(1)
-                if !self.ui.show_devices_list
-                    && !self.ui.show_explorer
-                    && !self.ui.show_themes_list =>
+                if !(self.ui.show_devices_list
+                    || self.ui.show_explorer
+                    || self.ui.show_themes_list) =>
             {
                 self.ui.show_help_message = !self.ui.show_help_message
             }
@@ -1712,11 +1771,12 @@ impl App {
         // Check if index is for "Custom Theme" (last option)
         if index == themes.len() + 1 {
             // Open explorer for custom theme selection
-            if let Some(mut config_path) = config_dir() {
-                config_path.push("soundscope");
-                self.explorer.set_cwd(config_path).unwrap();
-                self.ui.show_themes_list = false;
+            if let Some(config_path) = config_dir() {
                 self.ui.show_explorer = true;
+                self.explorer
+                    .set_cwd(config_path.join("soundscope"))
+                    .unwrap();
+                self.ui.show_themes_list = false;
             }
             return Ok(());
         }
@@ -1730,7 +1790,6 @@ impl App {
             // Save theme choice to .current_theme file
             if let Some(mut config_path) = config_dir() {
                 config_path.push("soundscope");
-                std::fs::create_dir_all(&config_path).unwrap();
                 let current_theme_file = config_path.join(".current_theme");
                 // Save as "builtin:theme_name" format
                 let theme_identifier = format!("builtin:{}", theme_name);
@@ -1763,7 +1822,13 @@ impl App {
         }
     }
 
-    fn get_explorer_popup_area_percentage(area: Rect, percent_x: u16, percent_y: u16) -> Rect {
+    fn apply_theme_file(&mut self, file_path: &PathBuf) {
+        let mut theme = self.load_theme(file_path).unwrap_or_default();
+        theme.apply_global_as_default();
+        self.set_theme(theme);
+    }
+
+    fn get_popup_area_with_percentage(area: Rect, percent_x: u16, percent_y: u16) -> Rect {
         let vertical = Layout::vertical([Constraint::Percentage(percent_y)]).flex(Flex::Center);
         let horizontal = Layout::horizontal([Constraint::Percentage(percent_x)]).flex(Flex::Center);
         let [area] = vertical.areas(area);
@@ -1771,7 +1836,7 @@ impl App {
         area
     }
 
-    fn get_explorer_popup_area_lenght(area: Rect, length_x: u16, length_y: u16) -> Rect {
+    fn get_popup_area_with_lenght(area: Rect, length_x: u16, length_y: u16) -> Rect {
         let vertical = Layout::vertical([Constraint::Length(length_x)]).flex(Flex::Center);
         let horizontal = Layout::horizontal([Constraint::Length(length_y)]).flex(Flex::Center);
         let [area] = vertical.areas(area);
@@ -1814,7 +1879,7 @@ impl App {
         let bd = s.fg(self.ui.theme.help.borders.unwrap());
         let hl = s.fg(self.ui.theme.help.highlight.unwrap());
 
-        let area = Self::get_explorer_popup_area_lenght(f.area(), 20, 40);
+        let area = Self::get_popup_area_with_lenght(f.area(), 21, 40);
         f.render_widget(Clear, area);
         let rows = vec![
             help_message_row!["1", "Toggle waveform", hl],
@@ -1834,21 +1899,23 @@ impl App {
             help_message_row!["-/_", "Zoom waveform in", hl],
             help_message_row!["=/+", "Zoom waveform out", hl],
             help_message_row!["1-9", "Select device/theme", hl],
-            help_message_row![
-                "Up/Down",
-                "Navigate in explorer, device list and theme list",
-                hl
-            ],
+            Row::new(vec![
+                Cell::new("Up/Down".to_line().style(hl).centered()),
+                Cell::new(vec![
+                    "Navigate in explorer,".to_line(),
+                    "device list and theme list".to_line(),
+                ]),
+            ]),
         ];
         let widths = [Constraint::Percentage(30), Constraint::Percentage(70)];
-        let paragraph = Table::new(rows, widths).style(s).block(
+        let table = Table::new(rows, widths).style(s).block(
             Block::bordered()
                 .border_type(BorderType::Rounded)
                 .title("Help")
                 .style(bd),
         );
 
-        f.render_widget(paragraph, area);
+        f.render_widget(table, area);
     }
 
     fn reset_charts(&mut self) {
@@ -1861,7 +1928,7 @@ impl App {
 
     fn load_theme(&mut self, path: &PathBuf) -> Option<Theme> {
         let name = path.file_name().unwrap().to_string_lossy().to_string();
-        let current_theme = path.parent().unwrap().join(".current_theme");
+        let current_theme = config_dir().unwrap().join("soundscope/.current_theme");
         if let Err(err) = fs::write(&current_theme, &name) {
             self.handle_error(format!("Error saving chosen theme: {err}"));
         }
@@ -2008,6 +2075,16 @@ impl App {
     }
 }
 
+fn config_dir() -> Option<PathBuf> {
+    if cfg!(target_os = "macos") {
+        // On macOS, use ~/.config instead of ~/Library/Application Support
+        let home = std::env::var("HOME").ok()?;
+        return Some(PathBuf::from(home).join(".config"));
+    } else {
+        return dirs::config_dir();
+    }
+}
+
 /// pub run function that initializes the terminal and runs the application
 pub fn run(
     audio_file: AudioFile,
@@ -2078,7 +2155,7 @@ mod tests {
     #[test]
     fn test_get_explorer_popup_area() {
         let area = Rect::new(0, 0, 100, 50);
-        let popup_area = App::get_explorer_popup_area_percentage(area, 50, 70);
+        let popup_area = App::get_popup_area_with_percentage(area, 50, 70);
 
         // Should be centered and smaller than original area
         assert!(popup_area.width <= area.width);
