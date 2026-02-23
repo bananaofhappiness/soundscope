@@ -1228,15 +1228,12 @@ impl App {
         self.current_directory = self.explorer.cwd().clone();
         terminal.draw(|f| self.draw(f))?;
 
+        // blocking audio file receiver
+        // blocking to ensure that audio file is loaded
+        // before we render TUI, so that waveform is rendered correctly
         if let Some(f) = startup_file {
             self.select_audio_file(f);
-            // blocking audio file receiver
-            // blocking to ensure that audio file is loaded
-            // before we render TUI, so that waveform is rendered correctly
-            if let Ok(audio_file) = self.audio_file_rx.recv() {
-                self.receive_audio_file(audio_file);
-                terminal.draw(|f| self.draw(f))?;
-            }
+            terminal.draw(|f| self.draw(f))?;
         }
 
         loop {
@@ -1856,6 +1853,7 @@ impl App {
             //TODO: log sending error
         }
 
+        // blocking receiver
         if let Ok(audio_file) = self.audio_file_rx.recv() {
             self.receive_audio_file(audio_file);
         }
