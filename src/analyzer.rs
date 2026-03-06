@@ -16,7 +16,7 @@ impl Default for Analyzer {
     fn default() -> Self {
         let loudness_meter = match EbuR128::new(2, 44100, Mode::all()) {
             Ok(loudness_meter) => loudness_meter,
-            Err(err) => panic!("Failed to create loudness meter: {}", err),
+            Err(err) => panic!("Failed to create loudness meter: {err}"),
         };
         Self {
             loudness_meter,
@@ -69,7 +69,7 @@ impl Analyzer {
         Ok(fft_vec)
     }
 
-    pub fn get_waveform(&self, samples: &[f32], waveform_window: f64) -> Vec<(f64, f64)> {
+    pub fn get_waveform(samples: &[f32], waveform_window: f64) -> Vec<(f64, f64)> {
         let window = (waveform_window * 1000.) as usize;
         let samples_per_point = samples.len() as f64 / window as f64;
 
@@ -146,7 +146,7 @@ mod tests {
         let sample_rate = 44100;
         let frequency = 440.0;
         // 1 sec of samples
-        let samples: Vec<f32> = (0..16384 as usize)
+        let samples: Vec<f32> = (0..16384_usize)
             .map(|i| {
                 let t = i as f32 / sample_rate as f32;
                 (2.0 * std::f32::consts::PI * frequency * t).sin()
@@ -162,10 +162,9 @@ mod tests {
     #[test]
     /// Tests the waveform generation
     fn test_get_waveform() {
-        let analyzer = Analyzer::default();
         let samples: Vec<f32> = (0..44100).map(|i| (i as f32 / 44100.0).sin()).collect();
 
-        let waveform = analyzer.get_waveform(&samples, 15.);
+        let waveform = Analyzer::get_waveform(&samples, 15.);
 
         // Should have data points
         assert!(!waveform.is_empty());
