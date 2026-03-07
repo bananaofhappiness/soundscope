@@ -9,7 +9,7 @@ use symphonia::core::{
     codecs::{CODEC_TYPE_NULL, DecoderOptions},
     errors::Error,
     formats::FormatOptions,
-    io::MediaSourceStream,
+    io::{MediaSourceStream, MediaSourceStreamOptions},
     meta::MetadataOptions,
     probe::Hint,
 };
@@ -132,7 +132,7 @@ impl AudioFile {
 
     pub fn new(playback_position_tx: Sender<usize>) -> Self {
         AudioFile {
-            title: "".to_string(),
+            title: String::new(),
             samples: Vec::new(),
             mid_samples: Vec::new(),
             side_samples: Vec::new(),
@@ -169,15 +169,15 @@ impl AudioFile {
     fn decode_file(path: &PathBuf) -> Result<(Samples, SampleRate, Channels)> {
         // open the media source and create a stream
         let src = std::fs::File::open(path)?;
-        let mss = MediaSourceStream::new(Box::new(src), Default::default());
+        let mss = MediaSourceStream::new(Box::new(src), MediaSourceStreamOptions::default());
 
         // Create a probe hint using the file's extension.
         let mut hint = Hint::new();
         hint.with_extension("mp3");
 
         // Use the default options for metadata and format readers.
-        let meta_opts: MetadataOptions = Default::default();
-        let fmt_opts: FormatOptions = Default::default();
+        let meta_opts: MetadataOptions = MetadataOptions::default();
+        let fmt_opts: FormatOptions = FormatOptions::default();
 
         // Probe the media source.
         let probed = symphonia::default::get_probe().format(&hint, mss, &fmt_opts, &meta_opts)?;
@@ -186,19 +186,16 @@ impl AudioFile {
         let mut format = probed.format;
 
         // Find the first audio track with a known (decodeable) codec.
-        let track = match format
+        let Some(track) = format
             .tracks()
             .iter()
             .find(|t| t.codec_params.codec != CODEC_TYPE_NULL)
-        {
-            Some(track) => track,
-            None => {
-                return Err(eyre!("No audio track found with a decodeable codec"));
-            }
+        else {
+            return Err(eyre!("No audio track found with a decodeable codec"));
         };
 
         // Use the default options for the decoder.
-        let dec_opts: DecoderOptions = Default::default();
+        let dec_opts: DecoderOptions = DecoderOptions::default();
 
         // Create a decoder for the track.
         let mut decoder = symphonia::default::get_codecs().make(&track.codec_params, &dec_opts)?;
@@ -280,13 +277,13 @@ pub struct AudioPlayer {
 
 impl AudioPlayer {
     pub fn new(playback_position_tx: Sender<usize>) -> Result<Self> {
-        let _stream_handle = OutputStreamBuilder::open_default_stream()?;
-        let sink = Sink::connect_new(_stream_handle.mixer());
+        let stream_handle = OutputStreamBuilder::open_default_stream()?;
+        let sink = Sink::connect_new(stream_handle.mixer());
         let audio_file = AudioFile::new(playback_position_tx.clone());
         Ok(Self {
             playback_position_tx,
             audio_file,
-            _stream_handle,
+            _stream_handle: stream_handle,
             sink,
         })
     }
@@ -294,9 +291,9 @@ impl AudioPlayer {
     /// Runs `audio_player`
     pub fn run(
         &mut self,
-        player_command_rx: Receiver<PlayerCommand>,
-        audio_file_tx: Sender<AudioFile>,
-        error_tx: Sender<String>,
+        player_command_rx: &Receiver<PlayerCommand>,
+        audio_file_tx: &Sender<AudioFile>,
+        error_tx: &Sender<String>,
     ) -> Result<()> {
         loop {
             // recieve a `PlayerCommand` from an UI
@@ -306,7 +303,7 @@ impl AudioPlayer {
                         match AudioFile::from_file(&path, self.playback_position_tx.clone()) {
                             Err(err) => {
                                 if let Err(_err) =
-                                    error_tx.send(format!("Error loading file: {}", err))
+                                    error_tx.send(format!("Error loading file: {err}"))
                                 {
                                     //TODO: log a sending error
                                 }
@@ -318,7 +315,7 @@ impl AudioPlayer {
                                     //TODO: log a sending error
                                 }
                             }
-                        };
+                        }
 
                         // clear the sink and append new file
                         self.sink.stop();
@@ -361,17 +358,21 @@ impl AudioPlayer {
                         let seek = (pos + Duration::from_secs(5)).min(self.audio_file.duration);
 
                         if let Err(err) = self.sink.try_seek(seek) {
-                            println!("Error seeking: {:?}", err);
+                            println!("Error seeking: {err:?}");
                             // TODO: error handling
                         }
                     }
                     // move the playhead left
                     PlayerCommand::MoveLeft => {
                         if self.sink.empty() {
-                            let pos = self.audio_file.duration - Duration::from_secs(5);
+                            let pos = self
+                                .audio_file
+                                .duration
+                                .checked_sub(Duration::from_secs(5))
+                                .unwrap_or_default();
                             self.sink.append(self.audio_file.clone());
                             if let Err(err) = self.sink.try_seek(pos) {
-                                println!("Error seeking: {:?}", err);
+                                println!("Error seeking: {err:?}");
                                 // TODO: error handling
                             }
                             continue;
@@ -386,7 +387,7 @@ impl AudioPlayer {
                     }
                     #[cfg(debug_assertions)]
                     PlayerCommand::ShowTestError => {
-                        error_tx.send("This is a test message".to_string()).unwrap()
+                        error_tx.send("This is a test message".to_string()).unwrap();
                     }
                 }
             }
@@ -397,12 +398,12 @@ impl AudioPlayer {
 }
 
 pub fn get_mid_and_side_samples(samples: &[f32]) -> (Vec<f32>, Vec<f32>) {
-    let left_samples = samples.iter().step_by(2).cloned().collect::<Vec<f32>>();
+    let left_samples = samples.iter().step_by(2).copied().collect::<Vec<f32>>();
     let right_samples = samples
         .iter()
         .skip(1)
         .step_by(2)
-        .cloned()
+        .copied()
         .collect::<Vec<f32>>();
     let mid_samples = left_samples
         .iter()

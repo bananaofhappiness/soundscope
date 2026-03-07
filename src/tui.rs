@@ -147,7 +147,7 @@ macro_rules! fill_fields {
 }
 
 /// Used to set `default: T` to a `field` if it is not set (it is None).
-/// Used in [fill_fields] macro
+/// Used in [`fill_fields`] macro
 fn fill<T>(field: &mut Option<T>, default: T) {
     if field.is_none() {
         *field = Some(default);
@@ -232,8 +232,7 @@ impl Theme {
 #[derive(Deserialize)]
 pub struct GlobalTheme {
     pub background: Color,
-    /// It is default value for everything that is not a background,
-    /// Except for SideFFT, which is LightGreen, and playhead position, which is LightRed
+    /// It is default value for everything that is not a background
     pub foreground: Color,
     /// Color used to highlight corresponding characters
     /// Like highlighting L in LUFS to let the user know
@@ -378,7 +377,7 @@ impl Default for WaveForm {
     }
 }
 
-/// `App` contains the necessary components for the application like senders, receivers, [AudioFile] data, [UIsettings].
+/// `App` contains the necessary components for the application like senders, receivers, [`AudioFile`] data, [`UIsettings`].
 struct App {
     /// Audio file which is loaded into the player.
     audio_file: AudioFile,
@@ -389,7 +388,7 @@ struct App {
     is_file_selected: bool,
     is_playing_audio: bool,
     audio_file_rx: Receiver<AudioFile>,
-    /// RingBuffer used to store the latest captured samples when the `Mode` is not `Mode::Player`.
+    /// [`RingBuffer`] used to store the latest captured samples when the `Mode` is not `Mode::Player`.
     latest_captured_samples: RBuffer,
     /// The stream that captures the audio through input device
     audio_capture_stream: Option<Stream>,
@@ -553,7 +552,7 @@ impl App {
                 self.ui.chart_rect = Some(horizontal_chunks[0]);
                 self.render_fft_chart(f, horizontal_chunks[0]);
                 if let Some((x, y)) = self.mouse_position {
-                    self.render_fft_info(f, x, y)
+                    self.render_fft_info(f, x, y);
                 }
             }
             if self.ui.show_lufs {
@@ -568,7 +567,7 @@ impl App {
         // render error
         if let Ok(err) = self.error_rx.try_recv() {
             self.ui.error_text = err;
-            self.ui.error_timer = Some(std::time::Instant::now())
+            self.ui.error_timer = Some(std::time::Instant::now());
         }
         self.render_error_message(f);
 
@@ -578,7 +577,7 @@ impl App {
                 if let Some(extension) = f.path().extension() {
                     let extension = extension.to_str().unwrap_or_default();
                     return EXPLORER_FILE_EXTENSIONS.contains(&extension);
-                };
+                }
                 false
             });
             let area = Self::get_popup_area_with_percentage(area, 50, 70);
@@ -667,7 +666,7 @@ impl App {
                 let window_millis = self.ui.waveform_window as usize * 1000;
                 (15000. - window_millis as f64, 15000.)
             }
-            _ => {
+            Mode::Player => {
                 let half_window = self.ui.waveform_window * 500.;
                 let playhead_millis = playhead_ms as f64;
                 let max_x = self.waveform.audio_file_chart.len() as f64 / 2.;
@@ -733,11 +732,10 @@ impl App {
                     .title("¹".to_span().style(hl).bold() + title.to_span().style(lb))
                     .title_bottom(self.get_flashing_controls_text().left_aligned())
                     .title_bottom(
-                        Line::styled(format!("{:0>2}:{:0>2}", current_min, current_sec), ct)
-                            .centered(),
+                        Line::styled(format!("{current_min:0>2}:{current_sec:0>2}"), ct).centered(),
                     )
                     .title_bottom(
-                        Line::styled(format!("{:0>2}:{:0>2}", total_min, total_sec), td)
+                        Line::styled(format!("{total_min:0>2}:{total_sec:0>2}"), td)
                             .right_aligned(),
                     )
                     .title(upper_right_title)
@@ -901,7 +899,7 @@ impl App {
         let integrated_lufs = match self.file_analyzer.get_integrated_lufs() {
             Ok(lufs) => lufs,
             Err(err) => {
-                self.handle_error(format!("Error getting integrated LUFS: {}", err));
+                self.handle_error(format!("Error getting integrated LUFS: {err}"));
                 0.0
             }
         };
@@ -925,7 +923,7 @@ impl App {
             .split(layout[1]);
 
         // get lufs text
-        let integrated = format!("{:05.1}", integrated_lufs);
+        let integrated = format!("{integrated_lufs:05.1}");
         let short_term = format!("{:05.1}", self.lufs[299]);
         let integrated_lufs_text = integrated.to_span().style(nb) + " LUFS".to_span();
         let short_term_lufs_text = short_term.to_span().style(nb) + " LUFS".to_span();
@@ -934,14 +932,14 @@ impl App {
         let (tp_left, tp_right) = match self.file_analyzer.get_true_peak() {
             Ok((tp_left, tp_right)) => (tp_left, tp_right),
             Err(err) => {
-                self.handle_error(format!("Error getting true peak: {}", err));
+                self.handle_error(format!("Error getting true peak: {err}"));
                 (0.0, 0.0)
             }
         };
 
         // get true peak text
-        let left = format!("{:.1}", tp_left);
-        let right = format!("{:.1}", tp_right);
+        let left = format!("{tp_left:.1}");
+        let right = format!("{tp_right:.1}");
         let left = left.to_span().style(nb);
         let right = right.to_span().style(nb);
         let true_peak_text = vec![
@@ -953,11 +951,11 @@ impl App {
         let range = match self.file_analyzer.get_loudness_range() {
             Ok(range) => range,
             Err(err) => {
-                self.handle_error(format!("Error getting loudness range: {}", err));
+                self.handle_error(format!("Error getting loudness range: {err}"));
                 0.0
             }
         };
-        let range_text = format!("{:.1} LU", range);
+        let range_text = format!("{range:.1} LU");
 
         // paragraphs
         let lufs_paragraph = Paragraph::new(short_term_lufs_text)
@@ -1047,7 +1045,7 @@ impl App {
             .enumerate()
             .map(|(i, (name, _dev))| {
                 let num = format!("[{}]", i + 1);
-                let name = format!(" {}", name);
+                let name = format!(" {name}");
                 let is_selected = i == self.ui.selected_device_index;
 
                 let item_style = if is_selected {
@@ -1087,7 +1085,7 @@ impl App {
             .enumerate()
             .map(|(i, name)| {
                 let num = format!("[{}]", i + 1);
-                let name = format!(" {}", name);
+                let name = format!(" {name}");
                 let is_selected = i + 1 == self.ui.selected_theme_index;
 
                 let item_style = if is_selected {
@@ -1151,7 +1149,7 @@ impl App {
         let upper_bound = self.ui.chart_rect.unwrap().y + 1;
         let lower_bound = upper_bound + rect_height - 4;
 
-        let (hz, db) = self.map_mouse_position_to_chart_point(
+        let (hz, db) = Self::map_mouse_position_to_chart_point(
             x - left_bound,
             right_bound - left_bound,
             y - upper_bound,
@@ -1187,9 +1185,9 @@ impl App {
         self.audio_file = audio_file;
         self.is_file_selected = true;
         if self.audio_file.duration().as_secs_f64() < 15. {
-            self.ui.waveform_window = self.audio_file.duration().as_secs_f64()
+            self.ui.waveform_window = self.audio_file.duration().as_secs_f64();
         }
-        self.waveform.audio_file_chart = self.file_analyzer.get_waveform(
+        self.waveform.audio_file_chart = Analyzer::get_waveform(
             self.audio_file.samples(),
             self.audio_file.duration().as_secs_f64(),
         );
@@ -1200,8 +1198,7 @@ impl App {
             self.audio_file.sample_rate(),
         ) {
             self.handle_error(format!(
-                "Could not create an analyzer for an audio file: {}",
-                err
+                "Could not create an analyzer for an audio file: {err}"
             ));
         }
         self.ui.needs_render = true;
@@ -1211,18 +1208,13 @@ impl App {
     fn run(mut self, mut terminal: DefaultTerminal, startup_file: Option<PathBuf>) -> Result<()> {
         // apply theme
         // check if config directory exists
-        match config_dir() {
-            Some(path) => {
-                self.apply_current_theme(path);
-            }
-            None => {
-                self.handle_error(
-                    "Config directory does not exist. Could not load theme.".to_string(),
-                );
-                let mut theme = Theme::default();
-                theme.apply_global_as_default();
-                self.set_theme(theme);
-            }
+        if let Some(path) = config_dir() {
+            self.apply_current_theme(path);
+        } else {
+            self.handle_error("Config directory does not exist. Could not load theme.".to_string());
+            let mut theme = Theme::default();
+            theme.apply_global_as_default();
+            self.set_theme(theme);
         }
 
         self.current_directory = self.explorer.cwd().clone();
@@ -1333,7 +1325,7 @@ impl App {
                 let event = match read() {
                     Ok(event) => event,
                     Err(err) => {
-                        self.handle_error(format!("Error reading event: {}", err));
+                        self.handle_error(format!("Error reading event: {err}"));
                         continue;
                     }
                 };
@@ -1356,20 +1348,18 @@ impl App {
                             self.player_command_tx.send(PlayerCommand::Quit)?;
                             return Ok(());
                         }
-                        if let Err(err) = self.handle_input(key) {
-                            self.handle_error(format!("{}", err));
-                        }
+                        self.handle_input(key);
                         self.ui.needs_render = true;
                     }
                     Event::Mouse(m) => {
                         if matches!(m.kind, MouseEventKind::Moved) {
                             if self.in_fft_chart(m) {
-                                self.mouse_position = Some((m.column, m.row))
+                                self.mouse_position = Some((m.column, m.row));
                             } else {
-                                self.mouse_position = None
+                                self.mouse_position = None;
                             }
                         } else {
-                            self.mouse_position = None
+                            self.mouse_position = None;
                         }
                         self.ui.needs_render = true;
                     }
@@ -1400,7 +1390,7 @@ impl App {
         {
             Ok(fft) => fft,
             Err(err) => {
-                self.handle_error(format!("Error getting frequencies: {}. Perhaps your microphone's sample rate is too low.", err));
+                self.handle_error(format!("Error getting frequencies: {err}. Perhaps your microphone's sample rate is too low."));
                 vec![(0., 0.)]
             }
         };
@@ -1410,13 +1400,13 @@ impl App {
         {
             Ok(fft) => fft,
             Err(err) => {
-                self.handle_error(format!("Error getting frequencies: {}. Perhaps your microphone's sample rate is too low.", err));
+                self.handle_error(format!("Error getting frequencies: {err}. Perhaps your microphone's sample rate is too low."));
                 vec![(0., 0.)]
             }
         };
 
         // get waveform
-        self.waveform.microphone_input_chart = self.device_analyzer.get_waveform(&mid_samples, 15.);
+        self.waveform.microphone_input_chart = Analyzer::get_waveform(&mid_samples, 15.);
 
         let samples = self.latest_captured_samples.lock().unwrap().to_vec();
         let sample_rate = self.device_analyzer.sample_rate() as usize;
@@ -1431,12 +1421,12 @@ impl App {
             .device_analyzer
             .add_samples(&samples[lb..30 * sample_rate])
         {
-            self.handle_error(format!("Could not get samples for LUFS analyzer: {}", err));
-        };
+            self.handle_error(format!("Could not get samples for LUFS analyzer: {err}"));
+        }
         self.lufs[299] = match self.device_analyzer.get_shortterm_lufs() {
             Ok(lufs) => lufs,
             Err(err) => {
-                self.handle_error(format!("Error getting short-term LUFS: {}", err));
+                self.handle_error(format!("Error getting short-term LUFS: {err}"));
                 0.0
             }
         };
@@ -1501,12 +1491,12 @@ impl App {
                     .file_analyzer
                     .add_samples(&self.audio_file.samples()[lufs_left_bound..pos])
                 {
-                    self.handle_error(format!("Could not get samples for LUFS analyzer: {}", err));
-                };
+                    self.handle_error(format!("Could not get samples for LUFS analyzer: {err}"));
+                }
                 self.lufs[299] = match self.file_analyzer.get_shortterm_lufs() {
                     Ok(lufs) => lufs,
                     Err(err) => {
-                        self.handle_error(format!("Error getting short-term LUFS: {}", err));
+                        self.handle_error(format!("Error getting short-term LUFS: {err}"));
                         0.0
                     }
                 };
@@ -1514,14 +1504,14 @@ impl App {
         }
     }
 
-    fn handle_input(&mut self, key: KeyEvent) -> Result<()> {
+    fn handle_input(&mut self, key: KeyEvent) {
         match key.code {
             // show explorer
             KeyCode::Char('e')
                 if matches!(self.settings.mode, Mode::Player) && !self.ui.show_help_message =>
             {
                 self.explorer.set_cwd(&self.current_directory).unwrap();
-                self.ui.show_explorer = !self.ui.show_explorer
+                self.ui.show_explorer = !self.ui.show_explorer;
             }
             // select audio file
             KeyCode::Enter if self.ui.show_explorer => {
@@ -1531,7 +1521,7 @@ impl App {
                     if file_path.extension().unwrap() == "theme" {
                         self.apply_theme_file(&file_path);
                     } else {
-                        self.select_audio_file(file_path)
+                        self.select_audio_file(file_path);
                     }
                 }
             }
@@ -1580,20 +1570,18 @@ impl App {
                 }
             }
             KeyCode::Char('1') if !self.ui.show_devices_list && !self.ui.show_themes_list => {
-                self.ui.show_waveform = !self.ui.show_waveform
+                self.ui.show_waveform = !self.ui.show_waveform;
             }
             KeyCode::Char('2') if !self.ui.show_devices_list && !self.ui.show_themes_list => {
-                self.ui.show_fft_chart = !self.ui.show_fft_chart
+                self.ui.show_fft_chart = !self.ui.show_fft_chart;
             }
             KeyCode::Char('3') if !self.ui.show_devices_list && !self.ui.show_themes_list => {
-                self.ui.show_lufs = !self.ui.show_lufs
+                self.ui.show_lufs = !self.ui.show_lufs;
             }
             // Quick selection with numbers 0-9 when themes list is open
             KeyCode::Char(c) if self.ui.show_themes_list && c.is_ascii_digit() => {
                 let index = (c as usize) - ('0' as usize);
-                if let Err(err) = self.select_theme(index) {
-                    self.handle_error(format!("Failed to select theme: {}", err));
-                }
+                self.select_theme(index);
             }
             // this sends a test error
             // only in debug mode
@@ -1606,7 +1594,7 @@ impl App {
             KeyCode::Char('d')
                 if matches!(self.settings.mode, Mode::Microphone) && !self.ui.show_help_message =>
             {
-                self.ui.show_devices_list = !self.ui.show_devices_list
+                self.ui.show_devices_list = !self.ui.show_devices_list;
             }
             // change mode
             KeyCode::Char('m')
@@ -1631,7 +1619,7 @@ impl App {
             KeyCode::Char(c) if self.ui.show_devices_list && c.is_ascii_digit() && c != '0' => {
                 let index = (c as usize) - ('1' as usize);
                 if let Err(err) = self.select_device(index) {
-                    self.handle_error(format!("Failed to select device: {}", err));
+                    self.handle_error(format!("Failed to select device: {err}"));
                 }
             }
             // Arrow key navigation for devices list
@@ -1659,7 +1647,7 @@ impl App {
             }
             KeyCode::Enter if self.ui.show_devices_list => {
                 if let Err(err) = self.select_device(self.ui.selected_device_index) {
-                    self.handle_error(format!("Failed to select device: {}", err));
+                    self.handle_error(format!("Failed to select device: {err}"));
                 }
             }
             // Arrow key navigation for themes list
@@ -1684,9 +1672,7 @@ impl App {
                 self.ui.needs_render = true;
             }
             KeyCode::Enter if self.ui.show_themes_list => {
-                if let Err(err) = self.select_theme(self.ui.selected_theme_index) {
-                    self.handle_error(format!("Failed to select theme: {}", err));
-                }
+                self.select_theme(self.ui.selected_theme_index);
             }
             KeyCode::Char('t')
                 if !(self.ui.show_help_message
@@ -1706,11 +1692,11 @@ impl App {
                 self.ui.show_devices_list = false;
                 self.ui.show_help_message = false;
             }
-            KeyCode::Char('=') | KeyCode::Char('+') => {
+            KeyCode::Char('=' | '+') => {
                 self.ui.plus_sign_timer = Some(Instant::now());
                 self.ui.waveform_window = f64::max(self.ui.waveform_window - 1., 1.);
             }
-            KeyCode::Char('-') | KeyCode::Char('_') => {
+            KeyCode::Char('-' | '_') => {
                 let bound = if self.audio_file.duration().as_secs_f64() < 15. {
                     self.audio_file.duration().as_secs_f64()
                 } else {
@@ -1719,16 +1705,15 @@ impl App {
                 self.ui.minus_sign_timer = Some(Instant::now());
                 self.ui.waveform_window = f64::min(self.ui.waveform_window + 1., bound);
             }
-            KeyCode::Char('h') | KeyCode::Char('?') | KeyCode::F(1)
+            KeyCode::Char('h' | '?') | KeyCode::F(1)
                 if !(self.ui.show_devices_list
                     || self.ui.show_explorer
                     || self.ui.show_themes_list) =>
             {
-                self.ui.show_help_message = !self.ui.show_help_message
+                self.ui.show_help_message = !self.ui.show_help_message;
             }
             _ => (),
         }
-        Ok(())
     }
 
     fn select_device(&mut self, index: usize) -> Result<()> {
@@ -1744,7 +1729,7 @@ impl App {
         let device = devices[index].1.clone();
         let audio_device = AudioDevice::new(Some(device));
 
-        self.ui.device_name = devices[index].0.clone();
+        self.ui.device_name.clone_from(&devices[index].0);
         let sr = audio_device.config().sample_rate.0;
         let channels = audio_device.config().channels;
 
@@ -1755,7 +1740,7 @@ impl App {
 
         let stream = match audio_capture::build_input_stream(
             self.latest_captured_samples.clone(),
-            audio_device,
+            &audio_device,
         ) {
             Ok(stream) => stream,
             Err(err) => {
@@ -1770,14 +1755,13 @@ impl App {
             .create_loudness_meter(channels as u32, sr)
         {
             self.handle_error(format!(
-                "Could not create an analyzer for an audio file: {}",
-                err
+                "Could not create an analyzer for an audio file: {err}"
             ));
         }
         Ok(())
     }
 
-    fn select_theme(&mut self, index: usize) -> Result<()> {
+    fn select_theme(&mut self, index: usize) {
         let themes = builtin_themes::list_themes();
 
         // Check if index is for "Default Theme" (first option, index 0)
@@ -1789,7 +1773,11 @@ impl App {
             // Save theme choice to .current_theme file
             if let Some(mut config_path) = config_dir() {
                 config_path.push("soundscope");
-                std::fs::create_dir_all(&config_path).unwrap();
+                if let Err(_err) = std::fs::create_dir_all(&config_path) {
+                    self.handle_error(
+                        "Error creating a config path. Make sure it exists.".to_owned(),
+                    );
+                }
                 let current_theme_file = config_path.join(".current_theme");
                 if let Err(err) = fs::write(&current_theme_file, "DEFAULT") {
                     self.handle_error(format!("Error saving theme choice: {err}"));
@@ -1797,7 +1785,7 @@ impl App {
             }
 
             self.ui.show_themes_list = false;
-            return Ok(());
+            return;
         }
 
         // Check if index is for "Custom Theme" (last option)
@@ -1810,7 +1798,6 @@ impl App {
                     .unwrap();
                 self.ui.show_themes_list = false;
             }
-            return Ok(());
         }
 
         // Get theme name and load it (index - 1 because 0 is default)
@@ -1824,7 +1811,7 @@ impl App {
                 config_path.push("soundscope");
                 let current_theme_file = config_path.join(".current_theme");
                 // Save as "builtin:theme_name" format
-                let theme_identifier = format!("builtin:{}", theme_name);
+                let theme_identifier = format!("builtin:{theme_name}");
                 if let Err(err) = fs::write(&current_theme_file, &theme_identifier) {
                     self.handle_error(format!("Error saving theme choice: {err}"));
                 }
@@ -1832,8 +1819,6 @@ impl App {
 
             self.ui.show_themes_list = false;
         }
-
-        Ok(())
     }
 
     fn handle_error(&mut self, message: String) {
@@ -2000,11 +1985,13 @@ impl App {
         Some(theme)
     }
 
-    /// Called at startup to apply the current theme from a .current_theme file if it exists
+    /// Called at startup to apply the current theme from a `.current_theme` file if it exists
     fn apply_current_theme(&mut self, mut path: PathBuf) {
         // if .config/soundscope does not exist, create it
         path.push("soundscope");
-        std::fs::create_dir_all(&path).unwrap();
+        if let Err(_err) = std::fs::create_dir_all(&path) {
+            self.handle_error("Error creating a config path. Make sure it exists.".to_owned());
+        }
         let current_theme_file = path.join(".current_theme");
         if current_theme_file.exists() {
             // read contents of current_theme file
@@ -2014,7 +2001,7 @@ impl App {
                     if theme_file == "DEFAULT" {
                         let mut theme = Theme::default();
                         theme.apply_global_as_default();
-                        self.set_theme(theme)
+                        self.set_theme(theme);
                     } else if theme_file.starts_with("builtin:") {
                         // Load builtin theme
                         let theme_name = theme_file.strip_prefix("builtin:").unwrap();
@@ -2023,8 +2010,7 @@ impl App {
                             self.set_theme(theme);
                         } else {
                             self.handle_error(format!(
-                                "Builtin theme '{}' not found. Applying default theme.",
-                                theme_name
+                                "Builtin theme '{theme_name}' not found. Applying default theme."
                             ));
                             let mut theme = Theme::default();
                             theme.apply_global_as_default();
@@ -2057,7 +2043,7 @@ impl App {
                     }
                     let mut theme = Theme::default();
                     theme.apply_global_as_default();
-                    self.set_theme(theme)
+                    self.set_theme(theme);
                 }
             }
         } else {
@@ -2067,7 +2053,7 @@ impl App {
                 .unwrap();
             let mut theme = Theme::default();
             theme.apply_global_as_default();
-            self.set_theme(theme)
+            self.set_theme(theme);
         }
     }
 
@@ -2090,13 +2076,7 @@ impl App {
         false
     }
 
-    fn map_mouse_position_to_chart_point(
-        &self,
-        x: u16,
-        max_x: u16,
-        y: u16,
-        max_y: u16,
-    ) -> (f32, f32) {
+    fn map_mouse_position_to_chart_point(x: u16, max_x: u16, y: u16, max_y: u16) -> (f32, f32) {
         // x
         let min_freq_log = 20f32.log10();
         let max_freq_log = 20000f32.log10();
@@ -2264,13 +2244,9 @@ mod tests {
         // Check that this bin has non-trivial amplitude
         if bin_idx < app.fft_data.mid_fft.len() {
             let amp = app.fft_data.mid_fft[bin_idx].1; // assuming (freq, amp)
-            assert!(
-                amp < -20.0,
-                "Expected strong signal at ~500Hz, got: {}",
-                amp
-            );
+            assert!(amp < -20.0, "Expected strong signal at ~500Hz, got: {amp}");
         } else {
-            panic!("Bin index out of range: {}", bin_idx);
+            panic!("Bin index out of range: {bin_idx}");
         }
     }
 
@@ -2301,13 +2277,9 @@ mod tests {
         // Check that this bin has non-trivial amplitude
         if bin_idx < app.fft_data.mid_fft.len() {
             let amp = app.fft_data.mid_fft[bin_idx].1; // assuming (freq, amp)
-            assert!(
-                amp < -20.0,
-                "Expected strong signal at ~500Hz, got: {}",
-                amp
-            );
+            assert!(amp < -20.0, "Expected strong signal at ~500Hz, got: {amp}");
         } else {
-            panic!("Bin index out of range: {}", bin_idx);
+            panic!("Bin index out of range: {bin_idx}");
         }
     }
 
@@ -2338,13 +2310,9 @@ mod tests {
         // Check that this bin has non-trivial amplitude
         if bin_idx < app.fft_data.mid_fft.len() {
             let amp = app.fft_data.mid_fft[bin_idx].1; // assuming (freq, amp)
-            assert!(
-                amp < -20.0,
-                "Expected strong signal at ~500Hz, got: {}",
-                amp
-            );
+            assert!(amp < -20.0, "Expected strong signal at ~500Hz, got: {amp}");
         } else {
-            panic!("Bin index out of range: {}", bin_idx);
+            panic!("Bin index out of range: {bin_idx}");
         }
     }
 

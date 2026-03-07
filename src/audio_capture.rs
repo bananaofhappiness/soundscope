@@ -30,7 +30,7 @@ impl AudioDevice {
 
 pub fn build_input_stream(
     latest_captured_samples: RBuffer,
-    audio_device: AudioDevice,
+    audio_device: &AudioDevice,
 ) -> Result<Stream> {
     let dev = audio_device.device();
     let cfg = audio_device.config();
@@ -45,13 +45,13 @@ pub fn build_input_stream(
                     .enumerate()
                     .flat_map(|(i, &x)| if i == 0 { vec![x] } else { vec![0., x] })
                     .collect();
-                audio_buf.extend(data)
+                audio_buf.extend(data);
             } else {
                 audio_buf.extend(data.iter().copied());
             }
         },
         |err| {
-            eprintln!("got stream error: {}", err);
+            eprintln!("got stream error: {err}");
         },
         None,
     )?;

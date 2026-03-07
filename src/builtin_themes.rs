@@ -1,4 +1,4 @@
-//! Built-in themes for SoundScope
+//! Built-in themes for `Soundscope`
 //!
 //! This module contains pre-defined themes for popular color schemes.
 
@@ -116,7 +116,7 @@ pub fn gruvbox_dark() -> Theme {
 /// Monokai theme
 ///
 /// A classic dark theme with vibrant colors and high contrast.
-/// Originally from TextMate editor.
+/// Originally from [TextMate](https://macromates.com/) editor.
 pub fn monokai() -> Theme {
     let mut theme = Theme {
         global: GlobalTheme {
@@ -232,7 +232,7 @@ pub fn solarized_light() -> Theme {
 
 /// One Dark theme
 ///
-/// The popular dark theme from Atom editor, now widely used in VSCode.
+/// The popular dark theme from Atom editor.
 /// Based on [One Dark Pro](https://github.com/binaryify/OneDark-Pro)
 pub fn one_dark() -> Theme {
     let mut theme = Theme {
@@ -295,20 +295,6 @@ pub fn white_black_light() -> Theme {
     theme
 }
 
-/// Get a theme by name
-///
-/// Returns `None` if the theme name is not recognized.
-///
-/// # Arguments
-///
-/// * `name` - The name of the theme (case-sensitive, must match list_themes() output)
-///
-/// # Examples
-///
-/// ```
-/// let theme = builtin_themes::get_by_name("Catppuccin Mocha").unwrap();
-/// let theme = builtin_themes::get_by_name("One Dark").unwrap();
-/// ```
 pub fn get_by_name(name: &str) -> Option<Theme> {
     match name {
         "Ayu Dark" => Some(ayu_dark()),
@@ -332,7 +318,6 @@ pub fn get_by_name(name: &str) -> Option<Theme> {
     }
 }
 
-/// Get a list of all available theme names
 pub fn list_themes() -> &'static [&'static str] {
     &[
         "Ayu Dark",

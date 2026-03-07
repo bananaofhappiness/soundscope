@@ -53,13 +53,12 @@ fn main() -> Result<()> {
     if let Some(f) = startup_file {
         let current_working_dir = env::current_dir()?;
         startup_file = Some(f.canonicalize()?);
-        println!("{:?}", f);
         env::set_current_dir(
             f.parent()
                 .filter(|&s| s.to_str().unwrap() != "")
                 .unwrap_or(&current_working_dir),
         )?;
-    };
+    }
 
     let mut buf = AllocRingBuffer::new(44100usize * 30);
     buf.fill(0.0);
@@ -76,7 +75,7 @@ fn main() -> Result<()> {
             startup_file,
         )
     });
-    player.run(player_command_rx, audio_file_tx, error_tx)
+    player.run(&player_command_rx, &audio_file_tx, &error_tx)
 }
 
 fn print_help() {
