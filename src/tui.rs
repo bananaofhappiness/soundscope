@@ -46,6 +46,9 @@ const EXPLORER_FILE_EXTENSIONS: [&str; 21] = [
     "theme", // Theme file
 ];
 
+const FFT_UPPER_BOUNDARY: f32 = 0.;
+const FFT_LOWER_BOUNDARY: f32 = -100.;
+
 /// Settings like showing/hiding UI elements.
 struct UI {
     theme: Theme,
@@ -865,11 +868,11 @@ impl App {
                 Axis::default()
                     .title("dB")
                     .labels(vec![
-                        Span::raw("-78 dB").style(fg),
-                        Span::raw("-18 dB").style(fg),
+                        Span::raw(format!("{FFT_LOWER_BOUNDARY}")).style(fg),
+                        Span::raw(format!("{FFT_UPPER_BOUNDARY}")).style(fg),
                     ])
                     .style(ax)
-                    .bounds([-150., 100.]),
+                    .bounds([FFT_LOWER_BOUNDARY as f64, FFT_UPPER_BOUNDARY as f64]),
             )
             .style(s);
 
@@ -2089,7 +2092,7 @@ impl App {
         // y
         let y = f32::clamp(y as f32, 0., max_y as f32);
         let t = y / max_y as f32;
-        let y = -18. + t * (-78. - -18.);
+        let y = FFT_UPPER_BOUNDARY + t * (FFT_LOWER_BOUNDARY - FFT_UPPER_BOUNDARY);
 
         (x, y)
     }
