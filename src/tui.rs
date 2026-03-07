@@ -17,11 +17,11 @@ use ratatui::{
     style::{Color, Style, Stylize},
     text::{Line, Span, ToLine, ToSpan},
     widgets::{
-        Axis, Block, BorderType, Cell, Chart, Clear, Dataset, GraphType, List, ListItem, Paragraph,
-        Row, Table, Wrap,
+        Axis, Block, BorderType, Cell, Chart, Clear, Dataset, FrameExt, GraphType, List, ListItem,
+        Paragraph, Row, Table, Wrap,
     },
 };
-use ratatui_explorer::FileExplorer;
+use ratatui_explorer::{FileExplorer, FileExplorerBuilder};
 use ringbuffer::{AllocRingBuffer, RingBuffer};
 use rodio::Source;
 use serde::Deserialize;
@@ -37,7 +37,7 @@ use std::{
 pub type RBuffer = Arc<Mutex<AllocRingBuffer<f32>>>;
 
 /// Files with extensions listed here will be shown in the explorer
-const EXPLORER_FILE_EXTENSIONS: [&str; 21] = [
+const SUPPORTED_FORMATS: [&str; 21] = [
     "wav", "wave", "aiff", "aif", "flac", // Uncompressed / Lossless
     "mp3", "mp2", "mp1", "mpa", "aac", // MPEG Audio
     "m4a", "m4b", "mp4", "m4r", "m4p", // MP4 / M4A Family (AAC / ALAC)
@@ -458,7 +458,7 @@ impl App {
             waveform: WaveForm::default(),
             lufs: [-50.; 300],
             settings: Settings::default(),
-            explorer: FileExplorer::with_theme(
+            explorer: FileExplorerBuilder::build_with_theme(
                 ratatui_explorer::Theme::default()
                     .with_block(Block::bordered().border_type(BorderType::Rounded)),
             )?,
@@ -576,16 +576,9 @@ impl App {
 
         // render explorer
         if self.ui.show_explorer {
-            self.explorer.filter(|f| {
-                if let Some(extension) = f.path().extension() {
-                    let extension = extension.to_str().unwrap_or_default();
-                    return EXPLORER_FILE_EXTENSIONS.contains(&extension);
-                }
-                false
-            });
             let area = Self::get_popup_area_with_percentage(area, 50, 70);
             f.render_widget(Clear, area);
-            f.render_widget(&self.explorer.widget(), area);
+            f.render_widget_ref(self.explorer.widget(), area);
         }
         if self.ui.show_devices_list {
             self.render_devices_list(f);
@@ -1221,6 +1214,17 @@ impl App {
         }
 
         self.current_directory = self.explorer.cwd().clone();
+        self.explorer.set_filter_map(|file| {
+            let keep = match file.path.extension() {
+                Some(extension) => {
+                    let extension = extension.to_str().unwrap_or_default();
+                    SUPPORTED_FORMATS.contains(&extension)
+                }
+                None => file.is_dir,
+            };
+
+            if keep { Some(file) } else { None }
+        })?;
         terminal.draw(|f| self.draw(f))?;
 
         // blocking audio file receiver
@@ -1519,7 +1523,7 @@ impl App {
             // select audio file
             KeyCode::Enter if self.ui.show_explorer => {
                 let file = self.explorer.current();
-                let file_path = self.explorer.current().path().clone();
+                let file_path = self.explorer.current().path.clone();
                 if file.is_file() {
                     if file_path.extension().unwrap() == "theme" {
                         self.apply_theme_file(&file_path);
