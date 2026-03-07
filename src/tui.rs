@@ -4,7 +4,7 @@ use crate::{
     analyzer::Analyzer,
     audio_capture::{self, AudioDevice, list_input_devs},
     audio_player::{self, AudioFile, PlayerCommand},
-    builtin_themes, // Add builtin_themes import
+    builtin_themes,
 };
 use cpal::{Stream, traits::StreamTrait as _};
 use crossbeam::channel::{Receiver, Sender};
@@ -456,7 +456,7 @@ impl App {
             device_analyzer: Analyzer::default(),
             fft_data: FFTData::default(),
             waveform: WaveForm::default(),
-            lufs: [-50.; 300],
+            lufs: [-100.; 300],
             settings: Settings::default(),
             explorer: FileExplorerBuilder::build_with_theme(
                 ratatui_explorer::Theme::default()
@@ -812,12 +812,12 @@ impl App {
                 // highlight the letter M so the user knows they must press M to toggle it
                 // same with Side fft
                 .marker(symbols::Marker::Braille)
-                .graph_type(GraphType::Line)
+                .graph_type(GraphType::AreaLine(-100.0))
                 .style(mf)
                 .data(mid_fft),
             Dataset::default()
                 .marker(symbols::Marker::Braille)
-                .graph_type(GraphType::Line)
+                .graph_type(GraphType::AreaLine(-100.0))
                 .style(sf)
                 .data(side_fft),
         ];
@@ -997,7 +997,7 @@ impl App {
         let dataset = vec![
             Dataset::default()
                 .marker(symbols::Marker::Braille)
-                .graph_type(GraphType::Line)
+                .graph_type(GraphType::AreaLine(-50.0))
                 .style(ch)
                 .data(&data),
         ];
@@ -1545,7 +1545,7 @@ impl App {
                 self.is_playing_audio = !self.is_playing_audio;
                 // do this so lufs update only on play, not pause
                 if self.is_playing_audio {
-                    self.lufs = [-50.; 300];
+                    self.lufs = [-100.; 300];
                     self.file_analyzer.reset();
                 }
             }
@@ -1557,7 +1557,7 @@ impl App {
                         || self.ui.show_themes_list) =>
             {
                 self.ui.right_arrow_timer = Some(Instant::now());
-                self.lufs = [-50.; 300];
+                self.lufs = [-100.; 300];
                 self.file_analyzer.reset();
                 if let Err(_err) = self.player_command_tx.send(PlayerCommand::MoveRight) {
                     //TODO: log sending error
@@ -1570,7 +1570,7 @@ impl App {
                         || self.ui.show_themes_list) =>
             {
                 self.ui.left_arrow_timer = Some(Instant::now());
-                self.lufs = [-50.; 300];
+                self.lufs = [-100.; 300];
                 self.file_analyzer.reset();
                 if let Err(_err) = self.player_command_tx.send(PlayerCommand::MoveLeft) {
                     //TODO: log sending error
@@ -1953,7 +1953,7 @@ impl App {
     fn reset_charts(&mut self) {
         self.fft_data.mid_fft.clear();
         self.fft_data.side_fft.clear();
-        self.lufs = [-50.; 300];
+        self.lufs = [-100.; 300];
         self.is_playing_audio = false;
         self.waveform.playhead = 0;
     }

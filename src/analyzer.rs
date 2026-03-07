@@ -77,19 +77,19 @@ impl Analyzer {
         let spectrum = samples_fft_to_spectrum(
             &hann_window,
             self.sample_rate,
-            FrequencyLimit::Range(20.0, 20000.0),
+            FrequencyLimit::Range(20., 20000.),
             Some(&scale_to_dbfs),
         )?;
 
         // Reference frequency for pink noise compensation (1 kHz is standard)
-        const PINK_NOISE_REF_FREQ: f64 = 1000.0;
+        const PINK_NOISE_REF_FREQ: f64 = 1000.;
         // Pink noise compensation: +3 dB/octave to make pink noise appear flat
         // on a logarithmic frequency scale.
         // Formula: 3 dB/octave = 10 × log₁₀(freq/ref) (not 3 × log₁₀!)
-        const PINK_NOISE_SLOPE: f64 = 10.0;
+        const PINK_NOISE_SLOPE: f64 = 10.;
 
-        // First pass: collect data with pink noise compensation
-        let mut data: Vec<(f64, f64)> = spectrum
+        // Collect data with pink noise compensation
+        let data: Vec<(f64, f64)> = spectrum
             .data()
             .iter()
             .map(|(freq, val)| {
@@ -102,31 +102,11 @@ impl Analyzer {
             })
             .collect();
 
-        // Second pass: apply frequency-dependent smoothing
-        // Higher frequencies get more smoothing to reduce visual noise
-        let data_len = data.len();
-        for i in 0..data_len {
-            let freq = data[i].0;
-
-            // Calculate smoothing window size based on frequency
-            // Low freq: ~1 bin, High freq: ~20+ bins
-            let window_size = ((freq / 1000.0).ceil() as usize).max(1).min(20);
-
-            let half_window = window_size / 2;
-            let start = i.saturating_sub(half_window);
-            let end = (i + half_window + 1).min(data_len);
-
-            // Average the values in the window
-            let sum: f64 = data[start..end].iter().map(|(_, v)| *v).sum();
-            let count = (end - start) as f64;
-            data[i].1 = sum / count;
-        }
-
-        // Third pass: convert to log scale for display
+        // Convert to log scale for display
         let min_freq_log = 20_f64.log10();
         let max_freq_log = 20000_f64.log10();
         let log_range = max_freq_log - min_freq_log;
-        let chart_width = 100.0;
+        let chart_width = 100.;
 
         let fft_vec = data
             .into_iter()
@@ -281,8 +261,8 @@ mod tests {
 
         // A 0 dBFS sine wave at 1 kHz should display at approximately 0 dB
         // (pink noise compensation is 0 dB at 1 kHz reference frequency)
-        // We allow a tolerance of ±6 dB for windowing, FFT imperfections, and smoothing
-        assert!(max_db >= -6.0, "Max dB {max_db} is too low, expected ~0 dB");
+        // We allow tolerance for windowing and FFT imperfections
+        assert!(max_db >= -1.0, "Max dB {max_db} is too low, expected ~0 dB");
         assert!(max_db <= 1.0, "Max dB {max_db} is too high, expected ~0 dB");
     }
 
@@ -332,16 +312,16 @@ mod tests {
 
         println!("1 kHz: {max_1khz} dB, 125 Hz: {max_125hz} dB");
         println!(
-            "Difference: {} dB (expected ~ -5 to -6 dB due to pink noise compensation + smoothing)",
+            "Difference: {} dB (expected ~ -9 dB due to pink noise compensation, 3 octaves × 3 dB/octave)",
             max_125hz - max_1khz
         );
 
-        // With smoothing applied, the 125 Hz tone should appear ~5-6 dB lower than 1 kHz
-        // (pink noise gives ~9 dB, but smoothing reduces high freq more than low freq)
+        // The 125 Hz tone should appear ~9 dB lower than 1 kHz
+        // (3 octaves × 3 dB/octave = 9 dB)
         let diff = max_125hz - max_1khz;
         assert!(
-            diff <= -4.0 && diff >= -7.0,
-            "Pink noise compensation not working correctly: expected ~-5 to -6 dB difference, got {diff}"
+            diff <= -8.0 && diff >= -10.5,
+            "Pink noise compensation not working correctly: expected ~-9 dB difference, got {diff}"
         );
     }
 
