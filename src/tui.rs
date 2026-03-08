@@ -1805,6 +1805,7 @@ impl App {
                     .unwrap();
                 self.ui.show_themes_list = false;
             }
+            return;
         }
 
         // Get theme name and load it (index - 1 because 0 is default)

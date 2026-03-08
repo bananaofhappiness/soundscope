@@ -320,7 +320,7 @@ mod tests {
         // (3 octaves × 3 dB/octave = 9 dB)
         let diff = max_125hz - max_1khz;
         assert!(
-            diff <= -8.0 && diff >= -10.5,
+            (-10.5..=-8.0).contains(&diff),
             "Pink noise compensation not working correctly: expected ~-9 dB difference, got {diff}"
         );
     }
