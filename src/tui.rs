@@ -46,8 +46,9 @@ const SUPPORTED_FORMATS: [&str; 21] = [
     "theme", // Theme file
 ];
 
-const FFT_UPPER_BOUNDARY: f32 = 0.;
-const FFT_LOWER_BOUNDARY: f32 = -100.;
+const FFT_TARGET_LUFS: f32 = -13.0;
+const FFT_LOWER_BOUND: f64 = -100.0;
+const FFT_UPPER_BOUND: f64 = 0.0;
 
 /// Settings like showing/hiding UI elements.
 struct UI {
@@ -78,6 +79,8 @@ struct UI {
     selected_theme_index: usize,
     /// Selected device index in devices list
     selected_device_index: usize,
+    /// Gain compensation in dB to normalize track to target LUFS
+    fft_gain_compensation_db: f32,
 }
 
 impl Default for UI {
@@ -105,6 +108,7 @@ impl Default for UI {
             needs_render: true,
             selected_theme_index: 0,
             selected_device_index: 0,
+            fft_gain_compensation_db: 0.0,
         }
     }
 }
@@ -794,32 +798,41 @@ impl App {
             Span::styled("20kHz", fg),
         ];
 
-        // if no data about frequencies then default to some low value
-        let mid_fft: &[(f64, f64)] = if self.ui.show_mid_fft {
-            &self.fft_data.mid_fft
+        let gain_comp = self.ui.fft_gain_compensation_db as f64;
+
+        let mid_fft_normalized: Vec<(f64, f64)> = if self.ui.show_mid_fft {
+            self.fft_data
+                .mid_fft
+                .iter()
+                .map(|(x, y)| (*x, y + gain_comp))
+                .collect()
         } else {
-            &[(-1000.0, -1000.0)]
+            vec![(-1000.0, -1000.0)]
         };
 
-        let side_fft: &[(f64, f64)] = if self.ui.show_side_fft {
-            &self.fft_data.side_fft
+        let side_fft_normalized: Vec<(f64, f64)> = if self.ui.show_side_fft {
+            self.fft_data
+                .side_fft
+                .iter()
+                .map(|(x, y)| (*x, y + gain_comp))
+                .collect()
         } else {
-            &[(-1000.0, -1000.0)]
+            vec![(-1000.0, -1000.0)]
         };
 
         let datasets = vec![
             Dataset::default()
-                // highlight the letter M so the user knows they must press M to toggle it
-                // same with Side fft
                 .marker(symbols::Marker::Braille)
-                .graph_type(GraphType::AreaLine(-100.0))
+                .graph_type(GraphType::Area)
                 .style(mf)
-                .data(mid_fft),
+                .fill_to_y(FFT_LOWER_BOUND)
+                .data(&mid_fft_normalized),
             Dataset::default()
                 .marker(symbols::Marker::Braille)
-                .graph_type(GraphType::AreaLine(-100.0))
+                .graph_type(GraphType::Area)
                 .style(sf)
-                .data(side_fft),
+                .fill_to_y(FFT_LOWER_BOUND)
+                .data(&side_fft_normalized),
         ];
 
         let chart = Chart::new(datasets)
@@ -859,13 +872,14 @@ impl App {
             )
             .y_axis(
                 Axis::default()
-                    .title("dB")
+                    .title("dB (rel)")
                     .labels(vec![
-                        Span::raw(format!("{FFT_LOWER_BOUNDARY}")).style(fg),
-                        Span::raw(format!("{FFT_UPPER_BOUNDARY}")).style(fg),
+                        Span::raw(FFT_LOWER_BOUND.to_string()).style(fg),
+                        Span::raw((FFT_LOWER_BOUND / 2f64).to_string()).style(fg),
+                        Span::raw(FFT_UPPER_BOUND.to_string()).style(fg),
                     ])
                     .style(ax)
-                    .bounds([FFT_LOWER_BOUNDARY as f64, FFT_UPPER_BOUNDARY as f64]),
+                    .bounds([FFT_LOWER_BOUND, FFT_UPPER_BOUND]),
             )
             .style(s);
 
@@ -997,8 +1011,9 @@ impl App {
         let dataset = vec![
             Dataset::default()
                 .marker(symbols::Marker::Braille)
-                .graph_type(GraphType::AreaLine(-50.0))
+                .graph_type(GraphType::Area)
                 .style(ch)
+                .fill_to_y(-50.0)
                 .data(&data),
         ];
         let chart = Chart::new(dataset)
@@ -1197,6 +1212,19 @@ impl App {
                 "Could not create an analyzer for an audio file: {err}"
             ));
         }
+
+        // Calculate gain compensation to normalize track to target LUFS
+        if let Some(integrated_lufs) = self.file_analyzer.calculate_integrated_lufs(
+            // self.audio_file.channels(),
+            2,
+            self.audio_file.samples(),
+        ) {
+            let gain_db = FFT_TARGET_LUFS - integrated_lufs as f32;
+            self.ui.fft_gain_compensation_db = gain_db;
+        } else {
+            self.ui.fft_gain_compensation_db = 0.0;
+        }
+
         self.ui.needs_render = true;
     }
 
@@ -1765,6 +1793,8 @@ impl App {
                 "Could not create an analyzer for an audio file: {err}"
             ));
         }
+
+        self.ui.fft_gain_compensation_db = 0.0;
         Ok(())
     }
 
@@ -1957,6 +1987,7 @@ impl App {
         self.lufs = [-100.; 300];
         self.is_playing_audio = false;
         self.waveform.playhead = 0;
+        self.ui.fft_gain_compensation_db = 0.0;
     }
 
     fn load_theme(&mut self, path: &PathBuf) -> Option<Theme> {
@@ -2095,9 +2126,9 @@ impl App {
         let x = 10f32.powf(log_freq);
 
         // y
-        let y = f32::clamp(y as f32, 0., max_y as f32);
+        let y = (y as f32).clamp(FFT_UPPER_BOUND as f32, max_y as f32);
         let t = y / max_y as f32;
-        let y = FFT_UPPER_BOUNDARY + t * (FFT_LOWER_BOUNDARY - FFT_UPPER_BOUNDARY);
+        let y = -(t * FFT_LOWER_BOUND as f32); // multiply by -1 because otherwise it's -0, and we want it to be just 0
 
         (x, y)
     }

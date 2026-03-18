@@ -85,7 +85,7 @@ impl Analyzer {
         const PINK_NOISE_REF_FREQ: f64 = 1000.;
         // Pink noise compensation: +3 dB/octave to make pink noise appear flat
         // on a logarithmic frequency scale.
-        // Formula: 3 dB/octave = 10 × log₁₀(freq/ref) (not 3 × log₁₀!)
+        // Formula: 3 dB/octave = 10 × log10(freq/ref)
         const PINK_NOISE_SLOPE: f64 = 10.;
 
         // Collect data with pink noise compensation
@@ -96,7 +96,7 @@ impl Analyzer {
                 let freq = freq.val() as f64;
                 let val = val.val() as f64;
 
-                // Apply pink noise compensation (+3 dB/octave)
+                // Apply pink noise compensation
                 let compensation = PINK_NOISE_SLOPE * (freq / PINK_NOISE_REF_FREQ).log10();
                 (freq, val + compensation)
             })
@@ -183,6 +183,20 @@ impl Analyzer {
 
     pub fn sample_rate(&self) -> u32 {
         self.sample_rate
+    }
+
+    pub fn calculate_integrated_lufs(&mut self, channels: u32, samples: &[f32]) -> Option<f64> {
+        let Ok(mut analyzer) = EbuR128::new(channels, self.sample_rate, Mode::all()) else {
+            return None;
+        };
+
+        for chunk in samples.chunks(self.sample_rate as usize * 2) {
+            if analyzer.add_frames_f32(chunk).is_err() {
+                return None;
+            }
+        }
+
+        analyzer.loudness_global().ok()
     }
 }
 
