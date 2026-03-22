@@ -25,14 +25,14 @@ symphonia = { version = "0.5.4" }
 toml = "0.9.6"
 tui-big-text = "0.8.2"
 
-[patch.crates-io]
-ratatui = {path = "../ratatui/ratatui"}
-ratatui-core = {path = "../ratatui/ratatui-core"}
-ratatui-widgets = {path = "../ratatui/ratatui-widgets"}
-ratatui-termwiz = {path = "../ratatui/ratatui-termwiz"}
-ratatui-macros = {path = "../ratatui/ratatui-macros"}
-ratatui-termion = {path = "../ratatui/ratatui-termion"}
-ratatui-crossterm = {path = "../ratatui/ratatui-crossterm"}
+# [patch.crates-io]
+# ratatui = {path = "../ratatui/ratatui"}
+# ratatui-core = {path = "../ratatui/ratatui-core"}
+# ratatui-widgets = {path = "../ratatui/ratatui-widgets"}
+# ratatui-termwiz = {path = "../ratatui/ratatui-termwiz"}
+# ratatui-macros = {path = "../ratatui/ratatui-macros"}
+# ratatui-termion = {path = "../ratatui/ratatui-termion"}
+# ratatui-crossterm = {path = "../ratatui/ratatui-crossterm"}
 
 [profile.release]
 strip = true

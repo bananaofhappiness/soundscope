@@ -7,26 +7,9 @@ use spectrum_analyzer::{
     FrequencyLimit, samples_fft_to_spectrum, scaling::SpectrumDataStats, windows::hann_window,
 };
 
-/// Scaling function to convert FFT magnitude to dBFS (decibels relative to full scale).
-/// This follows the standard approach from <https://dsp.stackexchange.com/questions/32076/fft-to-spectrum-in-decibel>:
-/// 1. Multiply by 2 (for one-sided spectrum)
-/// 2. Divide by sum of window (to compensate for windowing energy loss)
-/// 3. Divide by reference value (1.0 for float audio, 32768 for int16)
-/// 4. Convert to dB: 20 * `log10()`
-/// 5. Apply calibration offset to ensure 0 dBFS sine wave shows as 0 dB
-///
-/// For Hann window, sum(window) ≈ N/2, so the formula becomes:
-/// dB = 20 * log10(val * 2 / (N/2) / 1.0) = 20 * log10(val * 4 / N)
-///
-/// Calibration offset compensates for window function characteristics to ensure
-/// that a full-scale (0 dBFS) sine wave displays at approximately 0 dB on the spectrum.
+// Approach from <https://dsp.stackexchange.com/questions/32076/fft-to-spectrum-in-decibel>:
 fn scale_to_dbfs(val: f32, stats: &SpectrumDataStats) -> f32 {
-    // Reference value for float audio (full scale = 1.0)
     const REFERENCE_DBFS: f32 = 1.0;
-
-    // Calibration offset to compensate for Hann window and ensure accurate dBFS reading.
-    // This value was determined empirically by testing with a 0 dBFS sine wave.
-    const CALIBRATION_OFFSET_DB: f32 = 0.0;
 
     // stats.n is the length of the FFT window (N)
     let n = stats.n;
@@ -39,7 +22,7 @@ fn scale_to_dbfs(val: f32, stats: &SpectrumDataStats) -> f32 {
         -150.0
     } else {
         let scaled = val * 4.0 / n;
-        20.0 * (scaled / REFERENCE_DBFS).log10() + CALIBRATION_OFFSET_DB
+        20.0 * (scaled / REFERENCE_DBFS).log10()
     }
 }
 
@@ -96,7 +79,6 @@ impl Analyzer {
                 let freq = freq.val() as f64;
                 let val = val.val() as f64;
 
-                // Apply pink noise compensation
                 let compensation = PINK_NOISE_SLOPE * (freq / PINK_NOISE_REF_FREQ).log10();
                 (freq, val + compensation)
             })

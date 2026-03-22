@@ -823,15 +823,23 @@ impl App {
         let datasets = vec![
             Dataset::default()
                 .marker(symbols::Marker::Braille)
-                .graph_type(GraphType::Area)
+                // GraphType::Area is not part of the ratatui yet,
+                // waiting for my PR to get accepted
+                // https://github.com/ratatui/ratatui/pull/2426
+                // .graph_type(GraphType::Area)
+                .graph_type(GraphType::Line)
                 .style(mf)
-                .fill_to_y(FFT_LOWER_BOUND)
+                // .fill_to_y(FFT_LOWER_BOUND)
                 .data(&mid_fft_normalized),
             Dataset::default()
                 .marker(symbols::Marker::Braille)
-                .graph_type(GraphType::Area)
+                // GraphType::Area is not part of the ratatui yet,
+                // waiting for my PR to get accepted
+                // https://github.com/ratatui/ratatui/pull/2426
+                // .graph_type(GraphType::Area)
+                .graph_type(GraphType::Line)
                 .style(sf)
-                .fill_to_y(FFT_LOWER_BOUND)
+                // .fill_to_y(FFT_LOWER_BOUND)
                 .data(&side_fft_normalized),
         ];
 
@@ -1011,9 +1019,13 @@ impl App {
         let dataset = vec![
             Dataset::default()
                 .marker(symbols::Marker::Braille)
-                .graph_type(GraphType::Area)
+                // GraphType::Area is not part of the ratatui yet,
+                // waiting for my PR to get accepted
+                // https://github.com/ratatui/ratatui/pull/2426
+                // .graph_type(GraphType::Area)
+                .graph_type(GraphType::Line)
                 .style(ch)
-                .fill_to_y(-50.0)
+                // .fill_to_y(-50.0)
                 .data(&data),
         ];
         let chart = Chart::new(dataset)
