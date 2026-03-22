@@ -5,7 +5,7 @@ Soundscope is a crossplatform CLI tool for analyzing audio files.
 ---
 ## ✨ Features
 - 🎤 Analysis of both **audio files** and **microphone input** in **real-time**.
-- 📊 **FFT Spectrum** — view the frequency distribution.
+- 📊 **Frequency Spectrum** — view the frequency distribution.
 - 📉 **Waveform Display** — see the amplitude over time with Min-Max Decimation algorithm.
 - 🔊 **LUFS Metering and True Peak** — measure loudness precisely.
 - 🎨 **Customizable Theme** — change the color scheme to your liking.
@@ -165,19 +165,11 @@ After saving your theme into `.theme` file and placing it into `{YOUR_CONFIG_DIR
 ---
 ## 🐛 Known Issues
 
-**Note:** In some audio file formats (particularly `.m4a`, `.mp3`), the playhead may gradually drift slightly to the right of the waveform center over time. This is a known behavior in the [Symphonia](https://github.com/pdeljanov/Symphonia) library for formats that are not gapless. This does not affect the visualization itself.
+- **Note:** The frequency spectrum visualization may appear noisy in this release. This will be improved in a future version once [ratatui#2426](https://github.com/ratatui/ratatui/pull/2426) is merged, which adds a filled-area chart rendering mode that will fill the area under the curve.
 
 Other known issues:
 - Rapidly seeking through an audio file may cause lag, resulting in the playhead being in an incorrect position. Pausing playback and waiting for the playhead to return to the correct spot before resuming usually resolves the issue.
-
----
-## 🛣 Roadmap
-- [x] Microphone input. ([v1.1.0](https://github.com/bananaofhappiness/soundscope/releases/tag/v1.1.0), 2025-09-09)
-- [x] Zooming the Waveform in and out. ([v1.4.0](https://github.com/bananaofhappiness/soundscope/releases/tag/v1.4.0), 2025-10-06)
-- [x] Custom themes support. ([v1.2.0](https://github.com/bananaofhappiness/soundscope/releases/tag/v1.2.0), 2025-19-09)
-- [x] Frequency and amplitude details on hover over the FFT chart. ([v1.5.0](https://github.com/bananaofhappiness/soundscope/releases/tag/v1.5.0), 2025-12-15)
-- [x] Command-line argument support for opening audio files directly. ([v1.6.0](https://github.com/bananaofhappiness/soundscope/releases/tag/v1.6.0), 2026-01-24)
-- [ ] Real-time compression with the ability to see applied changes in the waveform in real-time.
+- In some audio file formats, the playhead may gradually drift slightly to the right of the waveform center over time.
 
 ---
 ## 🤝 Contributing
