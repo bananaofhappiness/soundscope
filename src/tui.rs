@@ -25,10 +25,11 @@ use ratatui_explorer::{FileExplorer, FileExplorerBuilder};
 use ringbuffer::{AllocRingBuffer, RingBuffer};
 use rodio::Source;
 use serde::Deserialize;
+use std::path::Path;
 use std::{
     fmt::Display,
     fs::{self, File},
-    io::{Read, Write},
+    io::Read,
     path::PathBuf,
     sync::{Arc, Mutex},
     time::{Duration, Instant},
@@ -37,13 +38,13 @@ use std::{
 pub type RBuffer = Arc<Mutex<AllocRingBuffer<f32>>>;
 
 /// Files with extensions listed here will be shown in the explorer
-const SUPPORTED_FORMATS: [&str; 21] = [
+const SUPPORTED_FORMATS: [&str; 22] = [
     "wav", "wave", "aiff", "aif", "flac", // Uncompressed / Lossless
     "mp3", "mp2", "mp1", "mpa", "aac", // MPEG Audio
     "m4a", "m4b", "mp4", "m4r", "m4p", // MP4 / M4A Family (AAC / ALAC)
     "ogg", "oga", "ogv", // OGG Family
-    "caf", "alac",  // Apple formats
-    "theme", // Theme file
+    "caf", "alac", // Apple formats
+    "theme", "toml", // Theme file
 ];
 
 const FFT_TARGET_LUFS: f32 = -13.0;
@@ -132,7 +133,7 @@ impl Display for Mode {
     }
 }
 
-/// Defines theme using .theme file
+/// Defines theme using .toml file
 /// Otherwise, uses default values.
 #[derive(Deserialize, Default)]
 pub struct Theme {
@@ -162,7 +163,7 @@ fn fill<T>(field: &mut Option<T>, default: T) {
 }
 
 impl Theme {
-    /// Sets `self.global.foreground` and `self.global.background` for every field that was not defined in a .theme file.
+    /// Sets `self.global.foreground` and `self.global.background` for every field that was not defined in a theme file.
     pub fn apply_global_as_default(&mut self) {
         let fg = self.global.foreground;
         let bg = self.global.background;
@@ -1242,10 +1243,18 @@ impl App {
 
     /// The main loop
     fn run(mut self, mut terminal: DefaultTerminal, startup_file: Option<PathBuf>) -> Result<()> {
-        // apply theme
-        // check if config directory exists
-        if let Some(path) = config_dir() {
-            self.apply_current_theme(path);
+        // apply current theme if current_theme file exists
+        // if it doesn't, don't create a config dir, as it used to be before.
+        if let Some(mut path) = config_dir() {
+            path.push("soundscope");
+            let current_theme_file = path.join("current_theme");
+            if current_theme_file.exists() {
+                self.apply_current_theme(&path, &current_theme_file);
+            } else {
+                let mut theme = Theme::default();
+                theme.apply_global_as_default();
+                self.set_theme(theme);
+            }
         } else {
             self.handle_error("Config directory does not exist. Could not load theme.".to_string());
             let mut theme = Theme::default();
@@ -1565,7 +1574,9 @@ impl App {
                 let file = self.explorer.current();
                 let file_path = self.explorer.current().path.clone();
                 if file.is_file() {
-                    if file_path.extension().unwrap() == "theme" {
+                    if file_path.extension().unwrap() == "theme"
+                        || file_path.extension().unwrap() == "toml"
+                    {
                         self.apply_theme_file(&file_path);
                     } else {
                         self.select_audio_file(file_path);
@@ -1819,15 +1830,16 @@ impl App {
             theme.apply_global_as_default();
             self.set_theme(theme);
 
-            // Save theme choice to .current_theme file
+            // Save theme choice to current_theme file
             if let Some(mut config_path) = config_dir() {
                 config_path.push("soundscope");
-                if let Err(_err) = std::fs::create_dir_all(&config_path) {
-                    self.handle_error(
-                        "Error creating a config path. Make sure it exists.".to_owned(),
-                    );
+                if let Err(err) = fs::create_dir_all(&config_path) {
+                    self.handle_error(format!(
+                        "Error saving a theme. Make sure ~/.config/soundscope exists: {err}"
+                    ));
+                    return;
                 }
-                let current_theme_file = config_path.join(".current_theme");
+                let current_theme_file = config_path.join("current_theme");
                 if let Err(err) = fs::write(&current_theme_file, "DEFAULT") {
                     self.handle_error(format!("Error saving theme choice: {err}"));
                 }
@@ -1841,6 +1853,12 @@ impl App {
         if index == themes.len() + 1 {
             // Open explorer for custom theme selection
             if let Some(config_path) = config_dir() {
+                if !config_path.join("soundscope").exists() {
+                    self.handle_error(
+                        "Config directory not found. Create ~/.config/soundscope and place {name}.toml files in it to use custom themes.".to_owned(),
+                    );
+                    return;
+                }
                 self.ui.show_explorer = true;
                 self.explorer
                     .set_cwd(config_path.join("soundscope"))
@@ -1856,10 +1874,24 @@ impl App {
             theme.apply_global_as_default();
             self.set_theme(theme);
 
-            // Save theme choice to .current_theme file
+            // Save theme choice to current_theme file
             if let Some(mut config_path) = config_dir() {
                 config_path.push("soundscope");
-                let current_theme_file = config_path.join(".current_theme");
+                if let Err(err) = fs::create_dir_all(&config_path) {
+                    self.handle_error(format!(
+                        "Error saving a theme. Make sure ~/.config/soundscope exists: {err}"
+                    ));
+                    return;
+                }
+                let current_theme_file = config_path.join("current_theme");
+                if !current_theme_file.exists()
+                    && let Err(err) = File::create(&current_theme_file)
+                {
+                    self.handle_error(format!(
+                        "Error saving a theme. Make sure ~/.config/soundscope exists: {err}"
+                    ));
+                    return;
+                }
                 // Save as "builtin:theme_name" format
                 let theme_identifier = format!("builtin:{theme_name}");
                 if let Err(err) = fs::write(&current_theme_file, &theme_identifier) {
@@ -2004,20 +2036,20 @@ impl App {
 
     fn load_theme(&mut self, path: &PathBuf) -> Option<Theme> {
         let name = path.file_name().unwrap().to_string_lossy().to_string();
-        let current_theme = config_dir().unwrap().join("soundscope/.current_theme");
+        let current_theme = config_dir().unwrap().join("soundscope/current_theme");
         if let Err(err) = fs::write(&current_theme, &name) {
             self.handle_error(format!("Error saving chosen theme: {err}"));
         }
         let mut file = match File::open(path) {
             Ok(file) => file,
             Err(err) => {
-                self.handle_error(format!("Error reading {name}.theme: {err}"));
+                self.handle_error(format!("Error reading {name}: {err}"));
                 return None;
             }
         };
         let mut contents = String::new();
         if let Err(err) = file.read_to_string(&mut contents) {
-            self.handle_error(format!("Error reading {name}.theme: {err}"));
+            self.handle_error(format!("Error reading {name}: {err}"));
             return None;
         }
         if contents == "DEFAULT" {
@@ -2029,82 +2061,66 @@ impl App {
                 if let Err(err) = fs::write(&current_theme, "DEFAULT") {
                     self.handle_error(format!("Error setting theme to DEFAULT: {err}"));
                 }
-                self.handle_error(format!("Error reading {name}.theme: {err}"));
+                self.handle_error(format!("Error reading {name}: {err}"));
                 return None;
             }
         };
         Some(theme)
     }
 
-    /// Called at startup to apply the current theme from a `.current_theme` file if it exists
-    fn apply_current_theme(&mut self, mut path: PathBuf) {
-        // if .config/soundscope does not exist, create it
-        path.push("soundscope");
-        if let Err(_err) = std::fs::create_dir_all(&path) {
-            self.handle_error("Error creating a config path. Make sure it exists.".to_owned());
-        }
-        let current_theme_file = path.join(".current_theme");
-        if current_theme_file.exists() {
-            // read contents of current_theme file
-            // this is the name of the theme {name}.theme or "builtin:theme_name"
-            match std::fs::read_to_string(&current_theme_file) {
-                Ok(theme_file) => {
-                    if theme_file == "DEFAULT" {
+    /// Called at startup to apply the current theme from a `current_theme` file if it exists
+    fn apply_current_theme(&mut self, path: &Path, current_theme_file: &Path) {
+        // read contents of current_theme file
+        // this is the name of the theme {name}.toml or "builtin:theme_name"
+        match fs::read_to_string(current_theme_file) {
+            Ok(theme_file) => {
+                if theme_file == "DEFAULT" {
+                    let mut theme = Theme::default();
+                    theme.apply_global_as_default();
+                    self.set_theme(theme);
+                } else if theme_file.starts_with("builtin:") {
+                    // Load builtin theme
+                    let theme_name = theme_file.strip_prefix("builtin:").unwrap();
+                    if let Some(mut theme) = builtin_themes::get_by_name(theme_name) {
+                        theme.apply_global_as_default();
+                        self.set_theme(theme);
+                    } else {
+                        self.handle_error(format!(
+                            "Builtin theme '{theme_name}' not found. Applying default theme."
+                        ));
                         let mut theme = Theme::default();
                         theme.apply_global_as_default();
                         self.set_theme(theme);
-                    } else if theme_file.starts_with("builtin:") {
-                        // Load builtin theme
-                        let theme_name = theme_file.strip_prefix("builtin:").unwrap();
-                        if let Some(mut theme) = builtin_themes::get_by_name(theme_name) {
-                            theme.apply_global_as_default();
-                            self.set_theme(theme);
-                        } else {
-                            self.handle_error(format!(
-                                "Builtin theme '{theme_name}' not found. Applying default theme."
-                            ));
-                            let mut theme = Theme::default();
-                            theme.apply_global_as_default();
-                            self.set_theme(theme);
-                        }
+                    }
+                } else {
+                    let theme_file = path.join(&theme_file);
+                    let mut theme = if theme_file.exists() {
+                        self.load_theme(&theme_file).unwrap_or_default()
                     } else {
-                        let theme_file = path.join(&theme_file);
-                        let mut theme = if theme_file.exists() {
-                            self.load_theme(&theme_file).unwrap_or_default()
-                        } else {
-                            self.handle_error(format!(
-                                "Theme file {} not found. Applying default theme.",
-                                theme_file.display()
-                            ));
-                            if let Err(err) = fs::write(&current_theme_file, "DEFAULT") {
-                                self.handle_error(format!("Error setting theme to DEFAULT: {err}"));
-                            }
-                            Theme::default()
-                        };
-                        theme.apply_global_as_default();
-                        self.set_theme(theme);
-                    }
-                }
-                Err(err) => {
-                    self.handle_error(format!(
-                        "Error reading .current_theme file {err}. Applying default theme."
-                    ));
-                    if let Err(err) = fs::write(&current_theme_file, "DEFAULT") {
-                        self.handle_error(format!("Error setting theme to DEFAULT: {err}"));
-                    }
-                    let mut theme = Theme::default();
+                        self.handle_error(format!(
+                            "Theme file {} not found. Applying default theme.",
+                            theme_file.display()
+                        ));
+                        if let Err(err) = fs::write(current_theme_file, "DEFAULT") {
+                            self.handle_error(format!("Error setting theme to DEFAULT: {err}"));
+                        }
+                        Theme::default()
+                    };
                     theme.apply_global_as_default();
                     self.set_theme(theme);
                 }
             }
-        } else {
-            File::create(path.join(".current_theme"))
-                .unwrap()
-                .write_all(b"DEFAULT")
-                .unwrap();
-            let mut theme = Theme::default();
-            theme.apply_global_as_default();
-            self.set_theme(theme);
+            Err(err) => {
+                self.handle_error(format!(
+                    "Error reading current_theme file {err}. Applying default theme."
+                ));
+                if let Err(err) = fs::write(current_theme_file, "DEFAULT") {
+                    self.handle_error(format!("Error setting theme to DEFAULT: {err}"));
+                }
+                let mut theme = Theme::default();
+                theme.apply_global_as_default();
+                self.set_theme(theme);
+            }
         }
     }
 

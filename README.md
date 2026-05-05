@@ -60,7 +60,7 @@ Soundscope comes with several pre-built themes that you can use directly without
 Press `t` in the application to open the theme selection list and choose any of these built-in themes.
 
 ### Creating a custom theme
-The theme is set in `.theme` file which must be placed in `{YOUR_CONFIG_DIRECTORY}/soundscope` directory. Under the hood it is a simple `.toml` file. Here is an example theme (which is default for the app) containing all possible variables:
+The theme is set in `.toml` file which must be placed in `{YOUR_CONFIG_DIRECTORY}/soundscope` directory. Here is an example theme (which is default for the app) containing all possible variables:
 ```toml
 [global]
 background = "Black"
@@ -72,7 +72,7 @@ foreground = "221" # It is an ANSI-256 value for LightGoldenrod2 color. See http
 # that pressing L will open the LUFS meter
 highlight = "160" # Red3 color. Note that it can also be written as "#d70000"
 
-# For simplicity yellow color in this example is written as "Yellow" instead of "221", and light red is written as "LightRed" instead of "160". But default color scheme uses LightGoldenrod2 for foreground and Red3 for highlight.
+# For simplicity yellow color in this example is written as "Yellow" instead of "221", and light red is written as "LightRed" instead of "160". But default color scheme uses LightGoldenrod2 (221) for foreground and Red3 (160) for highlight.
 [waveform]
 borders = "Yellow"
 waveform = "Yellow"
@@ -160,7 +160,7 @@ Only global foreground and global background colors are mandatory. You can pass 
 
 Color separators `-`, `_`, and ` ` are supported and names are case insensitive. For example, `Light-blue` or `light_blue` or `light Blue` are all valid.
 
-After saving your theme into `.theme` file and placing it into `{YOUR_CONFIG_DIRECTORY}/soundscope`, press `t` to open up the theme selection list and choose yours.
+After saving your theme into `.toml` file and placing it into `{YOUR_CONFIG_DIRECTORY}/soundscope`, press `t` to open up the theme selection list and choose yours.
 
 ---
 ## 🐛 Known Issues
@@ -169,7 +169,8 @@ After saving your theme into `.theme` file and placing it into `{YOUR_CONFIG_DIR
 
 Other known issues:
 - Rapidly seeking through an audio file may cause lag, resulting in the playhead being in an incorrect position. Pausing playback and waiting for the playhead to return to the correct spot before resuming usually resolves the issue.
-- In some audio file formats, the playhead may gradually drift slightly to the right of the waveform center over time.
+- In some audio files the playhead may gradually drift slightly to the right of the waveform center over time.
+- Some files with high sample rate play back normally, but real-time visualization (waveform, spectrum, LUFS) lags significantly behind. For example, this occurs with `.wav` files with a sample rate > 48000, while `.mp3` files at 92000 play without noticeable lag.
 
 ---
 ## 🤝 Contributing
