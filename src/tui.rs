@@ -1270,9 +1270,7 @@ impl App {
         // blocking audio file receiver
         // blocking to ensure that audio file is loaded
         // before we render TUI, so that waveform is rendered correctly
-        if let Some(f) = startup_file
-            && f.is_file()
-        {
+        if let Some(f) = startup_file {
             self.select_audio_file(f);
             terminal.draw(|f| self.draw(f))?;
         }
