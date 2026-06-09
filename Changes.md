@@ -7,6 +7,7 @@ All notable changes to this project will be documented in this file.
 
 ### Fixes
 - **Fixed** freeze when directory passed as argument. Set it as the current working directory.
+- **Fixed** FFT scaling, set range to -100..-18 dBFS
 
 ### Changes
 - Use a filled-area chart rendering mode for the spectrum analyzer and LUFS. Now they look better and the spectrum analyzer doesn't appear noisy.
