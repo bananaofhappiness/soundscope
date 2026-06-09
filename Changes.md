@@ -5,6 +5,9 @@ All notable changes to this project will be documented in this file.
 ---
 ## [1.9.2] - 2026-06-09
 
+### Fixes
+- **Fixed** programm freezing after providing a directory as an argument.
+
 ### Changes
 - Use a filled-area chart rendering mode for the spectrum analyzer and LUFS. Now they look better and the spectrum analyzer doesn't appear noisy.
 
