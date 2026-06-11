@@ -49,15 +49,20 @@ fn main() -> Result<()> {
     // just a place holder audio_file to initialize app
     let audio_file = AudioFile::new(playback_position_tx);
 
-    let mut startup_file = args.get(1).map(PathBuf::from);
-    if let Some(f) = startup_file {
-        let current_working_dir = env::current_dir()?;
-        startup_file = Some(f.canonicalize()?);
-        env::set_current_dir(
-            f.parent()
-                .filter(|&s| s.to_str().unwrap() != "")
-                .unwrap_or(&current_working_dir),
-        )?;
+    let mut startup_file = None;
+    let startup_path = args.get(1).map(PathBuf::from);
+    if let Some(f) = startup_path {
+        if f.is_file() {
+            let current_working_dir = env::current_dir()?;
+            startup_file = Some(f.canonicalize()?);
+            env::set_current_dir(
+                f.parent()
+                    .filter(|&s| s.to_str().unwrap() != "")
+                    .unwrap_or(&current_working_dir),
+            )?;
+        } else if f.is_dir() {
+            env::set_current_dir(f)?;
+        }
     }
 
     let mut buf = AllocRingBuffer::new(44100usize * 30);

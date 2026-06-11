@@ -49,7 +49,7 @@ const SUPPORTED_FORMATS: [&str; 22] = [
 
 const FFT_TARGET_LUFS: f32 = -13.0;
 const FFT_LOWER_BOUND: f64 = -100.0;
-const FFT_UPPER_BOUND: f64 = 0.0;
+const FFT_UPPER_BOUND: f64 = -18.0;
 
 /// Settings like showing/hiding UI elements.
 struct UI {
@@ -824,23 +824,15 @@ impl App {
         let datasets = vec![
             Dataset::default()
                 .marker(symbols::Marker::Braille)
-                // GraphType::Area is not part of the ratatui yet,
-                // waiting for my PR to get accepted
-                // https://github.com/ratatui/ratatui/pull/2426
-                // .graph_type(GraphType::Area)
-                .graph_type(GraphType::Line)
+                .graph_type(GraphType::Area)
                 .style(mf)
-                // .fill_to_y(FFT_LOWER_BOUND)
+                .fill_to_y(FFT_LOWER_BOUND)
                 .data(&mid_fft_normalized),
             Dataset::default()
                 .marker(symbols::Marker::Braille)
-                // GraphType::Area is not part of the ratatui yet,
-                // waiting for my PR to get accepted
-                // https://github.com/ratatui/ratatui/pull/2426
-                // .graph_type(GraphType::Area)
-                .graph_type(GraphType::Line)
+                .graph_type(GraphType::Area)
                 .style(sf)
-                // .fill_to_y(FFT_LOWER_BOUND)
+                .fill_to_y(FFT_LOWER_BOUND)
                 .data(&side_fft_normalized),
         ];
 
@@ -881,10 +873,11 @@ impl App {
             )
             .y_axis(
                 Axis::default()
-                    .title("dB (rel)")
+                    .title("dBFS")
                     .labels(vec![
                         Span::raw(FFT_LOWER_BOUND.to_string()).style(fg),
-                        Span::raw((FFT_LOWER_BOUND / 2f64).to_string()).style(fg),
+                        Span::raw(((FFT_UPPER_BOUND + FFT_LOWER_BOUND) / 2f64).to_string())
+                            .style(fg),
                         Span::raw(FFT_UPPER_BOUND.to_string()).style(fg),
                     ])
                     .style(ax)
@@ -1023,10 +1016,9 @@ impl App {
                 // GraphType::Area is not part of the ratatui yet,
                 // waiting for my PR to get accepted
                 // https://github.com/ratatui/ratatui/pull/2426
-                // .graph_type(GraphType::Area)
-                .graph_type(GraphType::Line)
+                .graph_type(GraphType::Area)
                 .style(ch)
-                // .fill_to_y(-50.0)
+                .fill_to_y(-50.0)
                 .data(&data),
         ];
         let chart = Chart::new(dataset)
@@ -2154,9 +2146,8 @@ impl App {
         let x = 10f32.powf(log_freq);
 
         // y
-        let y = (y as f32).clamp(FFT_UPPER_BOUND as f32, max_y as f32);
-        let t = y / max_y as f32;
-        let y = -(t * FFT_LOWER_BOUND as f32); // multiply by -1 because otherwise it's -0, and we want it to be just 0
+        let t = y as f32 / max_y as f32;
+        let y = FFT_UPPER_BOUND as f32 + t * (FFT_LOWER_BOUND - FFT_UPPER_BOUND) as f32;
 
         (x, y)
     }
