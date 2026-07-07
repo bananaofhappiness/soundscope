@@ -166,7 +166,7 @@ impl AudioFile {
     }
 
     /// Decodes file and returns its [`Samples`], [`SampleRate`] and [`Channels`]
-    fn decode_file(path: &PathBuf) -> Result<(Samples, SampleRate, Channels)> {
+    pub(crate) fn decode_file(path: &PathBuf) -> Result<(Samples, SampleRate, Channels)> {
         // open the media source and create a stream
         let src = std::fs::File::open(path)?;
         let mss = MediaSourceStream::new(Box::new(src), MediaSourceStreamOptions::default());

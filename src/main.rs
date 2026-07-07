@@ -3,9 +3,10 @@ mod audio_capture;
 mod audio_player;
 mod builtin_themes;
 mod tui;
+mod waveform_render;
 use crate::audio_player::{AudioFile, AudioPlayer, PlaybackPosition, PlayerCommand};
 use crossbeam::channel::{bounded, unbounded};
-use eyre::Result;
+use eyre::{Result, eyre};
 use ringbuffer::{AllocRingBuffer, RingBuffer};
 use std::{
     env,
@@ -27,6 +28,12 @@ fn main() -> Result<()> {
     if args.len() > 1 && (args[1] == "-v" || args[1] == "--version") {
         println!("soundscope {}", env!("CARGO_PKG_VERSION"));
         return Ok(());
+    }
+
+    // Handle one-shot, non-interactive waveform mode. Prints a static waveform
+    // to stdout and exits without spawning the TUI or opening an audio device.
+    if args.iter().any(|a| a == "--waveform") {
+        return run_waveform(&args[1..]);
     }
 
     #[cfg(target_os = "linux")]
@@ -90,8 +97,50 @@ fn print_help() {
     println!("  [FILE]  Audio file to open on startup");
     println!();
     println!("Options:");
-    println!("  -h, --help     Print help");
-    println!("  -v, --version  Print version");
+    println!("      --waveform     Print a one-shot waveform for FILE to stdout and exit");
+    println!("      --width <N>    Waveform width in columns (default: terminal width)");
+    println!("  -h, --help         Print help");
+    println!("  -v, --version      Print version");
+}
+
+/// Parse `--waveform` mode arguments (the slice after the program name) and
+/// render a one-shot waveform. Errors are returned and surfaced on stderr.
+fn run_waveform(args: &[String]) -> Result<()> {
+    let mut width_override: Option<usize> = None;
+    let mut file: Option<PathBuf> = None;
+
+    let mut i = 0;
+    while i < args.len() {
+        match args[i].as_str() {
+            "--waveform" => {}
+            "--width" => {
+                i += 1;
+                let value = args.get(i).ok_or_else(|| eyre!("--width requires a value"))?;
+                let width: usize = value
+                    .parse()
+                    .map_err(|_| eyre!("--width must be a positive integer, got '{value}'"))?;
+                if width == 0 {
+                    return Err(eyre!("--width must be greater than 0"));
+                }
+                width_override = Some(width);
+            }
+            other if other.starts_with('-') => {
+                return Err(eyre!("unknown option '{other}' (see --help)"));
+            }
+            other => {
+                if file.is_none() {
+                    file = Some(PathBuf::from(other));
+                }
+            }
+        }
+        i += 1;
+    }
+
+    let file = file.ok_or_else(|| eyre!("--waveform requires an audio file path"))?;
+    if !file.is_file() {
+        return Err(eyre!("not an audio file: {}", file.display()));
+    }
+    waveform_render::run(&file, width_override)
 }
 
 // The code below suppresses ALSA error messages
