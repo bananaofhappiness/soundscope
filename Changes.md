@@ -3,6 +3,12 @@
 All notable changes to this project will be documented in this file.
 
 ---
+## [1.10.0] - 2026-07-07
+
+### Features
+- **Added** a one-shot, non-interactive `--waveform` mode: `soundscope --waveform FILE` decodes the file, prints a static single-row waveform with a time axis to stdout, and exits (no TUI). Output is pipe-friendly. Use `--width <columns>` to override the default terminal width.
+
+---
 ## [1.9.2] - 2026-06-09
 
 ### Fixes

@@ -25,17 +25,8 @@ const INDENT: &str = "  ";
 pub fn run(path: &Path, width_override: Option<usize>) -> Result<()> {
     let (samples, sample_rate, channels) = AudioFile::decode_file(&path.to_path_buf())?;
     let mono = downmix_to_mono(&samples, channels.count());
-    let total_secs = if sample_rate > 0 {
-        mono.len() as f64 / sample_rate as f64
-    } else {
-        0.0
-    };
-
     let width = resolve_width(width_override);
-    let peaks = bucket_peaks(&mono, width);
-
-    println!("{INDENT}{}", render_row(&peaks));
-    println!("{INDENT}{}", time_axis(total_secs, width));
+    println!("{}", render(&mono, sample_rate, width));
     Ok(())
 }
 
@@ -141,12 +132,46 @@ pub fn time_axis(total_secs: f64, width: usize) -> String {
     format!("{start}{}{end}", " ".repeat(pad))
 }
 
+/// Assemble the two output lines (block row + time axis), each indented, joined
+/// by a newline. Pure: takes decoded mono samples so it can be tested without
+/// touching the filesystem or a terminal.
+pub fn render(mono: &[f32], sample_rate: u32, width: usize) -> String {
+    let total_secs = if sample_rate > 0 {
+        mono.len() as f64 / sample_rate as f64
+    } else {
+        0.0
+    };
+    let peaks = bucket_peaks(mono, width);
+    format!(
+        "{INDENT}{}\n{INDENT}{}",
+        render_row(&peaks),
+        time_axis(total_secs, width)
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     fn cc(s: &str) -> usize {
         s.chars().count()
+    }
+
+    #[test]
+    fn render_composes_indented_row_and_axis() {
+        // 8 full-scale samples at 8 Hz == 1.0s; 4 columns.
+        let out = render(&vec![1.0f32; 8], 8, 4);
+        let lines: Vec<&str> = out.lines().collect();
+        assert_eq!(lines.len(), 2);
+        assert_eq!(lines[0], "  ████");
+        assert!(lines[1].starts_with("  0:00"));
+        assert!(lines[1].contains("0:01"));
+    }
+
+    #[test]
+    fn render_handles_zero_sample_rate_without_panicking() {
+        let out = render(&[0.5, 0.5], 0, 4);
+        assert_eq!(out.lines().count(), 2);
     }
 
     // --- downmix_to_mono ---

@@ -7,6 +7,7 @@ Soundscope is a crossplatform CLI tool for analyzing audio files.
 - 🎤 Analysis of both **audio files** and **microphone input** in **real-time**.
 - 📊 **Frequency Spectrum** — view the frequency distribution.
 - 📉 **Waveform Display** — see the amplitude over time with Min-Max Decimation algorithm.
+- 🖥️ **One-shot CLI waveform** — print a static waveform for a file straight to the terminal with `--waveform`, no TUI. Pipe-friendly.
 - 🔊 **LUFS Metering and True Peak** — measure loudness precisely.
 - 🎨 **Customizable Theme** — change the color scheme to your liking.
 
@@ -37,6 +38,14 @@ Grab the latest release for your platform from the [**Releases page**](https://g
 - Run the tool using `soundscope` command. You can optionally provide an audio file path to open it directly on startup:
   ```
   soundscope path/to/audio.mp3
+  ```
+- To print a static waveform straight to the terminal (non-interactive) and exit, pass `--waveform`:
+  ```
+  soundscope --waveform path/to/audio.mp3
+  ```
+  The width defaults to your terminal width; override it with `--width <columns>` (handy when piping or redirecting output):
+  ```
+  soundscope --waveform --width 100 path/to/audio.mp3
   ```
 - Press `h`, `?`, or `F1` to view the help popup with all available keyboard shortcuts.
 
