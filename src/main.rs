@@ -106,6 +106,18 @@ fn print_help() {
 /// Parse `--waveform` mode arguments (the slice after the program name) and
 /// render a one-shot waveform. Errors are returned and surfaced on stderr.
 fn run_waveform(args: &[String]) -> Result<()> {
+    let (file, width_override) = parse_waveform_args(args)?;
+    if !file.is_file() {
+        return Err(eyre!("not an audio file: {}", file.display()));
+    }
+    waveform_render::run(&file, width_override)
+}
+
+/// Parse `--waveform` mode arguments (the slice after the program name) into the
+/// target file and an optional width override. Pure: performs no filesystem
+/// access, so it can be unit-tested. Rejects unknown flags and extra positional
+/// arguments rather than silently ignoring them.
+fn parse_waveform_args(args: &[String]) -> Result<(PathBuf, Option<usize>)> {
     let mut width_override: Option<usize> = None;
     let mut file: Option<PathBuf> = None;
 
@@ -130,6 +142,8 @@ fn run_waveform(args: &[String]) -> Result<()> {
             other => {
                 if file.is_none() {
                     file = Some(PathBuf::from(other));
+                } else {
+                    return Err(eyre!("unexpected extra argument '{other}'"));
                 }
             }
         }
@@ -137,10 +151,7 @@ fn run_waveform(args: &[String]) -> Result<()> {
     }
 
     let file = file.ok_or_else(|| eyre!("--waveform requires an audio file path"))?;
-    if !file.is_file() {
-        return Err(eyre!("not an audio file: {}", file.display()));
-    }
-    waveform_render::run(&file, width_override)
+    Ok((file, width_override))
 }
 
 // The code below suppresses ALSA error messages
@@ -159,5 +170,60 @@ extern "C" fn no_errors(_: *const i8, _: i32, _: *const i8, _: i32, _: *const i8
 fn suppress_alsa_messages() {
     unsafe {
         snd_lib_error_set_handler(Some(no_errors));
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn args(v: &[&str]) -> Vec<String> {
+        v.iter().map(|s| s.to_string()).collect()
+    }
+
+    #[test]
+    fn parses_file_only() {
+        let (file, width) = parse_waveform_args(&args(&["--waveform", "song.mp3"])).unwrap();
+        assert_eq!(file, PathBuf::from("song.mp3"));
+        assert_eq!(width, None);
+    }
+
+    #[test]
+    fn parses_width_override_in_any_order() {
+        let (file, width) =
+            parse_waveform_args(&args(&["--waveform", "--width", "120", "song.mp3"])).unwrap();
+        assert_eq!(file, PathBuf::from("song.mp3"));
+        assert_eq!(width, Some(120));
+    }
+
+    #[test]
+    fn rejects_extra_positional_argument() {
+        let err = parse_waveform_args(&args(&["--waveform", "a.mp3", "b.mp3"])).unwrap_err();
+        assert!(err.to_string().contains("extra argument"));
+    }
+
+    #[test]
+    fn rejects_missing_file() {
+        assert!(parse_waveform_args(&args(&["--waveform"])).is_err());
+    }
+
+    #[test]
+    fn rejects_zero_width() {
+        assert!(parse_waveform_args(&args(&["--waveform", "--width", "0", "a.mp3"])).is_err());
+    }
+
+    #[test]
+    fn rejects_non_numeric_width() {
+        assert!(parse_waveform_args(&args(&["--waveform", "--width", "abc", "a.mp3"])).is_err());
+    }
+
+    #[test]
+    fn rejects_width_without_value() {
+        assert!(parse_waveform_args(&args(&["--waveform", "--width"])).is_err());
+    }
+
+    #[test]
+    fn rejects_unknown_option() {
+        assert!(parse_waveform_args(&args(&["--waveform", "--bogus", "a.mp3"])).is_err());
     }
 }
