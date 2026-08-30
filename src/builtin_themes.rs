@@ -2,7 +2,7 @@
 //!
 //! This module contains pre-defined themes for popular color schemes.
 
-use crate::tui::{GlobalTheme, Theme};
+use crate::tui::theme::{GlobalTheme, Theme};
 use ratatui::style::Color;
 
 #[inline]
@@ -22,6 +22,7 @@ macro_rules! builtin_themes {
                 ..Default::default()
             };
             theme.apply_global_as_default();
+            // panic!("{theme:?}");
             theme
         })+
 

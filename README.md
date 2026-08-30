@@ -165,9 +165,6 @@ After saving your theme into `.toml` file and placing it into `{YOUR_CONFIG_DIRE
 ---
 ## 🐛 Known Issues
 
-- **Note:** The frequency spectrum visualization may appear noisy in this release. This will be improved in a future version once [ratatui#2426](https://github.com/ratatui/ratatui/pull/2426) is merged, which adds a filled-area chart rendering mode that will fill the area under the curve.
-
-Other known issues:
 - Rapidly seeking through an audio file may cause lag, resulting in the playhead being in an incorrect position. Pausing playback and waiting for the playhead to return to the correct spot before resuming usually resolves the issue.
 - In some audio files the playhead may gradually drift slightly to the right of the waveform center over time.
 - Some files with high sample rate play back normally, but real-time visualization (waveform, spectrum, LUFS) lags significantly behind. For example, this occurs with `.wav` files with a sample rate > 48000, while `.mp3` files at 92000 play without noticeable lag.
