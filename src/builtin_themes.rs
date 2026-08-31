@@ -22,7 +22,6 @@ macro_rules! builtin_themes {
                 ..Default::default()
             };
             theme.apply_global_as_default();
-            // panic!("{theme:?}");
             theme
         })+
 

@@ -7,7 +7,7 @@ use serde::Deserialize;
 pub struct Theme {
     pub global: GlobalTheme,
     pub waveform: WaveformTheme,
-    pub fft: FftTheme,
+    pub spectrum: SpectrumTheme,
     pub lufs: LufsTheme,
     pub devices: DeviceListTheme,
     pub explorer: ExplorerTheme,
@@ -62,13 +62,13 @@ impl Theme {
             highlight <- hl,
         );
 
-        fill_fields!(self.fft.
+        fill_fields!(self.spectrum.
             axes <- fg,
             axes_labels <- fg,
             borders <- fg,
             labels <- fg,
-            mid_fft <- fg,
-            side_fft <- hl,
+            mid_freq <- fg,
+            side_freq <- hl,
             background <- bg,
             highlight <- hl,
         );
@@ -144,16 +144,16 @@ pub struct WaveformTheme {
     pub highlight: Option<Color>,
 }
 
-/// Used to define the theme for the FFT display.
+/// Used to define the theme for the Spectrum display.
 #[derive(Debug, Deserialize, Default)]
-pub struct FftTheme {
+pub struct SpectrumTheme {
     pub borders: Option<Color>,
     /// Frequencies and LUFS tabs text
     pub labels: Option<Color>,
     pub axes: Option<Color>,
     pub axes_labels: Option<Color>,
-    pub mid_fft: Option<Color>,
-    pub side_fft: Option<Color>,
+    pub mid_freq: Option<Color>,
+    pub side_freq: Option<Color>,
     /// Background of the chart
     pub background: Option<Color>,
     pub highlight: Option<Color>,
@@ -228,7 +228,7 @@ fn test_fill_macro() {
     let mut theme = Theme {
         global: GlobalTheme::default(),
         waveform: WaveformTheme::default(),
-        fft: FftTheme::default(),
+        spectrum: SpectrumTheme::default(),
         lufs: LufsTheme::default(),
         devices: DeviceListTheme::default(),
         explorer: ExplorerTheme::default(),
@@ -238,9 +238,9 @@ fn test_fill_macro() {
     theme.global.foreground = Color::LightCyan;
     theme.global.background = Color::Magenta;
 
-    theme.fft.mid_fft = None;
-    theme.fft.side_fft = None;
-    theme.fft.labels = None;
+    theme.spectrum.mid_freq = None;
+    theme.spectrum.side_freq = None;
+    theme.spectrum.labels = None;
 
     theme.waveform.playhead = None;
     theme.waveform.highlight = None;
@@ -254,9 +254,9 @@ fn test_fill_macro() {
     theme.explorer.item_foreground = None;
 
     theme.apply_global_as_default();
-    assert!(theme.fft.mid_fft == Some(Color::LightCyan));
-    assert!(theme.fft.side_fft == Some(Color::Indexed(160)));
-    assert!(theme.fft.labels == Some(Color::LightCyan));
+    assert!(theme.spectrum.mid_freq == Some(Color::LightCyan));
+    assert!(theme.spectrum.side_freq == Some(Color::Indexed(160)));
+    assert!(theme.spectrum.labels == Some(Color::LightCyan));
 
     assert!(theme.waveform.playhead == Some(Color::Indexed(160)));
     assert!(theme.waveform.highlight == Some(Color::Indexed(160)));
