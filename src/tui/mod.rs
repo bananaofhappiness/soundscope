@@ -5,7 +5,10 @@ use crate::{
     audio_capture::{self, AudioDevice, list_input_devs},
     audio_player::{self, AudioFile, PlayerCommand},
     builtin_themes,
-    tui::spectrum::{SPECTRUM_LOWER_BOUND, SPECTRUM_TARGET_DBFS, SPECTRUM_UPPER_BOUND, Spectrum},
+    tui::{
+        lufs::Lufs,
+        spectrum::{SPECTRUM_LOWER_BOUND, SPECTRUM_TARGET_DBFS, SPECTRUM_UPPER_BOUND, Spectrum},
+    },
 };
 use cpal::{Stream, traits::StreamTrait as _};
 use crossbeam::channel::{Receiver, Sender};
@@ -18,8 +21,7 @@ use ratatui::{
     style::{Style, Stylize},
     text::{ToLine, ToSpan},
     widgets::{
-        Axis, Block, BorderType, Cell, Chart, Clear, Dataset, FrameExt, GraphType, List, ListItem,
-        Paragraph, Row, Table, Wrap,
+        Block, BorderType, Cell, Clear, FrameExt, List, ListItem, Paragraph, Row, Table, Wrap,
     },
 };
 use ratatui_explorer::{FileExplorer, FileExplorerBuilder};
@@ -155,9 +157,8 @@ struct App {
     spectrum: Spectrum,
     /// Data used to render waveform.
     waveform: WaveForm,
-    /// LUFS chart.
-    lufs: [f64; 300],
     settings: Settings,
+    lufs: Lufs,
     //UI
     explorer: FileExplorer,
     ui: UI,
@@ -199,7 +200,7 @@ impl App {
             device_analyzer: Analyzer::default(),
             spectrum: Spectrum::default(),
             waveform: WaveForm::default(),
-            lufs: [-100.; 300],
+            lufs: Lufs::default(),
             settings: Settings::default(),
             explorer: FileExplorerBuilder::build_with_theme(
                 ratatui_explorer::Theme::default()
@@ -308,8 +309,15 @@ impl App {
                     self.render_fft_info(f, x, y);
                 }
             }
-            if self.ui.show_lufs {
-                self.render_lufs(f, horizontal_chunks[1]);
+            if self.ui.show_lufs
+                && let Err(err) = self.lufs.render(
+                    f,
+                    horizontal_chunks[1],
+                    &self.ui.theme.lufs,
+                    &mut self.file_analyzer,
+                )
+            {
+                self.handle_error(format!("Error while computing loudness: {err}"));
             }
         }
 
@@ -373,165 +381,6 @@ impl App {
             .lines(vec!["Soundscope".to_line()])
             .build();
         frame.render_widget(big_text, big_text_area);
-    }
-
-    fn render_lufs(&mut self, f: &mut Frame, area: Rect) {
-        let s = Style::default().bg(self.ui.theme.lufs.background.unwrap());
-        let fg = s.fg(self.ui.theme.lufs.foreground.unwrap());
-        let ax = s.fg(self.ui.theme.lufs.axis.unwrap());
-        let hl = s.fg(self.ui.theme.lufs.highlight.unwrap());
-        let bd = s.fg(self.ui.theme.lufs.borders.unwrap());
-        let ch = s.fg(self.ui.theme.lufs.chart.unwrap());
-        let lb = s.fg(self.ui.theme.lufs.labels.unwrap());
-        let nb = s.fg(self.ui.theme.lufs.numbers.unwrap());
-        let layout = Layout::default()
-            .direction(Direction::Horizontal)
-            .constraints([Constraint::Percentage(80), Constraint::Percentage(20)].as_ref())
-            .split(area);
-        let data = self
-            .lufs
-            .iter()
-            .enumerate()
-            .map(|(x, &y)| (x as f64, y))
-            .collect::<Vec<(f64, f64)>>();
-
-        let integrated_lufs = match self.file_analyzer.get_integrated_lufs() {
-            Ok(lufs) => lufs,
-            Err(err) => {
-                self.handle_error(format!("Error getting integrated LUFS: {err}"));
-                0.0
-            }
-        };
-
-        // it should not display `-inf`
-        let integrated_lufs = if integrated_lufs.is_infinite() {
-            -50.0
-        } else {
-            integrated_lufs
-        };
-
-        // text layout
-        let paragraph_layout = Layout::default()
-            .direction(Direction::Vertical)
-            .constraints([
-                Constraint::Ratio(1, 4),
-                Constraint::Ratio(1, 4),
-                Constraint::Ratio(1, 4),
-                Constraint::Ratio(1, 4),
-            ])
-            .split(layout[1]);
-
-        // get lufs text
-        let integrated = format!("{integrated_lufs:05.1}");
-        let short_term = format!("{:05.1}", self.lufs[299]);
-        let integrated_lufs_text = integrated.to_span().style(nb) + " LUFS".to_span();
-        let short_term_lufs_text = short_term.to_span().style(nb) + " LUFS".to_span();
-
-        // get true peak
-        let (tp_left, tp_right) = match self.file_analyzer.get_true_peak() {
-            Ok((tp_left, tp_right)) => (tp_left, tp_right),
-            Err(err) => {
-                self.handle_error(format!("Error getting true peak: {err}"));
-                (0.0, 0.0)
-            }
-        };
-
-        // get true peak text
-        let left = format!("{tp_left:.1}");
-        let right = format!("{tp_right:.1}");
-        let left = left.to_span().style(nb);
-        let right = right.to_span().style(nb);
-        let true_peak_text = vec![
-            "L: ".bold().style(fg) + left + " Db".bold().style(fg),
-            "R: ".bold().style(fg) + right + " Db".bold().style(fg),
-        ];
-
-        //get range text
-        let range = match self.file_analyzer.get_loudness_range() {
-            Ok(range) => range,
-            Err(err) => {
-                self.handle_error(format!("Error getting loudness range: {err}"));
-                0.0
-            }
-        };
-        let range_text = format!("{range:.1} LU");
-
-        // paragraphs
-        let lufs_paragraph = Paragraph::new(short_term_lufs_text)
-            .block(
-                Block::bordered()
-                    .border_type(BorderType::Rounded)
-                    .style(bd)
-                    .title_alignment(Alignment::Center)
-                    .title("Short term".bold()),
-            )
-            .alignment(Alignment::Center);
-        let integrated_paragraph = Paragraph::new(integrated_lufs_text)
-            .block(
-                Block::bordered()
-                    .border_type(BorderType::Rounded)
-                    .style(bd)
-                    .title_alignment(Alignment::Center)
-                    .title("Integrated".bold()),
-            )
-            .alignment(Alignment::Center);
-        let true_peak_paragraph = Paragraph::new(true_peak_text)
-            .block(
-                Block::bordered()
-                    .border_type(BorderType::Rounded)
-                    .style(bd)
-                    .title_alignment(Alignment::Center)
-                    .title("True Peak".bold()),
-            )
-            .alignment(Alignment::Center)
-            .style(bd);
-        let range_paragraph = Paragraph::new(range_text)
-            .block(
-                Block::bordered()
-                    .border_type(BorderType::Rounded)
-                    .style(bd)
-                    .title_alignment(Alignment::Center)
-                    .title("Range".bold()),
-            )
-            .alignment(Alignment::Center)
-            .style(bd);
-
-        // chart section
-        let dataset = vec![
-            Dataset::default()
-                .marker(symbols::Marker::Braille)
-                // GraphType::Area is not part of the ratatui yet,
-                // waiting for my PR to get accepted
-                // https://github.com/ratatui/ratatui/pull/2426
-                .graph_type(GraphType::Area)
-                .style(ch)
-                .fill_to_y(-50.0)
-                .data(&data),
-        ];
-        let chart = Chart::new(dataset)
-            .block(
-                Block::bordered()
-                    .border_type(BorderType::Rounded)
-                    .style(bd)
-                    .title(vec![
-                        "³".to_span().style(hl).bold(),
-                        "lufs".to_span().style(lb).bold(),
-                    ]),
-            )
-            .x_axis(Axis::default().bounds([0., 300.]).style(ax))
-            .y_axis(
-                Axis::default()
-                    .bounds([-50., 0.])
-                    .labels(["-50".bold(), "0".bold()])
-                    .style(ax),
-            )
-            .style(s);
-        f.render_widget(lufs_paragraph, paragraph_layout[0]);
-        f.render_widget(integrated_paragraph, paragraph_layout[1]);
-        f.render_widget(range_paragraph, paragraph_layout[2]);
-        f.render_widget(true_peak_paragraph, paragraph_layout[3]);
-
-        f.render_widget(chart, layout[0]);
     }
 
     fn render_devices_list(&self, f: &mut Frame) {
@@ -951,8 +800,8 @@ impl App {
         let sample_rate = self.device_analyzer.sample_rate() as usize;
 
         // get lufs
-        for i in 0..self.lufs.len() - 1 {
-            self.lufs[i] = self.lufs[i + 1];
+        for i in 0..self.lufs.0.len() - 1 {
+            self.lufs.0[i] = self.lufs.0[i + 1];
         }
 
         let lb = 30 * sample_rate - 2usize.pow(14);
@@ -962,7 +811,7 @@ impl App {
         {
             self.handle_error(format!("Could not get samples for LUFS analyzer: {err}"));
         }
-        self.lufs[299] = match self.device_analyzer.get_shortterm_lufs() {
+        self.lufs.0[299] = match self.device_analyzer.get_shortterm_lufs() {
             Ok(lufs) => lufs,
             Err(err) => {
                 self.handle_error(format!("Error getting short-term LUFS: {err}"));
@@ -1020,8 +869,8 @@ impl App {
         let pos = pos * self.audio_file.channels() as usize;
         let lufs_left_bound = pos.saturating_sub(16384);
         if lufs_left_bound != 0 {
-            for i in 0..self.lufs.len() - 1 {
-                self.lufs[i] = self.lufs[i + 1];
+            for i in 0..self.lufs.0.len() - 1 {
+                self.lufs.0[i] = self.lufs.0[i + 1];
             }
             let samples_len = self.audio_file.data.samples.len();
             // check bounds to prevent panic when file was changed
@@ -1032,7 +881,7 @@ impl App {
                 {
                     self.handle_error(format!("Could not get samples for LUFS analyzer: {err}"));
                 }
-                self.lufs[299] = match self.file_analyzer.get_shortterm_lufs() {
+                self.lufs.0[299] = match self.file_analyzer.get_shortterm_lufs() {
                     Ok(lufs) => lufs,
                     Err(err) => {
                         self.handle_error(format!("Error getting short-term LUFS: {err}"));
@@ -1079,7 +928,7 @@ impl App {
                 self.is_playing_audio = !self.is_playing_audio;
                 // do this so lufs update only on play, not pause
                 if self.is_playing_audio {
-                    self.lufs = [-100.; 300];
+                    self.lufs.0 = [-100.; 300];
                     self.file_analyzer.reset();
                 }
             }
@@ -1091,7 +940,7 @@ impl App {
                         || self.ui.show_themes_list) =>
             {
                 self.waveform.timer.right_arrow = Some(Instant::now());
-                self.lufs = [-100.; 300];
+                self.lufs.0 = [-100.; 300];
                 self.file_analyzer.reset();
                 if let Err(_err) = self.player_command_tx.send(PlayerCommand::MoveRight) {
                     //TODO: log sending error
@@ -1104,7 +953,7 @@ impl App {
                         || self.ui.show_themes_list) =>
             {
                 self.waveform.timer.left_arrow = Some(Instant::now());
-                self.lufs = [-100.; 300];
+                self.lufs.0 = [-100.; 300];
                 self.file_analyzer.reset();
                 if let Err(_err) = self.player_command_tx.send(PlayerCommand::MoveLeft) {
                     //TODO: log sending error
@@ -1510,7 +1359,7 @@ impl App {
     fn reset_charts(&mut self) {
         self.spectrum.mid_freq.clear();
         self.spectrum.side_freq.clear();
-        self.lufs = [-100.; 300];
+        self.lufs.0 = [-100.; 300];
         self.is_playing_audio = false;
         self.waveform.playhead = 0;
         self.spectrum.gain_compensation = 0.0;
