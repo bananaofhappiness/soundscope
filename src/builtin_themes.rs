@@ -39,6 +39,7 @@ macro_rules! builtin_themes {
         }
     };
 }
+
 builtin_themes! {
     ayu_dark,"Ayu Dark", 0x0F1419, 0xE6E1CF, 0xFFB454; // Based on [ayu](https://github.com/dempfi/ayu)
     black_white,"Black & White", 0x000000, 0xFFFFFF, 0x808080; // A minimal monochrome theme with pure black background and white foreground.

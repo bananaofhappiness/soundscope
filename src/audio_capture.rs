@@ -58,9 +58,9 @@ pub fn build_input_stream(
     Ok(stream)
 }
 
-pub fn list_input_devs() -> Vec<(String, Device)> {
+pub fn list_input_devices() -> Vec<(String, Device)> {
     let host = default_host();
-    let mut devs: Vec<(String, Device)> = host
+    let mut devices: Vec<(String, Device)> = host
         .input_devices()
         .unwrap()
         .map(|dev| {
@@ -70,6 +70,6 @@ pub fn list_input_devs() -> Vec<(String, Device)> {
             )
         })
         .collect();
-    devs.sort_by(|(n1, _), (n2, _)| n1.cmp(n2));
-    devs
+    devices.sort_by(|(n1, _), (n2, _)| n1.cmp(n2));
+    devices
 }

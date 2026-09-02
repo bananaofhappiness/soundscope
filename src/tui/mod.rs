@@ -2,9 +2,9 @@
 //! It uses `ratatui` under the hood.
 use crate::{
     analyzer::Analyzer,
-    audio_capture::{self, AudioDevice, list_input_devs},
+    audio_capture::{self, AudioDevice, list_input_devices},
     audio_player::{self, AudioFile, PlayerCommand},
-    builtin_themes,
+    builtin_themes::{self, list_themes},
     tui::{
         lufs::Lufs,
         spectrum::{SPECTRUM_LOWER_BOUND, SPECTRUM_TARGET_DBFS, SPECTRUM_UPPER_BOUND, Spectrum},
@@ -21,7 +21,8 @@ use ratatui::{
     style::{Style, Stylize},
     text::{ToLine, ToSpan},
     widgets::{
-        Block, BorderType, Cell, Clear, FrameExt, List, ListItem, Paragraph, Row, Table, Wrap,
+        Block, BorderType, Cell, Clear, FrameExt, List, ListItem, ListState, Paragraph, Row, Table,
+        Wrap,
     },
 };
 use ratatui_explorer::{FileExplorer, FileExplorerBuilder};
@@ -57,45 +58,59 @@ const SUPPORTED_FORMATS: [&str; 22] = [
     "theme", "toml", // Theme file
 ];
 
+enum PopupState {
+    InExplorer,
+    InDeviceList,
+    InThemesList,
+    InHelpMessage,
+    None,
+}
+
+struct ShowWindow {
+    spectrum: bool,
+    lufs: bool,
+    waveform: bool,
+}
+
+impl Default for ShowWindow {
+    fn default() -> Self {
+        Self {
+            spectrum: true,
+            lufs: true,
+            waveform: true,
+        }
+    }
+}
+
 /// Settings like showing/hiding UI elements.
 struct UI {
     theme: Theme,
-    show_explorer: bool,
-    show_fft_chart: bool,
-    show_devices_list: bool,
-    show_lufs: bool,
-    show_waveform: bool,
-    show_themes_list: bool,
-    show_help_message: bool,
+    show_window: ShowWindow,
+    popup_state: PopupState,
     error_text: String,
     error_timer: Option<Instant>,
-    // Used to be able to hover fft chart to get more precise frequencies
+    /// Used to be able to hover spectrum to get more precise frequencies
     chart_rect: Option<Rect>,
     /// Track if render is needed to avoid unnecessary redraws
     needs_render: bool,
     /// Selected theme index in themes list
-    selected_theme_index: usize,
+    selected_theme: ListState,
     /// Selected device index in devices list
-    selected_device_index: usize,
+    selected_device: ListState,
 }
 
 impl Default for UI {
     fn default() -> Self {
         Self {
             theme: Theme::default(),
-            show_explorer: false,
-            show_fft_chart: true,
-            show_devices_list: false,
-            show_lufs: true,
-            show_waveform: true,
-            show_themes_list: false,
-            show_help_message: false,
+            popup_state: PopupState::None,
+            show_window: ShowWindow::default(),
             error_text: String::new(),
             error_timer: None,
             chart_rect: None,
             needs_render: true,
-            selected_theme_index: 0,
-            selected_device_index: 0,
+            selected_theme: ListState::default().with_selected(Some(0)),
+            selected_device: ListState::default().with_selected(Some(0)),
         }
     }
 }
@@ -244,8 +259,8 @@ impl App {
         f.render_widget(background, area);
 
         // if we should show top window (waveform)
-        let top_constraint = if self.ui.show_waveform {
-            if self.ui.show_fft_chart || self.ui.show_lufs {
+        let top_constraint = if self.ui.show_window.waveform {
+            if self.ui.show_window.spectrum || self.ui.show_window.lufs {
                 Constraint::Percentage(30)
             } else {
                 Constraint::Percentage(100)
@@ -255,8 +270,8 @@ impl App {
         };
 
         // if we should show bottom windows (spectrum & lufs)
-        let bottom_constraint = if self.ui.show_fft_chart || self.ui.show_lufs {
-            if self.ui.show_waveform {
+        let bottom_constraint = if self.ui.show_window.spectrum || self.ui.show_window.lufs {
+            if self.ui.show_window.waveform {
                 Constraint::Percentage(70)
             } else {
                 Constraint::Percentage(100)
@@ -271,7 +286,7 @@ impl App {
             .constraints([top_constraint, bottom_constraint])
             .split(area);
 
-        if self.ui.show_waveform {
+        if self.ui.show_window.waveform {
             self.waveform.render(
                 f,
                 vertical_chunks[0],
@@ -282,15 +297,15 @@ impl App {
         }
 
         // draw bottom windows
-        if self.ui.show_fft_chart || self.ui.show_lufs {
+        if self.ui.show_window.spectrum || self.ui.show_window.lufs {
             // if we should split bottom part to lufs and fft
             // or fill the bottom part with only 1 of them
-            let left_constraint = if self.ui.show_fft_chart {
+            let left_constraint = if self.ui.show_window.spectrum {
                 Constraint::Min(0)
             } else {
                 Constraint::Length(0)
             };
-            let right_constraint = if self.ui.show_lufs {
+            let right_constraint = if self.ui.show_window.lufs {
                 Constraint::Min(0)
             } else {
                 Constraint::Length(0)
@@ -301,7 +316,7 @@ impl App {
                 .constraints([left_constraint, right_constraint])
                 .split(vertical_chunks[1]);
 
-            if self.ui.show_fft_chart {
+            if self.ui.show_window.spectrum {
                 self.ui.chart_rect = Some(horizontal_chunks[0]);
                 self.spectrum
                     .render(f, horizontal_chunks[0], &self.ui.theme.spectrum);
@@ -309,7 +324,7 @@ impl App {
                     self.render_fft_info(f, x, y);
                 }
             }
-            if self.ui.show_lufs
+            if self.ui.show_window.lufs
                 && let Err(err) = self.lufs.render(
                     f,
                     horizontal_chunks[1],
@@ -321,7 +336,10 @@ impl App {
             }
         }
 
-        if !(self.ui.show_waveform || self.ui.show_fft_chart || self.ui.show_lufs) {
+        if !(self.ui.show_window.waveform
+            || self.ui.show_window.spectrum
+            || self.ui.show_window.lufs)
+        {
             self.render_empty_window(f, area);
         }
 
@@ -332,20 +350,22 @@ impl App {
         }
         self.render_error_message(f);
 
-        // render explorer
-        if self.ui.show_explorer {
-            let area = Self::get_popup_area_with_percentage(area, 50, 70);
-            f.render_widget(Clear, area);
-            f.render_widget_ref(self.explorer.widget(), area);
-        }
-        if self.ui.show_devices_list {
-            self.render_devices_list(f);
-        }
-        if self.ui.show_themes_list {
-            self.render_themes_list(f);
-        }
-        if self.ui.show_help_message {
-            self.render_help_message(f);
+        match self.ui.popup_state {
+            PopupState::InExplorer => {
+                let area = Self::get_popup_area_with_percentage(area, 50, 70);
+                f.render_widget(Clear, area);
+                f.render_widget_ref(self.explorer.widget(), area);
+            }
+            PopupState::InDeviceList => {
+                self.render_devices_list(f);
+            }
+            PopupState::InThemesList => {
+                self.render_themes_list(f);
+            }
+            PopupState::InHelpMessage => {
+                self.render_help_message(f);
+            }
+            PopupState::None => (),
         }
     }
 
@@ -383,7 +403,7 @@ impl App {
         frame.render_widget(big_text, big_text_area);
     }
 
-    fn render_devices_list(&self, f: &mut Frame) {
+    fn render_devices_list(&mut self, f: &mut Frame) {
         let s = Style::default()
             .fg(self.ui.theme.devices.foreground.unwrap())
             .bg(self.ui.theme.devices.background.unwrap());
@@ -391,14 +411,14 @@ impl App {
         let hl = s.fg(self.ui.theme.devices.highlight.unwrap());
         let area = Self::get_popup_area_with_percentage(f.area(), 20, 30);
         f.render_widget(Clear, area);
-        let devs = list_input_devs();
+        let devs = list_input_devices();
         let list_items: Vec<ListItem> = devs
             .iter()
             .enumerate()
             .map(|(i, (name, _dev))| {
                 let num = format!("[{}]", i + 1);
                 let name = format!(" {name}");
-                let is_selected = i == self.ui.selected_device_index;
+                let is_selected = i == self.ui.selected_device.selected().unwrap_or(0);
 
                 let item_style = if is_selected {
                     hl.bg(self.ui.theme.devices.background.unwrap())
@@ -418,10 +438,10 @@ impl App {
                 .style(bd),
         );
 
-        f.render_widget(list, area);
+        f.render_stateful_widget(list, area, &mut self.ui.selected_device);
     }
 
-    fn render_themes_list(&self, f: &mut Frame) {
+    fn render_themes_list(&mut self, f: &mut Frame) {
         let s = Style::default()
             .fg(self.ui.theme.devices.foreground.unwrap())
             .bg(self.ui.theme.devices.background.unwrap());
@@ -438,7 +458,7 @@ impl App {
             .map(|(i, name)| {
                 let num = format!("[{}]", i + 1);
                 let name = format!(" {name}");
-                let is_selected = i + 1 == self.ui.selected_theme_index;
+                let is_selected = i + 1 == self.ui.selected_theme.selected().unwrap_or(0);
 
                 let item_style = if is_selected {
                     hl.bg(self.ui.theme.devices.background.unwrap())
@@ -455,7 +475,7 @@ impl App {
         // Add Default Theme option at the beginning
         let default_num = "[0]".to_string();
         let default_name = " Default Theme";
-        let is_default_selected = self.ui.selected_theme_index == 0;
+        let is_default_selected = self.ui.selected_theme.selected().unwrap_or(0) == 0;
 
         let default_style = if is_default_selected {
             hl.bg(self.ui.theme.devices.background.unwrap())
@@ -470,7 +490,7 @@ impl App {
         // Add Custom Theme option at the end
         let custom_num = format!("[{}]", themes.len() + 1);
         let custom_name = " Custom Theme";
-        let is_custom_selected = self.ui.selected_theme_index == themes.len() + 1;
+        let is_custom_selected = themes.len() + 1 == self.ui.selected_theme.selected().unwrap_or(0);
 
         let custom_style = if is_custom_selected {
             hl.bg(self.ui.theme.devices.background.unwrap())
@@ -489,7 +509,7 @@ impl App {
                 .style(bd),
         );
 
-        f.render_widget(list, area);
+        f.render_stateful_widget(list, area, &mut self.ui.selected_theme);
     }
 
     fn render_fft_info(&self, f: &mut Frame<'_>, x: u16, y: u16) {
@@ -718,20 +738,16 @@ impl App {
                     }
                 };
 
-                if self.ui.show_explorer {
+                if matches!(self.ui.popup_state, PopupState::InExplorer) {
                     self.explorer.handle(&event)?;
                     self.ui.needs_render = true;
                 }
 
-                // if let Event::Key(key) = event {
                 match event {
                     Event::Key(key) => {
                         // quit (only if not in any popup)
                         if key.code == KeyCode::Char('q')
-                            && !(self.ui.show_themes_list
-                                || self.ui.show_explorer
-                                || self.ui.show_devices_list
-                                || self.ui.show_help_message)
+                            && matches!(self.ui.popup_state, PopupState::None)
                         {
                             self.player_command_tx.send(PlayerCommand::Quit)?;
                             return Ok(());
@@ -895,27 +911,16 @@ impl App {
     fn handle_input(&mut self, key: KeyEvent) {
         match key.code {
             // show explorer
-            KeyCode::Char('e')
-                if matches!(self.settings.mode, Mode::Player) && !self.ui.show_help_message =>
-            {
-                self.explorer.set_cwd(&self.current_directory).unwrap();
-                self.ui.show_explorer = !self.ui.show_explorer;
-            }
-            // select audio file
-            KeyCode::Enter if self.ui.show_explorer => {
-                let file = self.explorer.current();
-                let file_path = self.explorer.current().path.clone();
-                if file.is_file() {
-                    if file_path.extension().unwrap() == "theme"
-                        || file_path.extension().unwrap() == "toml"
-                    {
-                        self.apply_theme_file(&file_path);
-                    } else {
-                        self.select_audio_file(file_path);
+            KeyCode::Char('e') if matches!(self.settings.mode, Mode::Player) => {
+                match self.ui.popup_state {
+                    PopupState::None => {
+                        self.explorer.set_cwd(&self.current_directory).unwrap();
+                        self.ui.popup_state = PopupState::InExplorer;
                     }
+                    PopupState::InExplorer => self.ui.popup_state = PopupState::None,
+                    _ => (),
                 }
             }
-
             // show side fft
             KeyCode::Char('S') => self.spectrum.show_side_freq = !self.spectrum.show_side_freq,
             // show mid fft
@@ -935,9 +940,7 @@ impl App {
             // move playhead right and left
             KeyCode::Right
                 if matches!(self.settings.mode, Mode::Player)
-                    && !(self.ui.show_devices_list
-                        || self.ui.show_explorer
-                        || self.ui.show_themes_list) =>
+                    && matches!(self.ui.popup_state, PopupState::None) =>
             {
                 self.waveform.timer.right_arrow = Some(Instant::now());
                 self.lufs.0 = [-100.; 300];
@@ -948,9 +951,7 @@ impl App {
             }
             KeyCode::Left
                 if matches!(self.settings.mode, Mode::Player)
-                    && !(self.ui.show_devices_list
-                        || self.ui.show_explorer
-                        || self.ui.show_themes_list) =>
+                    && matches!(self.ui.popup_state, PopupState::None) =>
             {
                 self.waveform.timer.left_arrow = Some(Instant::now());
                 self.lufs.0 = [-100.; 300];
@@ -959,17 +960,20 @@ impl App {
                     //TODO: log sending error
                 }
             }
-            KeyCode::Char('1') if !self.ui.show_devices_list && !self.ui.show_themes_list => {
-                self.ui.show_waveform = !self.ui.show_waveform;
+            KeyCode::Char('1') if matches!(self.ui.popup_state, PopupState::None) => {
+                self.ui.show_window.waveform = !self.ui.show_window.waveform;
             }
-            KeyCode::Char('2') if !self.ui.show_devices_list && !self.ui.show_themes_list => {
-                self.ui.show_fft_chart = !self.ui.show_fft_chart;
+            KeyCode::Char('2') if matches!(self.ui.popup_state, PopupState::None) => {
+                self.ui.show_window.spectrum = !self.ui.show_window.spectrum;
             }
-            KeyCode::Char('3') if !self.ui.show_devices_list && !self.ui.show_themes_list => {
-                self.ui.show_lufs = !self.ui.show_lufs;
+            KeyCode::Char('3') if matches!(self.ui.popup_state, PopupState::None) => {
+                self.ui.show_window.lufs = !self.ui.show_window.lufs;
             }
             // Quick selection with numbers 0-9 when themes list is open
-            KeyCode::Char(c) if self.ui.show_themes_list && c.is_ascii_digit() => {
+            KeyCode::Char(c)
+                if matches!(self.ui.popup_state, PopupState::InThemesList)
+                    && c.is_ascii_digit() =>
+            {
                 let index = (c as usize) - ('0' as usize);
                 self.select_theme(index);
             }
@@ -981,17 +985,15 @@ impl App {
                 .send(PlayerCommand::ShowTestError)
                 .unwrap(),
             // show devices
-            KeyCode::Char('d')
-                if matches!(self.settings.mode, Mode::Microphone) && !self.ui.show_help_message =>
-            {
-                self.ui.show_devices_list = !self.ui.show_devices_list;
+            KeyCode::Char('d') if matches!(self.settings.mode, Mode::Microphone) => {
+                match self.ui.popup_state {
+                    PopupState::None => self.ui.popup_state = PopupState::InDeviceList,
+                    PopupState::InDeviceList => self.ui.popup_state = PopupState::None,
+                    _ => (),
+                }
             }
             // change mode
-            KeyCode::Char('m')
-                if !(self.ui.show_devices_list
-                    || self.ui.show_explorer
-                    || self.ui.show_themes_list) =>
-            {
+            KeyCode::Char('m') if matches!(self.ui.popup_state, PopupState::None) => {
                 self.settings.mode = if matches!(self.settings.mode, Mode::Microphone) {
                     self.reset_charts();
                     if let Some(stream) = self.audio_capture_stream.as_ref() {
@@ -1006,81 +1008,90 @@ impl App {
                 };
             }
             // Select device using its index if the device list is shown
-            KeyCode::Char(c) if self.ui.show_devices_list && c.is_ascii_digit() && c != '0' => {
+            KeyCode::Char(c)
+                if matches!(self.ui.popup_state, PopupState::InDeviceList)
+                    && c.is_ascii_digit()
+                    && c != '0' =>
+            {
                 let index = (c as usize) - ('1' as usize);
                 if let Err(err) = self.select_device(index) {
                     self.handle_error(format!("Failed to select device: {err}"));
                 }
             }
-            // Arrow key navigation for devices list
-            KeyCode::Up if self.ui.show_devices_list => {
-                let devs = list_input_devs();
-                if !devs.is_empty() {
-                    if self.ui.selected_device_index > 0 {
-                        self.ui.selected_device_index -= 1;
-                    } else {
-                        self.ui.selected_device_index = devs.len() - 1; // Wrap to end
-                    }
+            // Arrow key navigation for device and theme list
+            KeyCode::Up => match self.ui.popup_state {
+                PopupState::InThemesList => {
+                    let total = list_themes().len() + 2; // + 1 for default and + 1 for custom theme
+                    let current = self.ui.selected_theme.selected().unwrap_or(0);
+                    self.ui
+                        .selected_theme
+                        .select(Some(wrap_index(current, -1, total)));
                     self.ui.needs_render = true;
                 }
-            }
-            KeyCode::Down if self.ui.show_devices_list => {
-                let devs = list_input_devs();
-                if !devs.is_empty() {
-                    if self.ui.selected_device_index < devs.len() - 1 {
-                        self.ui.selected_device_index += 1;
-                    } else {
-                        self.ui.selected_device_index = 0; // Wrap to beginning
-                    }
+                PopupState::InDeviceList => {
+                    let total = list_input_devices().len();
+                    let current = self.ui.selected_device.selected().unwrap_or(0);
+                    self.ui
+                        .selected_device
+                        .select(Some(wrap_index(current, -1, total)));
                     self.ui.needs_render = true;
                 }
-            }
-            KeyCode::Enter if self.ui.show_devices_list => {
-                if let Err(err) = self.select_device(self.ui.selected_device_index) {
-                    self.handle_error(format!("Failed to select device: {err}"));
+                _ => (),
+            },
+            KeyCode::Down => match self.ui.popup_state {
+                PopupState::InThemesList => {
+                    let total = list_themes().len() + 2; // + 1 for default and + 1 for custom theme
+                    let current = self.ui.selected_theme.selected().unwrap_or(0);
+                    self.ui
+                        .selected_theme
+                        .select(Some(wrap_index(current, 1, total)));
+                    self.ui.needs_render = true;
                 }
-            }
-            // Arrow key navigation for themes list
-            KeyCode::Up if self.ui.show_themes_list => {
-                let themes = builtin_themes::list_themes();
-                let total_items = themes.len() + 2; // +1 for Default Theme, +1 for Custom Theme
-                if self.ui.selected_theme_index > 0 {
-                    self.ui.selected_theme_index -= 1;
-                } else {
-                    self.ui.selected_theme_index = total_items - 1; // Wrap to end
+                PopupState::InDeviceList => {
+                    let total = list_input_devices().len();
+                    let current = self.ui.selected_device.selected().unwrap_or(0);
+                    self.ui
+                        .selected_device
+                        .select(Some(wrap_index(current, 1, total)));
+                    self.ui.needs_render = true;
                 }
-                self.ui.needs_render = true;
-            }
-            KeyCode::Down if self.ui.show_themes_list => {
-                let themes = builtin_themes::list_themes();
-                let total_items = themes.len() + 2; // +1 for Default Theme, +1 for Custom Theme
-                if self.ui.selected_theme_index < total_items - 1 {
-                    self.ui.selected_theme_index += 1;
-                } else {
-                    self.ui.selected_theme_index = 0; // Wrap to beginning
+                _ => (),
+            },
+            KeyCode::Enter => match self.ui.popup_state {
+                PopupState::InDeviceList => {
+                    if let Err(err) =
+                        self.select_device(self.ui.selected_device.selected().unwrap_or(0))
+                    {
+                        self.handle_error(format!("Failed to select device: {err}"));
+                    }
                 }
-                self.ui.needs_render = true;
-            }
-            KeyCode::Enter if self.ui.show_themes_list => {
-                self.select_theme(self.ui.selected_theme_index);
-            }
-            KeyCode::Char('t')
-                if !(self.ui.show_help_message
-                    || self.ui.show_devices_list
-                    || self.ui.show_explorer) =>
-            {
-                self.ui.show_themes_list = !self.ui.show_themes_list;
-            }
+                PopupState::InThemesList => {
+                    self.select_theme(self.ui.selected_theme.selected().unwrap_or(0));
+                }
+                PopupState::InExplorer => {
+                    let file = self.explorer.current();
+                    let file_path = self.explorer.current().path.clone();
+                    if file.is_file() {
+                        if file_path.extension().unwrap() == "theme"
+                            || file_path.extension().unwrap() == "toml"
+                        {
+                            self.apply_theme_file(&file_path);
+                        } else {
+                            self.select_audio_file(file_path);
+                        }
+                    }
+                }
+                _ => (),
+            },
+            KeyCode::Char('t') => match self.ui.popup_state {
+                PopupState::None => self.ui.popup_state = PopupState::InThemesList,
+                PopupState::InThemesList => self.ui.popup_state = PopupState::None,
+                _ => (),
+            },
             KeyCode::Esc | KeyCode::Char('q')
-                if self.ui.show_themes_list
-                    || self.ui.show_explorer
-                    || self.ui.show_devices_list
-                    || self.ui.show_help_message =>
+                if !matches!(self.ui.popup_state, PopupState::None) =>
             {
-                self.ui.show_themes_list = false;
-                self.ui.show_explorer = false;
-                self.ui.show_devices_list = false;
-                self.ui.show_help_message = false;
+                self.ui.popup_state = PopupState::None;
             }
             KeyCode::Char('=' | '+') => {
                 self.waveform.timer.plus_sign = Some(Instant::now());
@@ -1095,19 +1106,17 @@ impl App {
                 self.waveform.timer.minus_sign = Some(Instant::now());
                 self.waveform.window = f64::min(self.waveform.window + 1., bound);
             }
-            KeyCode::Char('h' | '?') | KeyCode::F(1)
-                if !(self.ui.show_devices_list
-                    || self.ui.show_explorer
-                    || self.ui.show_themes_list) =>
-            {
-                self.ui.show_help_message = !self.ui.show_help_message;
-            }
+            KeyCode::Char('h' | '?') | KeyCode::F(1) => match self.ui.popup_state {
+                PopupState::None => self.ui.popup_state = PopupState::InHelpMessage,
+                PopupState::InHelpMessage => self.ui.popup_state = PopupState::None,
+                _ => (),
+            },
             _ => (),
         }
     }
 
     fn select_device(&mut self, index: usize) -> Result<()> {
-        let devices = list_input_devs();
+        let devices = list_input_devices();
         if index > devices.len() - 1 {
             return Err(eyre!("Invalid device index: {}", index + 1));
         }
@@ -1139,7 +1148,7 @@ impl App {
         };
         self.audio_capture_stream = Some(stream);
         self.audio_capture_stream.as_ref().unwrap().play()?;
-        self.ui.show_devices_list = false;
+        self.ui.popup_state = PopupState::None;
         if let Err(err) = self
             .device_analyzer
             .create_loudness_meter(channels as u32, sr)
@@ -1177,7 +1186,7 @@ impl App {
                 }
             }
 
-            self.ui.show_themes_list = false;
+            self.ui.popup_state = PopupState::None;
             return;
         }
 
@@ -1191,11 +1200,10 @@ impl App {
                     );
                     return;
                 }
-                self.ui.show_explorer = true;
                 self.explorer
                     .set_cwd(config_path.join("soundscope"))
                     .unwrap();
-                self.ui.show_themes_list = false;
+                self.ui.popup_state = PopupState::InExplorer;
             }
             return;
         }
@@ -1230,7 +1238,7 @@ impl App {
                 }
             }
 
-            self.ui.show_themes_list = false;
+            self.ui.popup_state = PopupState::None;
         }
     }
 
@@ -1242,7 +1250,7 @@ impl App {
     fn select_audio_file(&mut self, file_path: PathBuf) {
         // reset everything
         self.reset_charts();
-        self.ui.show_explorer = false;
+        self.ui.popup_state = PopupState::None;
 
         if let Err(_err) = self
             .player_command_tx
@@ -1456,7 +1464,7 @@ impl App {
     }
 
     fn in_fft_chart(&self, m: MouseEvent) -> bool {
-        if self.ui.show_fft_chart
+        if self.ui.show_window.spectrum
             && let Some(r) = self.ui.chart_rect
         {
             let x = m.column;
@@ -1491,6 +1499,10 @@ impl App {
 
         (x, y)
     }
+}
+
+fn wrap_index(current: usize, delta: isize, len: usize) -> usize {
+    (current as isize + delta).rem_euclid(len as isize) as usize
 }
 
 fn config_dir() -> Option<PathBuf> {
