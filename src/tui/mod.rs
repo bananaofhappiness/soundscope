@@ -168,7 +168,7 @@ struct App {
     device_analyzer: Analyzer,
 
     // Charts data
-    /// Data used to render FFT chart.
+    /// Data used to render spectrum chart.
     spectrum: Spectrum,
     /// Data used to render waveform.
     waveform: WaveForm,
@@ -177,9 +177,9 @@ struct App {
     //UI
     explorer: FileExplorer,
     ui: UI,
-    // Used to conviniently return to current directory when opening an explorer
+    /// Used to conviniently return to current directory when opening an explorer
     current_directory: PathBuf,
-    // Used to print info about fft chart when it's hovered
+    /// Used to print info about spectrum chart when it's hovered
     mouse_position: Option<(u16, u16)>,
 }
 
@@ -298,7 +298,7 @@ impl App {
 
         // draw bottom windows
         if self.ui.show_window.spectrum || self.ui.show_window.lufs {
-            // if we should split bottom part to lufs and fft
+            // if we should split bottom part to lufs and spectrum
             // or fill the bottom part with only 1 of them
             let left_constraint = if self.ui.show_window.spectrum {
                 Constraint::Min(0)
@@ -321,7 +321,7 @@ impl App {
                 self.spectrum
                     .render(f, horizontal_chunks[0], &self.ui.theme.spectrum);
                 if let Some((x, y)) = self.mouse_position {
-                    self.render_fft_info(f, x, y);
+                    self.render_spectrum_info(f, x, y);
                 }
             }
             if self.ui.show_window.lufs
@@ -512,7 +512,7 @@ impl App {
         f.render_stateful_widget(list, area, &mut self.ui.selected_theme);
     }
 
-    fn render_fft_info(&self, f: &mut Frame<'_>, x: u16, y: u16) {
+    fn render_spectrum_info(&self, f: &mut Frame<'_>, x: u16, y: u16) {
         let rect_width = self.ui.chart_rect.unwrap().width;
         let rect_height = self.ui.chart_rect.unwrap().height;
 
@@ -757,7 +757,7 @@ impl App {
                     }
                     Event::Mouse(m) => {
                         if matches!(m.kind, MouseEventKind::Moved) {
-                            if self.in_fft_chart(m) {
+                            if self.in_spectrum_chart(m) {
                                 self.mouse_position = Some((m.column, m.row));
                             } else {
                                 self.mouse_position = None;
@@ -787,12 +787,12 @@ impl App {
         let sample_rate = self.device_analyzer.sample_rate() as usize;
         let left_bound = 15 * sample_rate - 2usize.pow(14);
 
-        // get fft
+        // get spectrum
         self.spectrum.mid_freq = match self
             .device_analyzer
-            .get_fft(&mid_samples[left_bound..15 * sample_rate])
+            .get_spectrum(&mid_samples[left_bound..15 * sample_rate])
         {
-            Ok(fft) => fft,
+            Ok(spectrum) => spectrum,
             Err(err) => {
                 self.handle_error(format!("Error getting frequencies: {err}. Perhaps your microphone's sample rate is too low."));
                 vec![(0., 0.)]
@@ -800,9 +800,9 @@ impl App {
         };
         self.spectrum.side_freq = match self
             .device_analyzer
-            .get_fft(&side_samples[left_bound..15 * sample_rate])
+            .get_spectrum(&side_samples[left_bound..15 * sample_rate])
         {
-            Ok(fft) => fft,
+            Ok(spectrum) => spectrum,
             Err(err) => {
                 self.handle_error(format!("Error getting frequencies: {err}. Perhaps your microphone's sample rate is too low."));
                 vec![(0., 0.)]
@@ -841,26 +841,27 @@ impl App {
         let pos = pos / self.audio_file.channels() as usize;
         self.waveform.playhead = pos;
 
-        // get fft
-        let fft_left_bound = pos.saturating_sub(16384);
-        if fft_left_bound != 0 {
+        // get spectrum
+        let spectrum_left_bound = pos.saturating_sub(16384);
+        if spectrum_left_bound != 0 {
             let mid_samples_len = self.audio_file.data.mid_samples.len();
             let side_samples_len = self.audio_file.data.side_samples.len();
 
             // check bounds to prevent panic when file was changed
-            let mid_samples = if pos <= mid_samples_len && fft_left_bound < mid_samples_len {
-                &self.audio_file.data.mid_samples[fft_left_bound..pos]
+            let mid_samples = if pos <= mid_samples_len && spectrum_left_bound < mid_samples_len {
+                &self.audio_file.data.mid_samples[spectrum_left_bound..pos]
             } else {
                 &[]
             };
-            let side_samples = if pos <= side_samples_len && fft_left_bound < side_samples_len {
-                &self.audio_file.data.side_samples[fft_left_bound..pos]
+            let side_samples = if pos <= side_samples_len && spectrum_left_bound < side_samples_len
+            {
+                &self.audio_file.data.side_samples[spectrum_left_bound..pos]
             } else {
                 &[]
             };
 
-            self.spectrum.mid_freq = match self.file_analyzer.get_fft(mid_samples) {
-                Ok(fft) => fft,
+            self.spectrum.mid_freq = match self.file_analyzer.get_spectrum(mid_samples) {
+                Ok(spectrum) => spectrum,
                 Err(_err) => {
                     // can't log the error because this fn takes a mutable reference
                     // but we already have 2 shared references.
@@ -869,8 +870,8 @@ impl App {
                     vec![(0., 0.)]
                 }
             };
-            self.spectrum.side_freq = match self.file_analyzer.get_fft(side_samples) {
-                Ok(fft) => fft,
+            self.spectrum.side_freq = match self.file_analyzer.get_spectrum(side_samples) {
+                Ok(spectrum) => spectrum,
                 Err(_err) => {
                     // can't log the error because this fn takes a mutable reference
                     // but we already have 2 shared references.
@@ -921,9 +922,9 @@ impl App {
                     _ => (),
                 }
             }
-            // show side fft
+            // show side spectrum
             KeyCode::Char('S') => self.spectrum.show_side_freq = !self.spectrum.show_side_freq,
-            // show mid fft
+            // show mid spectrum
             KeyCode::Char('M') => self.spectrum.show_mid_freq = !self.spectrum.show_mid_freq,
             // pause/play
             KeyCode::Char(' ') => {
@@ -1026,7 +1027,6 @@ impl App {
                     self.ui
                         .selected_theme
                         .select(Some(wrap_index(current, -1, total)));
-                    self.ui.needs_render = true;
                 }
                 PopupState::InDeviceList => {
                     let total = list_input_devices().len();
@@ -1034,7 +1034,6 @@ impl App {
                     self.ui
                         .selected_device
                         .select(Some(wrap_index(current, -1, total)));
-                    self.ui.needs_render = true;
                 }
                 _ => (),
             },
@@ -1045,7 +1044,6 @@ impl App {
                     self.ui
                         .selected_theme
                         .select(Some(wrap_index(current, 1, total)));
-                    self.ui.needs_render = true;
                 }
                 PopupState::InDeviceList => {
                     let total = list_input_devices().len();
@@ -1053,7 +1051,6 @@ impl App {
                     self.ui
                         .selected_device
                         .select(Some(wrap_index(current, 1, total)));
-                    self.ui.needs_render = true;
                 }
                 _ => (),
             },
@@ -1463,7 +1460,7 @@ impl App {
         }
     }
 
-    fn in_fft_chart(&self, m: MouseEvent) -> bool {
+    fn in_spectrum_chart(&self, m: MouseEvent) -> bool {
         if self.ui.show_window.spectrum
             && let Some(r) = self.ui.chart_rect
         {
@@ -1471,7 +1468,7 @@ impl App {
             let y = m.row;
             let width = r.width;
             let height = r.height;
-            // hardcode boundries of the fft chart.
+            // hardcode boundries of the spectrum chart.
             // because it does not occupy the whole rectangle
             let x_min = r.x + 8;
             let y_min = r.y + 1;

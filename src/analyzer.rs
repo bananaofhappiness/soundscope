@@ -52,7 +52,7 @@ impl Analyzer {
         Ok(())
     }
 
-    pub fn get_fft(&self, samples: &[f32]) -> Result<Vec<(f64, f64)>> {
+    pub fn get_spectrum(&self, samples: &[f32]) -> Result<Vec<(f64, f64)>> {
         // apply hann window for smoothing
         let hann_window = hann_window(samples);
 
@@ -90,7 +90,7 @@ impl Analyzer {
         let log_range = max_freq_log - min_freq_log;
         let chart_width = 100.;
 
-        let fft_vec = data
+        let spectrum_vec = data
             .into_iter()
             .map(|(freq, val)| {
                 let log_freq = freq.log10();
@@ -101,7 +101,7 @@ impl Analyzer {
             })
             .collect();
 
-        Ok(fft_vec)
+        Ok(spectrum_vec)
     }
 
     pub fn get_waveform(samples: &[f32], waveform_window: f64) -> Vec<(f64, f64)> {
@@ -188,7 +188,7 @@ mod tests {
 
     #[test]
     /// Tests the FFT functionality with a simple sine wave
-    fn test_get_fft() {
+    fn test_get_spectrum() {
         let analyzer = Analyzer::default();
 
         // Generate a simple sine wave at 440Hz with amplitude 1.0 (0 dBFS for float)
@@ -203,10 +203,10 @@ mod tests {
             })
             .collect();
 
-        let fft_result = analyzer.get_fft(&samples).unwrap();
+        let spectrum = analyzer.get_spectrum(&samples).unwrap();
 
         // Find max to verify calibration is reasonable
-        let max_db = fft_result
+        let max_db = spectrum
             .iter()
             .map(|(_, db)| *db)
             .fold(f64::NEG_INFINITY, f64::max);
@@ -216,7 +216,7 @@ mod tests {
         );
 
         // Should have some data points
-        assert!(!fft_result.is_empty());
+        assert!(!spectrum.is_empty());
     }
 
     #[test]
@@ -242,10 +242,10 @@ mod tests {
             })
             .collect();
 
-        let fft_result = analyzer.get_fft(&samples).unwrap();
+        let spectrum = analyzer.get_spectrum(&samples).unwrap();
 
         // Find the maximum value in the spectrum
-        let max_db = fft_result
+        let max_db = spectrum
             .iter()
             .map(|(_, db)| *db)
             .fold(f64::NEG_INFINITY, f64::max);
@@ -283,8 +283,8 @@ mod tests {
             })
             .collect();
 
-        let fft_1khz = analyzer.get_fft(&samples_1khz).unwrap();
-        let max_1khz = fft_1khz
+        let spectrum_1khz = analyzer.get_spectrum(&samples_1khz).unwrap();
+        let max_1khz = spectrum_1khz
             .iter()
             .map(|(_, db)| *db)
             .fold(f64::NEG_INFINITY, f64::max);
@@ -300,8 +300,8 @@ mod tests {
             })
             .collect();
 
-        let fft_125hz = analyzer.get_fft(&samples_125hz).unwrap();
-        let max_125hz = fft_125hz
+        let spectrum_125hz = analyzer.get_spectrum(&samples_125hz).unwrap();
+        let max_125hz = spectrum_125hz
             .iter()
             .map(|(_, db)| *db)
             .fold(f64::NEG_INFINITY, f64::max);
