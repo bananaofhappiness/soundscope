@@ -199,3 +199,13 @@ fn get_property_address(
         mElement: element.unwrap_or(kAudioObjectPropertyElementMain),
     }
 }
+
+#[link(name = "CoreGraphics", kind = "framework")]
+unsafe extern "C" {
+    fn CGPreflightScreenCaptureAccess() -> bool;
+    fn CGRequestScreenCaptureAccess() -> bool;
+}
+
+pub fn ensure_screen_capture_permission() -> bool {
+    unsafe { CGPreflightScreenCaptureAccess() || CGRequestScreenCaptureAccess() }
+}

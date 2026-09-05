@@ -47,9 +47,6 @@ fn main() -> Result<()> {
     // create an audio player
     let mut player = AudioPlayer::new(playback_position_tx.clone())?;
 
-    // Приватный tap системного аудио (macOS 14.4+). Объект должен жить до конца
-    // main: в Drop он уничтожает aggregate device и tap, после чего устройство
-    // пропадает из списка входных устройств (поэтому нельзя let _ = ...).
     #[cfg(target_os = "macos")]
     let _system_audio_device = unsafe { system_sound_capture::SystemAudioDevice::new() };
 

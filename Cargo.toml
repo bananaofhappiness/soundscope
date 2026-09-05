@@ -21,7 +21,7 @@ ratatui-explorer = "0.3.0"
 ringbuffer = "0.16.0"
 rodio = {version = "0.21.1", features = ["symphonia-all"]}
 serde = { version = "1.0.225", features = ["derive"] }
-spectrum-analyzer = "1.7.0"
+spectrum-analyzer = "1.9.0"
 symphonia = { version = "0.5.4" }
 toml = "0.9.6"
 tui-big-text = "0.8.2"

@@ -1,5 +1,7 @@
 //! This module contains the implementation of the terminal user interface (TUI) used to display audio analysis results.
 //! It uses `ratatui` under the hood.
+#[cfg(target_os = "macos")]
+use crate::system_sound_capture;
 use crate::{
     analyzer::Analyzer,
     audio_capture::{self, AudioDevice, list_input_devices},
@@ -1026,6 +1028,7 @@ impl App {
                                 self.handle_error(format!("Failed to capture system sound: {err}"));
                             }
                             self.reset_charts();
+                            system_sound_capture::ensure_screen_capture_permission();
                             Mode::System
                         } else {
                             self.reset_charts();

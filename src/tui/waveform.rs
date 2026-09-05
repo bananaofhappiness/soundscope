@@ -64,12 +64,15 @@ impl WaveForm {
         // get current playback time in seconds
         let playhead_ms = (self.playhead as f64 / sample_rate as f64 * 1000.) as u64;
         let fmt_time = |secs: u64| format!("{:0>2}:{:0>2}", secs / 60, secs % 60);
-        let (current_time, total_duration) = match audio_data {
-            Some(data) => (
-                fmt_time(playhead_ms / 1000),
-                fmt_time(data.duration.as_secs()),
-            ),
-            None => ("--:--".to_owned(), "--:--".to_owned()),
+        let (current_time, total_duration) = match mode {
+            Mode::Player => match audio_data {
+                Some(data) => (
+                    fmt_time(playhead_ms / 1000),
+                    fmt_time(data.duration.as_secs()),
+                ),
+                None => (String::new(), String::new()),
+            },
+            _ => (String::new(), String::new()),
         };
 
         let (x_min, x_max) = match mode {
