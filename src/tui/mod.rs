@@ -5,6 +5,7 @@ use crate::{
     audio_capture::{self, AudioDevice, list_input_devices},
     audio_player::{self, AudioFile, PlayerCommand},
     builtin_themes::{self, list_themes},
+    system_sound_capture::SYSTEM_TAP_DEVICE_NAME,
     tui::{
         lufs::Lufs,
         spectrum::{SPECTRUM_LOWER_BOUND, SPECTRUM_TARGET_DBFS, SPECTRUM_UPPER_BOUND, Spectrum},
@@ -121,7 +122,7 @@ enum Mode {
     #[default]
     Player,
     Microphone,
-    _System,
+    System,
 }
 
 impl Display for Mode {
@@ -129,7 +130,7 @@ impl Display for Mode {
         match self {
             Mode::Player => write!(f, "Player"),
             Mode::Microphone => write!(f, "Microphone"),
-            Mode::_System => write!(f, "System"),
+            Mode::System => write!(f, "System"),
         }
     }
 }
@@ -138,6 +139,7 @@ impl Display for Mode {
 #[derive(Default)]
 struct Settings {
     mode: Mode,
+    selected_device_index: Option<usize>,
 }
 
 /// `App` contains the necessary components for the application like senders, receivers, [`AudioFile`] data, [`UIsettings`].
@@ -412,11 +414,16 @@ impl App {
         let area = Self::get_popup_area_with_percentage(f.area(), 20, 30);
         f.render_widget(Clear, area);
         let devs = list_input_devices();
+        let mut device_number_offset = 1;
         let list_items: Vec<ListItem> = devs
             .iter()
             .enumerate()
-            .map(|(i, (name, _dev))| {
-                let num = format!("[{}]", i + 1);
+            .filter_map(|(i, (name, _dev))| {
+                if name == SYSTEM_TAP_DEVICE_NAME {
+                    device_number_offset -= 1;
+                    return None;
+                }
+                let num = format!("[{}]", i + device_number_offset);
                 let name = format!(" {name}");
                 let is_selected = i == self.ui.selected_device.selected().unwrap_or(0);
 
@@ -428,7 +435,7 @@ impl App {
 
                 let num = num.bold().reset().style(item_style);
                 let name = name.bold().reset().style(item_style);
-                ListItem::from(num + name)
+                Some(ListItem::from(num + name))
             })
             .collect();
         let list = List::new(list_items).style(s).block(
@@ -648,7 +655,7 @@ impl App {
             }
 
             // use ringbuf to analyze data if the `Mode` is not `Mode::Player`
-            if matches!(self.settings.mode, Mode::Microphone) {
+            if matches!(self.settings.mode, Mode::Microphone | Mode::System) {
                 self.analyze_microphone_input();
                 self.ui.needs_render = true; // Always render in microphone mode
             }
@@ -995,17 +1002,32 @@ impl App {
             }
             // change mode
             KeyCode::Char('m') if matches!(self.ui.popup_state, PopupState::None) => {
-                self.settings.mode = if matches!(self.settings.mode, Mode::Microphone) {
-                    self.reset_charts();
-                    if let Some(stream) = self.audio_capture_stream.as_ref() {
-                        let _ = stream.pause();
+                self.settings.mode = match self.settings.mode {
+                    Mode::Player => {
+                        if let Some(index) = self.settings.selected_device_index
+                            && let Err(err) = self.select_device(index)
+                        {
+                            self.handle_error(format!("Failed to capture system sound: {err}"));
+                        }
+                        self.reset_charts();
+                        Mode::Microphone
                     }
-                    Mode::Player
-                } else {
-                    if let Some(stream) = self.audio_capture_stream.as_ref() {
-                        let _ = stream.play();
+                    Mode::Microphone => {
+                        if cfg!(target_os = "macos") {
+                            if let Err(err) = self.select_device(0) {
+                                self.handle_error(format!("Failed to capture system sound: {err}"));
+                            }
+                            self.reset_charts();
+                            Mode::System
+                        } else {
+                            self.reset_charts();
+                            Mode::Player
+                        }
                     }
-                    Mode::Microphone
+                    Mode::System => {
+                        self.reset_charts();
+                        Mode::Player
+                    }
                 };
             }
             // Select device using its index if the device list is shown
@@ -1014,10 +1036,11 @@ impl App {
                     && c.is_ascii_digit()
                     && c != '0' =>
             {
-                let index = (c as usize) - ('1' as usize);
+                let index = (c as usize) - ('0' as usize);
                 if let Err(err) = self.select_device(index) {
                     self.handle_error(format!("Failed to select device: {err}"));
                 }
+                self.settings.selected_device_index = Some(index);
             }
             // Arrow key navigation for device and theme list
             KeyCode::Up => match self.ui.popup_state {

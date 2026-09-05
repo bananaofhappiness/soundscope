@@ -2,6 +2,7 @@ mod analyzer;
 mod audio_capture;
 mod audio_player;
 mod builtin_themes;
+mod system_sound_capture;
 mod tui;
 use crate::audio_player::{AudioFile, AudioPlayer, PlaybackPosition, PlayerCommand};
 use crossbeam::channel::{bounded, unbounded};
@@ -48,6 +49,12 @@ fn main() -> Result<()> {
 
     // just a place holder audio_file to initialize app
     let audio_file = AudioFile::new(playback_position_tx);
+
+    // Приватный tap системного аудио (macOS 14.4+). Объект должен жить до конца
+    // main: в Drop он уничтожает aggregate device и tap, после чего устройство
+    // пропадает из списка входных устройств (поэтому нельзя let _ = ...).
+    #[cfg(target_os = "macos")]
+    let _system_audio_device = unsafe { system_sound_capture::SystemAudioDevice::new() };
 
     let mut startup_file = None;
     let startup_path = args.get(1).map(PathBuf::from);

@@ -72,7 +72,7 @@ impl WaveForm {
         let total_sec = total_duration % 60;
 
         let (x_min, x_max) = match mode {
-            Mode::Microphone | Mode::_System => {
+            Mode::Microphone | Mode::System => {
                 let window_millis = self.window as usize * 1000;
                 (15000. - window_millis as f64, 15000.)
             }
@@ -116,17 +116,17 @@ impl WaveForm {
         let title = &audio_data.title;
         let mode_text = mode.to_span().style(lb);
         let upper_right_title = match mode {
-            Mode::Player => Line::from(vec![
+            Mode::Microphone => Line::from(vec![
+                "d".bold().style(hl),
+                "evice: ".to_span().style(lb),
+                self.device_name.to_span().style(lb),
+                " ".to_span(),
                 "m".bold().style(hl),
                 "ode: ".to_span().style(lb),
                 mode_text,
             ])
             .right_aligned(),
             _ => Line::from(vec![
-                "d".bold().style(hl),
-                "evice: ".to_span().style(lb),
-                self.device_name.to_span().style(lb),
-                " ".to_span(),
                 "m".bold().style(hl),
                 "ode: ".to_span().style(lb),
                 mode_text,
