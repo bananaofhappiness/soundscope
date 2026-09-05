@@ -11,7 +11,6 @@ use crate::{
         spectrum::{SPECTRUM_LOWER_BOUND, SPECTRUM_TARGET_DBFS, SPECTRUM_UPPER_BOUND, Spectrum},
     },
 };
-use bitflags::Flags;
 use cpal::{Stream, traits::StreamTrait as _};
 use crossbeam::channel::{Receiver, Sender};
 use eyre::{Result, eyre};
@@ -144,12 +143,11 @@ struct Settings {
 /// `App` contains the necessary components for the application like senders, receivers, [`AudioFile`] data, [`UIsettings`].
 struct App {
     /// Audio file which is loaded into the player.
-    audio_file: AudioFile,
+    audio_file: Option<AudioFile>,
     /// If file is not selected, the app crashes when you try to play it.
     /// It is easier to use this bool instead of Option<AudioFile> because
     /// we would always have to check if it is not None. But it can be None only before
     /// the first file is selected.
-    is_file_selected: bool,
     is_playing_audio: bool,
     audio_file_rx: Receiver<AudioFile>,
     /// [`RingBuffer`] used to store the latest captured samples when the `Mode` is not `Mode::Player`.
@@ -195,7 +193,7 @@ macro_rules! help_message_row {
 
 impl App {
     fn new(
-        audio_file: AudioFile,
+        audio_file: Option<AudioFile>,
         player_command_tx: Sender<PlayerCommand>,
         audio_file_rx: Receiver<AudioFile>,
         playback_position_rx: Receiver<usize>,
@@ -204,7 +202,6 @@ impl App {
     ) -> Result<Self> {
         Ok(Self {
             audio_file,
-            is_file_selected: false,
             is_playing_audio: false,
             audio_file_rx,
             latest_captured_samples,
@@ -300,7 +297,7 @@ impl App {
                 f,
                 vertical_chunks[0],
                 &self.ui.theme.waveform,
-                &self.audio_file.data,
+                self.audio_file.as_ref().map(|f| f.data.as_ref()),
                 &self.settings.mode,
             );
         }
@@ -569,20 +566,18 @@ impl App {
     }
 
     fn receive_audio_file(&mut self, audio_file: AudioFile) {
-        self.audio_file = audio_file;
-        self.is_file_selected = true;
-        if self.audio_file.data.duration.as_secs_f64() < 15. {
-            self.waveform.window = self.audio_file.data.duration.as_secs_f64();
+        if audio_file.data.duration.as_secs_f64() < 15. {
+            self.waveform.window = audio_file.data.duration.as_secs_f64();
         }
         self.waveform.audio_file_chart = Analyzer::get_waveform(
-            &self.audio_file.data.samples,
-            self.audio_file.data.duration.as_secs_f64(),
+            &audio_file.data.samples,
+            audio_file.data.duration.as_secs_f64(),
         );
         // TODO: channels
         if let Err(err) = self.file_analyzer.create_loudness_meter(
             // self.audio_file.channels() as u32,
             2,
-            self.audio_file.sample_rate(),
+            audio_file.sample_rate(),
         ) {
             self.handle_error(format!(
                 "Could not create an analyzer for an audio file: {err}"
@@ -593,13 +588,14 @@ impl App {
         if let Some(integrated_lufs) = self.file_analyzer.calculate_integrated_lufs(
             // self.audio_file.channels(),
             2,
-            &self.audio_file.data.samples,
+            &audio_file.data.samples,
         ) {
             let gain_db = SPECTRUM_TARGET_DBFS - integrated_lufs as f32;
             self.spectrum.gain_compensation = gain_db;
         } else {
             self.spectrum.gain_compensation = 0.0;
         }
+        self.audio_file = Some(audio_file);
 
         self.ui.needs_render = true;
     }
@@ -654,7 +650,7 @@ impl App {
             // receive playback position
             let prev_playhead = self.waveform.playhead;
             if let Ok(pos) = self.playback_position_rx.try_recv()
-                && self.is_file_selected
+                && self.audio_file.is_some()
                 && matches!(self.settings.mode, Mode::Player)
             {
                 self.analyze_audio_file_samples(pos);
@@ -853,24 +849,28 @@ impl App {
 
     fn analyze_audio_file_samples(&mut self, pos: usize) {
         // if using mid side we must divide the position by 2
-        let pos = pos / self.audio_file.channels() as usize;
+        let audio_file = self
+            .audio_file
+            .as_ref()
+            .expect("guarded by is_some() in run()");
+        let pos = pos / audio_file.channels() as usize;
         self.waveform.playhead = pos;
 
         // get spectrum
         let spectrum_left_bound = pos.saturating_sub(16384);
         if spectrum_left_bound != 0 {
-            let mid_samples_len = self.audio_file.data.mid_samples.len();
-            let side_samples_len = self.audio_file.data.side_samples.len();
+            let mid_samples_len = audio_file.data.mid_samples.len();
+            let side_samples_len = audio_file.data.side_samples.len();
 
             // check bounds to prevent panic when file was changed
             let mid_samples = if pos <= mid_samples_len && spectrum_left_bound < mid_samples_len {
-                &self.audio_file.data.mid_samples[spectrum_left_bound..pos]
+                &audio_file.data.mid_samples[spectrum_left_bound..pos]
             } else {
                 &[]
             };
             let side_samples = if pos <= side_samples_len && spectrum_left_bound < side_samples_len
             {
-                &self.audio_file.data.side_samples[spectrum_left_bound..pos]
+                &audio_file.data.side_samples[spectrum_left_bound..pos]
             } else {
                 &[]
             };
@@ -898,18 +898,18 @@ impl App {
         }
 
         // get lufs lufs uses all channels (update every frame for accuracy)
-        let pos = pos * self.audio_file.channels() as usize;
+        let pos = pos * audio_file.channels() as usize;
         let lufs_left_bound = pos.saturating_sub(16384);
         if lufs_left_bound != 0 {
             for i in 0..self.lufs.0.len() - 1 {
                 self.lufs.0[i] = self.lufs.0[i + 1];
             }
-            let samples_len = self.audio_file.data.samples.len();
+            let samples_len = audio_file.data.samples.len();
             // check bounds to prevent panic when file was changed
             if pos <= samples_len && lufs_left_bound < samples_len {
                 if let Err(err) = self
                     .file_analyzer
-                    .add_samples(&self.audio_file.data.samples[lufs_left_bound..pos])
+                    .add_samples(&audio_file.data.samples[lufs_left_bound..pos])
                 {
                     self.handle_error(format!("Could not get samples for LUFS analyzer: {err}"));
                 }
@@ -1126,8 +1126,10 @@ impl App {
                 self.waveform.window = f64::max(self.waveform.window - 1., 1.);
             }
             KeyCode::Char('-' | '_') => {
-                let bound = if self.audio_file.data.duration.as_secs_f64() < 15. {
-                    self.audio_file.data.duration.as_secs_f64()
+                let bound = if let Some(file) = self.audio_file.as_ref()
+                    && file.data.duration.as_secs_f64() < 15.
+                {
+                    file.data.duration.as_secs_f64()
                 } else {
                     15.
                 };
@@ -1545,7 +1547,7 @@ fn config_dir() -> Option<PathBuf> {
 
 /// pub run function that initializes the terminal and runs the application
 pub fn run(
-    audio_file: AudioFile,
+    audio_file: Option<AudioFile>,
     player_command_tx: Sender<PlayerCommand>,
     audio_file_rx: Receiver<AudioFile>,
     playback_position_rx: Receiver<usize>,
@@ -1587,7 +1589,7 @@ mod tests {
         let latest_captured_samples = Arc::new(Mutex::new(AllocRingBuffer::new(44100 * 30)));
 
         let app = App::new(
-            audio_file,
+            Some(audio_file),
             player_command_tx.clone(),
             audio_file_rx,
             playback_position_rx,

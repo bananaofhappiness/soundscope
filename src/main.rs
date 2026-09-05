@@ -47,9 +47,6 @@ fn main() -> Result<()> {
     // create an audio player
     let mut player = AudioPlayer::new(playback_position_tx.clone())?;
 
-    // just a place holder audio_file to initialize app
-    let audio_file = AudioFile::new(playback_position_tx);
-
     // Приватный tap системного аудио (macOS 14.4+). Объект должен жить до конца
     // main: в Drop он уничтожает aggregate device и tap, после чего устройство
     // пропадает из списка входных устройств (поэтому нельзя let _ = ...).
@@ -78,7 +75,7 @@ fn main() -> Result<()> {
 
     thread::spawn(|| {
         tui::run(
-            audio_file,
+            None,
             player_command_tx,
             audio_file_rx,
             playback_position_rx,

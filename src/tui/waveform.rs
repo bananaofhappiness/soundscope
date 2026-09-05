@@ -38,7 +38,7 @@ impl WaveForm {
         frame: &mut Frame,
         area: Rect,
         theme: &WaveformTheme,
-        audio_data: &AudioData,
+        audio_data: Option<&AudioData>,
         mode: &Mode,
     ) {
         let s = Style::default().bg(theme.background.unwrap());
@@ -51,7 +51,8 @@ impl WaveForm {
         let wv = s.fg(theme.waveform.unwrap());
 
         // playhead is just a function that looks like a vertical line
-        let samples_in_one_ms = audio_data.sample_rate / 1000;
+        let sample_rate = audio_data.map_or(44100, |d| d.sample_rate);
+        let samples_in_one_ms = sample_rate / 1000;
 
         let playhead_chart = if !matches!(mode, Mode::Player) {
             [(-1., -1.), (-1., -1.)]
@@ -61,15 +62,15 @@ impl WaveForm {
         };
 
         // get current playback time in seconds
-        let playhead_ms = (self.playhead as f64 / audio_data.sample_rate as f64 * 1000.) as u64;
-        let current_total_sec = playhead_ms / 1000;
-        let current_min = current_total_sec / 60;
-        let current_sec = current_total_sec % 60;
-
-        // get total audio file duration
-        let total_duration = audio_data.duration.as_secs();
-        let total_min = total_duration / 60;
-        let total_sec = total_duration % 60;
+        let playhead_ms = (self.playhead as f64 / sample_rate as f64 * 1000.) as u64;
+        let fmt_time = |secs: u64| format!("{:0>2}:{:0>2}", secs / 60, secs % 60);
+        let (current_time, total_duration) = match audio_data {
+            Some(data) => (
+                fmt_time(playhead_ms / 1000),
+                fmt_time(data.duration.as_secs()),
+            ),
+            None => ("--:--".to_owned(), "--:--".to_owned()),
+        };
 
         let (x_min, x_max) = match mode {
             Mode::Microphone | Mode::System => {
@@ -113,7 +114,7 @@ impl WaveForm {
         ];
 
         // render chart
-        let title = &audio_data.title;
+        let title = audio_data.map_or("", |data| data.title.as_str());
         let mode_text = mode.to_span().style(lb);
         let upper_right_title = match mode {
             Mode::Microphone => Line::from(vec![
@@ -141,13 +142,8 @@ impl WaveForm {
                     .border_type(BorderType::Rounded)
                     .title("¹".to_span().style(hl).bold() + title.to_span().style(lb))
                     .title_bottom(self.get_flashing_controls_text(theme).left_aligned())
-                    .title_bottom(
-                        Line::styled(format!("{current_min:0>2}:{current_sec:0>2}"), ct).centered(),
-                    )
-                    .title_bottom(
-                        Line::styled(format!("{total_min:0>2}:{total_sec:0>2}"), td)
-                            .right_aligned(),
-                    )
+                    .title_bottom(Line::styled(current_time, ct).centered())
+                    .title_bottom(Line::styled(total_duration, td).right_aligned())
                     .title(upper_right_title)
                     .style(bd),
             )
