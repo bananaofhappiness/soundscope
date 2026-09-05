@@ -9,6 +9,7 @@ readme = "README.md"
 keywords = ["audio", "command-line", "cli"]
 
 [dependencies]
+bitflags = "2.13.1"
 cpal = "0.16.0"
 crossbeam = "0.8.4"
 crossterm = "0.29.0"

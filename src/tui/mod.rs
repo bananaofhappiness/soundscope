@@ -11,6 +11,7 @@ use crate::{
         spectrum::{SPECTRUM_LOWER_BOUND, SPECTRUM_TARGET_DBFS, SPECTRUM_UPPER_BOUND, Spectrum},
     },
 };
+use bitflags::Flags;
 use cpal::{Stream, traits::StreamTrait as _};
 use crossbeam::channel::{Receiver, Sender};
 use eyre::{Result, eyre};
@@ -67,19 +68,17 @@ enum PopupState {
     None,
 }
 
-struct ShowWindow {
-    spectrum: bool,
-    lufs: bool,
-    waveform: bool,
+bitflags::bitflags! {
+    struct ShowWindow: u8 {
+        const SPECTRUM = 1 << 0;
+        const LUFS = 1 << 1;
+        const WAVEFORM = 1 << 2;
+    }
 }
 
 impl Default for ShowWindow {
     fn default() -> Self {
-        Self {
-            spectrum: true,
-            lufs: true,
-            waveform: true,
-        }
+        Self::SPECTRUM | Self::LUFS | Self::WAVEFORM
     }
 }
 
@@ -261,8 +260,12 @@ impl App {
         f.render_widget(background, area);
 
         // if we should show top window (waveform)
-        let top_constraint = if self.ui.show_window.waveform {
-            if self.ui.show_window.spectrum || self.ui.show_window.lufs {
+        let top_constraint = if self.ui.show_window.contains(ShowWindow::WAVEFORM) {
+            if self
+                .ui
+                .show_window
+                .intersects(ShowWindow::SPECTRUM | ShowWindow::LUFS)
+            {
                 Constraint::Percentage(30)
             } else {
                 Constraint::Percentage(100)
@@ -272,8 +275,12 @@ impl App {
         };
 
         // if we should show bottom windows (spectrum & lufs)
-        let bottom_constraint = if self.ui.show_window.spectrum || self.ui.show_window.lufs {
-            if self.ui.show_window.waveform {
+        let bottom_constraint = if self
+            .ui
+            .show_window
+            .intersects(ShowWindow::SPECTRUM | ShowWindow::LUFS)
+        {
+            if self.ui.show_window.contains(ShowWindow::WAVEFORM) {
                 Constraint::Percentage(70)
             } else {
                 Constraint::Percentage(100)
@@ -288,7 +295,7 @@ impl App {
             .constraints([top_constraint, bottom_constraint])
             .split(area);
 
-        if self.ui.show_window.waveform {
+        if self.ui.show_window.contains(ShowWindow::WAVEFORM) {
             self.waveform.render(
                 f,
                 vertical_chunks[0],
@@ -299,15 +306,19 @@ impl App {
         }
 
         // draw bottom windows
-        if self.ui.show_window.spectrum || self.ui.show_window.lufs {
+        if self
+            .ui
+            .show_window
+            .intersects(ShowWindow::SPECTRUM | ShowWindow::LUFS)
+        {
             // if we should split bottom part to lufs and spectrum
             // or fill the bottom part with only 1 of them
-            let left_constraint = if self.ui.show_window.spectrum {
+            let left_constraint = if self.ui.show_window.contains(ShowWindow::SPECTRUM) {
                 Constraint::Min(0)
             } else {
                 Constraint::Length(0)
             };
-            let right_constraint = if self.ui.show_window.lufs {
+            let right_constraint = if self.ui.show_window.contains(ShowWindow::LUFS) {
                 Constraint::Min(0)
             } else {
                 Constraint::Length(0)
@@ -318,7 +329,7 @@ impl App {
                 .constraints([left_constraint, right_constraint])
                 .split(vertical_chunks[1]);
 
-            if self.ui.show_window.spectrum {
+            if self.ui.show_window.contains(ShowWindow::SPECTRUM) {
                 self.ui.chart_rect = Some(horizontal_chunks[0]);
                 self.spectrum
                     .render(f, horizontal_chunks[0], &self.ui.theme.spectrum);
@@ -326,7 +337,7 @@ impl App {
                     self.render_spectrum_info(f, x, y);
                 }
             }
-            if self.ui.show_window.lufs
+            if self.ui.show_window.contains(ShowWindow::LUFS)
                 && let Err(err) = self.lufs.render(
                     f,
                     horizontal_chunks[1],
@@ -338,10 +349,7 @@ impl App {
             }
         }
 
-        if !(self.ui.show_window.waveform
-            || self.ui.show_window.spectrum
-            || self.ui.show_window.lufs)
-        {
+        if self.ui.show_window.is_empty() {
             self.render_empty_window(f, area);
         }
 
@@ -969,13 +977,13 @@ impl App {
                 }
             }
             KeyCode::Char('1') if matches!(self.ui.popup_state, PopupState::None) => {
-                self.ui.show_window.waveform = !self.ui.show_window.waveform;
+                self.ui.show_window.toggle(ShowWindow::WAVEFORM);
             }
             KeyCode::Char('2') if matches!(self.ui.popup_state, PopupState::None) => {
-                self.ui.show_window.spectrum = !self.ui.show_window.spectrum;
+                self.ui.show_window.toggle(ShowWindow::SPECTRUM);
             }
             KeyCode::Char('3') if matches!(self.ui.popup_state, PopupState::None) => {
-                self.ui.show_window.lufs = !self.ui.show_window.lufs;
+                self.ui.show_window.toggle(ShowWindow::LUFS);
             }
             // Quick selection with numbers 0-9 when themes list is open
             KeyCode::Char(c)
@@ -1484,7 +1492,7 @@ impl App {
     }
 
     fn in_spectrum_chart(&self, m: MouseEvent) -> bool {
-        if self.ui.show_window.spectrum
+        if self.ui.show_window.contains(ShowWindow::SPECTRUM)
             && let Some(r) = self.ui.chart_rect
         {
             let x = m.column;
