@@ -122,6 +122,7 @@ enum Mode {
     #[default]
     Player,
     Microphone,
+    #[allow(dead_code)]
     System,
 }
 
