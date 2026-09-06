@@ -4,7 +4,7 @@ Soundscope is a crossplatform CLI tool for analyzing audio files.
 
 ---
 ## ✨ Features
-- 🎤 Analysis of both **audio files** and **microphone input** in **real-time**.
+- 🎤 Analysis of **audio files**, **microphone input** and **system sound** (macOS only for now) in **real-time**.
 - 📊 **Frequency Spectrum** — view the frequency distribution.
 - 📉 **Waveform Display** — see the amplitude over time with Min-Max Decimation algorithm.
 - 🔊 **LUFS Metering and True Peak** — measure loudness precisely.
@@ -184,6 +184,7 @@ This project is licensed under the **MIT License** — see [LICENSE](LICENSE) fo
 
 If you like **Soundscope** and want to support its development:
 
+- [Buy Me a Coffee](https://buymeacoffee.com/bananaofhappiness)
 - Ethereum (ERC-20): 0xe8f2dd8a2d3a6ba9c571aadc720b6f1bea47fe4a
 - Bitcoin: bc1qype09urnpfztgrw6af83a2g86jrfhf5tr8dwp8
 - Solana: 9YmZXS7uYJSY9AwLmVmbDTgAAp987W3mQ1P3U5MUQ9Sv
