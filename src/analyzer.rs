@@ -182,6 +182,27 @@ impl Analyzer {
     }
 }
 
+pub fn get_mid_and_side_samples(samples: &[f32]) -> (Vec<f32>, Vec<f32>) {
+    let left_samples = samples.iter().step_by(2).copied().collect::<Vec<f32>>();
+    let right_samples = samples
+        .iter()
+        .skip(1)
+        .step_by(2)
+        .copied()
+        .collect::<Vec<f32>>();
+    let mid_samples = left_samples
+        .iter()
+        .zip(right_samples.iter())
+        .map(|(l, r)| (l + r) / 2.)
+        .collect::<Vec<f32>>();
+    let side_samples = left_samples
+        .iter()
+        .zip(right_samples.iter())
+        .map(|(l, r)| (l - r) / 2.)
+        .collect::<Vec<f32>>();
+    (mid_samples, side_samples)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

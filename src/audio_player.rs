@@ -14,6 +14,8 @@ use symphonia::core::{
     probe::Hint,
 };
 
+use crate::analyzer;
+
 // Samples of the whole file
 pub type Samples = Vec<f32>;
 // pub type Samples = Vec<f32>;
@@ -137,7 +139,7 @@ impl AudioFile {
         let title = path.file_name().unwrap().to_string_lossy().to_string();
         let (samples, sample_rate, channels) = Self::decode_file(path)?;
         // TODO: other channels, not only stereo sound.
-        let (mid_samples, side_samples) = get_mid_and_side_samples(&samples);
+        let (mid_samples, side_samples) = analyzer::get_mid_and_side_samples(&samples);
         let duration = mid_samples.len() as f64 / sample_rate as f64 * 1000.;
         let data = AudioData {
             title,
@@ -267,7 +269,8 @@ pub struct AudioPlayer {
 
 impl AudioPlayer {
     pub fn new(playback_position_tx: Sender<usize>) -> Result<Self> {
-        let stream_handle = OutputStreamBuilder::open_default_stream()?;
+        let mut stream_handle = OutputStreamBuilder::open_default_stream()?;
+        stream_handle.log_on_drop(false);
         let sink = Sink::connect_new(stream_handle.mixer());
         let audio_file = AudioFile::new(playback_position_tx.clone());
         Ok(Self {
@@ -387,25 +390,4 @@ impl AudioPlayer {
         }
         // Ok(())
     }
-}
-
-pub fn get_mid_and_side_samples(samples: &[f32]) -> (Vec<f32>, Vec<f32>) {
-    let left_samples = samples.iter().step_by(2).copied().collect::<Vec<f32>>();
-    let right_samples = samples
-        .iter()
-        .skip(1)
-        .step_by(2)
-        .copied()
-        .collect::<Vec<f32>>();
-    let mid_samples = left_samples
-        .iter()
-        .zip(right_samples.iter())
-        .map(|(l, r)| (l + r) / 2.)
-        .collect::<Vec<f32>>();
-    let side_samples = left_samples
-        .iter()
-        .zip(right_samples.iter())
-        .map(|(l, r)| (l - r) / 2.)
-        .collect::<Vec<f32>>();
-    (mid_samples, side_samples)
 }
