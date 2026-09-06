@@ -7,13 +7,7 @@ mod tui;
 use crate::audio_player::{AudioFile, AudioPlayer, PlaybackPosition, PlayerCommand};
 use crossbeam::channel::{bounded, unbounded};
 use eyre::Result;
-use ringbuffer::{AllocRingBuffer, RingBuffer};
-use std::{
-    env,
-    path::PathBuf,
-    sync::{Arc, Mutex},
-    thread,
-};
+use std::{env, path::PathBuf, thread};
 
 fn main() -> Result<()> {
     let args: Vec<String> = env::args().collect();
@@ -66,22 +60,26 @@ fn main() -> Result<()> {
         }
     }
 
-    let mut buf = AllocRingBuffer::new(44100usize * 30);
-    buf.fill(0.0);
-    let latest_captured_samples = Arc::new(Mutex::new(buf));
-
-    thread::spawn(|| {
+    let tui_handler = thread::spawn(|| {
         tui::run(
             None,
             player_command_tx,
             audio_file_rx,
             playback_position_rx,
             error_rx,
-            latest_captured_samples,
             startup_file,
         )
     });
-    player.run(&player_command_rx, &audio_file_tx, &error_tx)
+    player.run(&player_command_rx, &audio_file_tx, &error_tx)?;
+
+    let _ = tui_handler.join().unwrap();
+
+    ratatui::crossterm::execute!(
+        std::io::stdout(),
+        ratatui::crossterm::event::DisableMouseCapture
+    )?;
+
+    Ok(())
 }
 
 fn print_help() {

@@ -3,9 +3,9 @@
 #[cfg(target_os = "macos")]
 use crate::system_sound_capture;
 use crate::{
-    analyzer::Analyzer,
+    analyzer::{self, Analyzer},
     audio_capture::{self, AudioDevice, list_input_devices},
-    audio_player::{self, AudioFile, PlayerCommand},
+    audio_player::{AudioFile, PlayerCommand},
     builtin_themes::{self, list_themes},
     system_sound_capture::SYSTEM_TAP_DEVICE_NAME,
     tui::{
@@ -142,6 +142,10 @@ struct Settings {
     selected_device_index: Option<usize>,
 }
 
+struct DeviceData {
+    channels: u16,
+}
+
 /// `App` contains the necessary components for the application like senders, receivers, [`AudioFile`] data, [`UIsettings`].
 struct App {
     /// Audio file which is loaded into the player.
@@ -152,10 +156,14 @@ struct App {
     /// the first file is selected.
     is_playing_audio: bool,
     audio_file_rx: Receiver<AudioFile>,
-    /// [`RingBuffer`] used to store the latest captured samples when the `Mode` is not `Mode::Player`.
-    latest_captured_samples: RBuffer,
+    /// [`RingBuffer`] used to store the latest captured samples of a microphone.
+    latest_captured_microphone_samples: RBuffer,
     /// The stream that captures the audio through input device
-    audio_capture_stream: Option<Stream>,
+    microphone_capture_stream: Option<Stream>,
+    /// [`RingBuffer`] used to store the latest captured samples of system sound.
+    latest_captured_system_sound_samples: RBuffer,
+    /// The stream that captures system audio
+    system_sound_capture_stream: Option<Stream>,
     /// Sends commands like pause and play to the player.
     player_command_tx: Sender<PlayerCommand>,
     /// Gets playback position of an audio file when the mode is player
@@ -167,6 +175,10 @@ struct App {
     file_analyzer: Analyzer,
     /// Used to get LUFS of microphone input.
     device_analyzer: Analyzer,
+    /// Used to get LUFS of microphone input.
+    system_sound_analyzer: Analyzer,
+    /// Device data like sample rate
+    device_data: DeviceData,
 
     // Charts data
     /// Data used to render spectrum chart.
@@ -200,19 +212,24 @@ impl App {
         audio_file_rx: Receiver<AudioFile>,
         playback_position_rx: Receiver<usize>,
         error_rx: Receiver<String>,
-        latest_captured_samples: RBuffer,
+        latest_captured_microphone_samples: RBuffer,
+        latest_captured_system_sound_samples: RBuffer,
     ) -> Result<Self> {
         Ok(Self {
             audio_file,
             is_playing_audio: false,
             audio_file_rx,
-            latest_captured_samples,
-            audio_capture_stream: None,
+            latest_captured_microphone_samples,
+            latest_captured_system_sound_samples,
+            microphone_capture_stream: None,
+            system_sound_capture_stream: None,
             player_command_tx,
             playback_position_rx,
             error_rx,
             file_analyzer: Analyzer::default(),
             device_analyzer: Analyzer::default(),
+            system_sound_analyzer: Analyzer::default(),
+            device_data: DeviceData { channels: 1 },
             spectrum: Spectrum::default(),
             waveform: WaveForm::default(),
             lufs: Lufs::default(),
@@ -575,23 +592,20 @@ impl App {
             &audio_file.data.samples,
             audio_file.data.duration.as_secs_f64(),
         );
-        // TODO: channels
-        if let Err(err) = self.file_analyzer.create_loudness_meter(
-            // self.audio_file.channels() as u32,
-            2,
-            audio_file.sample_rate(),
-        ) {
+        if let Err(err) = self
+            .file_analyzer
+            .create_loudness_meter(audio_file.channels() as u32, audio_file.sample_rate())
+        {
             self.handle_error(format!(
                 "Could not create an analyzer for an audio file: {err}"
             ));
         }
 
         // Calculate gain compensation to normalize track to target LUFS
-        if let Some(integrated_lufs) = self.file_analyzer.calculate_integrated_lufs(
-            // self.audio_file.channels(),
-            2,
-            &audio_file.data.samples,
-        ) {
+        if let Some(integrated_lufs) = self
+            .file_analyzer
+            .calculate_integrated_lufs(audio_file.channels() as u32, &audio_file.data.samples)
+        {
             let gain_db = SPECTRUM_TARGET_DBFS - integrated_lufs as f32;
             self.spectrum.gain_compensation = gain_db;
         } else {
@@ -635,6 +649,13 @@ impl App {
 
             if keep { Some(file) } else { None }
         })?;
+
+        if let Err(err) = self.connect_system_tap_device() {
+            self.handle_error(format!(
+                "Couldn't connect to system sound capture device: {err}"
+            ));
+        }
+
         terminal.draw(|f| self.draw(f))?;
 
         // blocking audio file receiver
@@ -661,7 +682,7 @@ impl App {
             }
 
             // use ringbuf to analyze data if the `Mode` is not `Mode::Player`
-            if matches!(self.settings.mode, Mode::Microphone | Mode::System) {
+            if !matches!(self.settings.mode, Mode::Player) {
                 self.analyze_microphone_input();
                 self.ui.needs_render = true; // Always render in microphone mode
             }
@@ -795,48 +816,67 @@ impl App {
     }
 
     fn analyze_microphone_input(&mut self) {
-        let samples = self.latest_captured_samples.lock().unwrap().to_vec();
-        let (mid_samples, side_samples) = audio_player::get_mid_and_side_samples(&samples);
+        let samples = match self.settings.mode {
+            Mode::Microphone => self
+                .latest_captured_microphone_samples
+                .lock()
+                .unwrap()
+                .to_vec(),
+            Mode::System => self
+                .latest_captured_system_sound_samples
+                .lock()
+                .unwrap()
+                .to_vec(),
+            Mode::Player => unreachable!(),
+        };
+        let (mid_samples, side_samples) = if self.device_data.channels == 2 {
+            analyzer::get_mid_and_side_samples(&samples)
+        } else {
+            // mono input: the signal itself is the mid channel, side is silence
+            (samples.clone(), vec![0.; samples.len()])
+        };
         let sample_rate = self.device_analyzer.sample_rate() as usize;
-        let left_bound = 15 * sample_rate - 2usize.pow(14);
+
+        let right_bound = mid_samples.len();
+        let left_bound = right_bound.saturating_sub(analyzer::fft_window_size(sample_rate as u32));
 
         // get spectrum
         self.spectrum.mid_freq = match self
             .device_analyzer
-            .get_spectrum(&mid_samples[left_bound..15 * sample_rate])
+            .get_spectrum(&mid_samples[left_bound..right_bound])
         {
             Ok(spectrum) => spectrum,
             Err(err) => {
-                self.handle_error(format!("Error getting frequencies: {err}. Perhaps your microphone's sample rate is too low."));
+                self.handle_error(format!("Error getting frequencies: {err}"));
                 vec![(0., 0.)]
             }
         };
         self.spectrum.side_freq = match self
             .device_analyzer
-            .get_spectrum(&side_samples[left_bound..15 * sample_rate])
+            .get_spectrum(&side_samples[left_bound..right_bound])
         {
             Ok(spectrum) => spectrum,
             Err(err) => {
-                self.handle_error(format!("Error getting frequencies: {err}. Perhaps your microphone's sample rate is too low."));
+                self.handle_error(format!("Error getting frequencies: {err}"));
                 vec![(0., 0.)]
             }
         };
 
-        // get waveform
-        self.waveform.microphone_input_chart = Analyzer::get_waveform(&mid_samples, 15.);
-
-        let samples = self.latest_captured_samples.lock().unwrap().to_vec();
-        let sample_rate = self.device_analyzer.sample_rate() as usize;
+        // get waveform of the last 15 seconds
+        let waveform_left_bound = mid_samples.len().saturating_sub(15 * sample_rate);
+        self.waveform.microphone_input_chart =
+            Analyzer::get_waveform(&mid_samples[waveform_left_bound..], 15.);
 
         // get lufs
         for i in 0..self.lufs.0.len() - 1 {
             self.lufs.0[i] = self.lufs.0[i + 1];
         }
 
-        let lb = 30 * sample_rate - 2usize.pow(14);
+        let lufs_right_bound = samples.len().min(30 * sample_rate);
+        let lb = lufs_right_bound.saturating_sub(2usize.pow(14));
         if let Err(err) = self
             .device_analyzer
-            .add_samples(&samples[lb..30 * sample_rate])
+            .add_samples(&samples[lb..lufs_right_bound])
         {
             self.handle_error(format!("Could not get samples for LUFS analyzer: {err}"));
         }
@@ -859,7 +899,8 @@ impl App {
         self.waveform.playhead = pos;
 
         // get spectrum
-        let spectrum_left_bound = pos.saturating_sub(16384);
+        let spectrum_left_bound =
+            pos.saturating_sub(analyzer::fft_window_size(audio_file.sample_rate()));
         if spectrum_left_bound != 0 {
             let mid_samples_len = audio_file.data.mid_samples.len();
             let side_samples_len = audio_file.data.side_samples.len();
@@ -1014,19 +1055,11 @@ impl App {
             KeyCode::Char('m') if matches!(self.ui.popup_state, PopupState::None) => {
                 self.settings.mode = match self.settings.mode {
                     Mode::Player => {
-                        if let Some(index) = self.settings.selected_device_index
-                            && let Err(err) = self.select_device(index)
-                        {
-                            self.handle_error(format!("Failed to capture system sound: {err}"));
-                        }
                         self.reset_charts();
                         Mode::Microphone
                     }
                     Mode::Microphone => {
                         if cfg!(target_os = "macos") {
-                            if let Err(err) = self.select_device(0) {
-                                self.handle_error(format!("Failed to capture system sound: {err}"));
-                            }
                             self.reset_charts();
                             system_sound_capture::ensure_screen_capture_permission();
                             Mode::System
@@ -1154,9 +1187,9 @@ impl App {
             return Err(eyre!("Invalid device index: {}", index + 1));
         }
 
-        if let Some(stream) = &self.audio_capture_stream {
+        if let Some(stream) = &self.microphone_capture_stream {
             stream.pause().unwrap();
-            self.audio_capture_stream = None;
+            self.microphone_capture_stream = None;
         }
         let device = devices[index].1.clone();
         let audio_device = AudioDevice::new(Some(device));
@@ -1165,13 +1198,15 @@ impl App {
         let sr = audio_device.config().sample_rate.0;
         let channels = audio_device.config().channels;
 
+        self.device_data.channels = channels;
+
         let mut buf = AllocRingBuffer::new(sr as usize * 30);
         buf.fill(0.0);
         let latest_captured_samples = Arc::new(Mutex::new(buf));
-        self.latest_captured_samples = latest_captured_samples;
+        self.latest_captured_microphone_samples = latest_captured_samples;
 
         let stream = match audio_capture::build_input_stream(
-            self.latest_captured_samples.clone(),
+            self.latest_captured_microphone_samples.clone(),
             &audio_device,
         ) {
             Ok(stream) => stream,
@@ -1179,15 +1214,45 @@ impl App {
                 return Err(eyre!("Failed to create audio capture stream: {}", err));
             }
         };
-        self.audio_capture_stream = Some(stream);
-        self.audio_capture_stream.as_ref().unwrap().play()?;
+        self.microphone_capture_stream = Some(stream);
+        self.microphone_capture_stream.as_ref().unwrap().play()?;
         self.ui.popup_state = PopupState::None;
         if let Err(err) = self
             .device_analyzer
             .create_loudness_meter(channels as u32, sr)
         {
+            self.handle_error(format!("Could not create an analyzer for a device: {err}"));
+        }
+
+        self.spectrum.gain_compensation = 0.0;
+        Ok(())
+    }
+
+    fn connect_system_tap_device(&mut self) -> Result<()> {
+        let devices = list_input_devices();
+        let device = devices[0].1.clone();
+        let audio_device = AudioDevice::new(Some(device));
+
+        let sr = audio_device.config().sample_rate.0;
+        let channels = audio_device.config().channels;
+
+        let stream = match audio_capture::build_input_stream(
+            self.latest_captured_system_sound_samples.clone(),
+            &audio_device,
+        ) {
+            Ok(stream) => stream,
+            Err(err) => {
+                return Err(eyre!("Failed to create audio capture stream: {}", err));
+            }
+        };
+        self.system_sound_capture_stream = Some(stream);
+        self.system_sound_capture_stream.as_ref().unwrap().play()?;
+        if let Err(err) = self
+            .system_sound_analyzer
+            .create_loudness_meter(channels as u32, sr)
+        {
             self.handle_error(format!(
-                "Could not create an analyzer for an audio file: {err}"
+                "Could not create an analyzer for a system sound capture device: {err}"
             ));
         }
 
@@ -1555,7 +1620,6 @@ pub fn run(
     audio_file_rx: Receiver<AudioFile>,
     playback_position_rx: Receiver<usize>,
     error_rx: Receiver<String>,
-    latest_captured_samples: RBuffer,
     startup_file: Option<PathBuf>,
 ) -> Result<()> {
     let terminal = ratatui::init();
@@ -1563,13 +1627,22 @@ pub fn run(
         std::io::stdout(),
         ratatui::crossterm::event::EnableMouseCapture
     )?;
+
+    let mut microphone_buf = AllocRingBuffer::new(44100usize * 30);
+    microphone_buf.fill(0.0);
+    let latest_captured_microphone_samples = Arc::new(Mutex::new(microphone_buf));
+    let mut system_buf = AllocRingBuffer::new(44100usize * 30);
+    system_buf.fill(0.0);
+    let latest_captured_system_sound_samples = Arc::new(Mutex::new(system_buf));
+
     let app_result = App::new(
         audio_file,
         player_command_tx,
         audio_file_rx,
         playback_position_rx,
         error_rx,
-        latest_captured_samples,
+        latest_captured_microphone_samples,
+        latest_captured_system_sound_samples,
     )?
     .run(terminal, startup_file);
     ratatui::restore();
@@ -1589,7 +1662,10 @@ mod tests {
         let (_, error_rx) = channel::unbounded();
 
         let audio_file = AudioFile::new(playback_position_tx);
-        let latest_captured_samples = Arc::new(Mutex::new(AllocRingBuffer::new(44100 * 30)));
+        let latest_captured_microphone_samples =
+            Arc::new(Mutex::new(AllocRingBuffer::new(44100 * 30)));
+        let latest_captured_system_sound_samples =
+            Arc::new(Mutex::new(AllocRingBuffer::new(44100 * 30)));
 
         let app = App::new(
             Some(audio_file),
@@ -1597,7 +1673,8 @@ mod tests {
             audio_file_rx,
             playback_position_rx,
             error_rx,
-            latest_captured_samples,
+            latest_captured_microphone_samples,
+            latest_captured_system_sound_samples,
         )
         .unwrap();
 
@@ -1665,10 +1742,12 @@ mod tests {
         let (mut app, _, _) = create_test_app();
         app.settings.mode = Mode::Microphone;
         let sr = 44100;
+        app.device_data.channels = 1;
+        app.device_analyzer.create_loudness_meter(1, sr).unwrap();
 
         // Fill the buffer with test data
         {
-            let mut buffer = app.latest_captured_samples.lock().unwrap();
+            let mut buffer = app.latest_captured_microphone_samples.lock().unwrap();
             buffer.clear();
             for i in 0..sr * 30 {
                 let sample = (i as f32 * 500.0 * 2.0 * std::f32::consts::PI / sr as f32).sin();
@@ -1677,20 +1756,8 @@ mod tests {
         }
 
         app.analyze_microphone_input();
-
-        assert!(!app.spectrum.mid_freq.is_empty());
-
-        // Check that there's a peak around 500 Hz
-        let freq_bin = 500.0 / (sr as f32 / 2.0) * (app.spectrum.mid_freq.len() as f32);
-        let bin_idx = freq_bin.round() as usize;
-
-        // Check that this bin has non-trivial amplitude
-        if bin_idx < app.spectrum.mid_freq.len() {
-            let amp = app.spectrum.mid_freq[bin_idx].1; // assuming (freq, amp)
-            assert!(amp < -20.0, "Expected strong signal at ~500Hz, got: {amp}");
-        } else {
-            panic!("Bin index out of range: {bin_idx}");
-        }
+        assert_spectrum_peak_near_500hz(&app);
+        assert_side_is_silent(&app);
     }
 
     #[test]
@@ -1698,10 +1765,12 @@ mod tests {
         let (mut app, _, _) = create_test_app();
         app.settings.mode = Mode::Microphone;
         let sr = 48000;
+        app.device_data.channels = 1;
+        app.device_analyzer.create_loudness_meter(1, sr).unwrap();
 
         // Fill the buffer with test data
         {
-            let mut buffer = app.latest_captured_samples.lock().unwrap();
+            let mut buffer = app.latest_captured_microphone_samples.lock().unwrap();
             buffer.clear();
             for i in 0..sr * 30 {
                 let sample = (i as f32 * 500.0 * 2.0 * std::f32::consts::PI / sr as f32).sin();
@@ -1710,20 +1779,8 @@ mod tests {
         }
 
         app.analyze_microphone_input();
-
-        assert!(!app.spectrum.mid_freq.is_empty());
-
-        // Check that there's a peak around 500 Hz
-        let freq_bin = 500.0 / (sr as f32 / 2.0) * (app.spectrum.mid_freq.len() as f32);
-        let bin_idx = freq_bin.round() as usize;
-
-        // Check that this bin has non-trivial amplitude
-        if bin_idx < app.spectrum.mid_freq.len() {
-            let amp = app.spectrum.mid_freq[bin_idx].1; // assuming (freq, amp)
-            assert!(amp < -20.0, "Expected strong signal at ~500Hz, got: {amp}");
-        } else {
-            panic!("Bin index out of range: {bin_idx}");
-        }
+        assert_spectrum_peak_near_500hz(&app);
+        assert_side_is_silent(&app);
     }
 
     #[test]
@@ -1731,10 +1788,12 @@ mod tests {
         let (mut app, _, _) = create_test_app();
         app.settings.mode = Mode::Microphone;
         let sr = 96000;
+        app.device_data.channels = 1;
+        app.device_analyzer.create_loudness_meter(1, sr).unwrap();
 
         // Fill the buffer with test data
         {
-            let mut buffer = app.latest_captured_samples.lock().unwrap();
+            let mut buffer = app.latest_captured_microphone_samples.lock().unwrap();
             buffer.clear();
             for i in 0..sr * 30 {
                 let sample = (i as f32 * 500.0 * 2.0 * std::f32::consts::PI / sr as f32).sin();
@@ -1743,19 +1802,83 @@ mod tests {
         }
 
         app.analyze_microphone_input();
+        assert_spectrum_peak_near_500hz(&app);
+        assert_side_is_silent(&app);
+    }
 
+    #[test]
+    fn test_analyze_microphone_input_16000() {
+        let (mut app, _, _) = create_test_app();
+        app.settings.mode = Mode::Microphone;
+        let sr = 16000;
+        app.device_data.channels = 1;
+        app.device_analyzer.create_loudness_meter(1, sr).unwrap();
+
+        // Fill the buffer with test data (16 kHz device, e.g. a Bluetooth headset)
+        {
+            let mut buffer = app.latest_captured_microphone_samples.lock().unwrap();
+            buffer.clear();
+            for i in 0..sr * 30 {
+                let sample = (i as f32 * 500.0 * 2.0 * std::f32::consts::PI / sr as f32).sin();
+                buffer.enqueue(sample);
+            }
+        }
+
+        app.analyze_microphone_input();
+        assert_spectrum_peak_near_500hz(&app);
+        assert_side_is_silent(&app);
+    }
+
+    #[test]
+    fn test_analyze_microphone_input_stereo() {
+        let (mut app, _, _) = create_test_app();
+        app.settings.mode = Mode::Microphone;
+        let sr = 48000;
+        app.device_data.channels = 2;
+        app.device_analyzer.create_loudness_meter(2, sr).unwrap();
+
+        // Fill the buffer with interleaved stereo: L = R = 500 Hz sine
+        {
+            let mut buffer = app.latest_captured_microphone_samples.lock().unwrap();
+            buffer.clear();
+            for frame in 0..sr * 15 {
+                let sample = (frame as f32 * 500.0 * 2.0 * std::f32::consts::PI / sr as f32).sin();
+                buffer.enqueue(sample);
+                buffer.enqueue(sample);
+            }
+        }
+
+        app.analyze_microphone_input();
+        // L = R means mid = signal and side = silence
+        assert_spectrum_peak_near_500hz(&app);
+        assert_side_is_silent(&app);
+    }
+
+    /// Finds the highest peak of the mid spectrum and checks that it is near 500 Hz.
+    fn assert_spectrum_peak_near_500hz(app: &App) {
         assert!(!app.spectrum.mid_freq.is_empty());
 
-        // Check that there's a peak around 500 Hz
-        let freq_bin = 500.0 / (sr as f32 / 2.0) * (app.spectrum.mid_freq.len() as f32);
-        let bin_idx = freq_bin.round() as usize;
+        let (_, (chart_x, val)) = app
+            .spectrum
+            .mid_freq
+            .iter()
+            .enumerate()
+            .max_by(|a, b| a.1.1.partial_cmp(&b.1.1).unwrap())
+            .unwrap();
 
-        // Check that this bin has non-trivial amplitude
-        if bin_idx < app.spectrum.mid_freq.len() {
-            let amp = app.spectrum.mid_freq[bin_idx].1; // assuming (freq, amp)
-            assert!(amp < -20.0, "Expected strong signal at ~500Hz, got: {amp}");
-        } else {
-            panic!("Bin index out of range: {bin_idx}");
-        }
+        // chart_x is the logarithmic position on the 20 Hz..20000 Hz axis
+        let peak_freq = 20. * 1000f64.powf(chart_x / 100.);
+        assert!(
+            (450.0..=550.0).contains(&peak_freq),
+            "Expected spectrum peak near 500 Hz, got {peak_freq} Hz (val {val})"
+        );
+    }
+
+    /// Checks that the side spectrum contains no signal.
+    fn assert_side_is_silent(app: &App) {
+        assert!(
+            app.spectrum.side_freq.iter().all(|(_, val)| *val < -60.),
+            "Expected silent side channel"
+        );
     }
 }

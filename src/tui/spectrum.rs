@@ -27,8 +27,8 @@ pub struct Spectrum {
 impl Default for Spectrum {
     fn default() -> Self {
         Self {
-            mid_freq: Vec::with_capacity(20_000),
-            side_freq: Vec::with_capacity(20_000),
+            mid_freq: Vec::with_capacity(22_050),
+            side_freq: Vec::with_capacity(22_050),
             gain_compensation: 0.0,
             show_mid_freq: true,
             show_side_freq: false,

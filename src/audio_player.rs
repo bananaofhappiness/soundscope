@@ -138,8 +138,11 @@ impl AudioFile {
         // get file name
         let title = path.file_name().unwrap().to_string_lossy().to_string();
         let (samples, sample_rate, channels) = Self::decode_file(path)?;
-        // TODO: other channels, not only stereo sound.
-        let (mid_samples, side_samples) = analyzer::get_mid_and_side_samples(&samples);
+        let (mid_samples, side_samples) = if channels.count() == 2 {
+            analyzer::get_mid_and_side_samples(&samples)
+        } else {
+            (samples.clone(), samples.clone())
+        };
         let duration = mid_samples.len() as f64 / sample_rate as f64 * 1000.;
         let data = AudioData {
             title,
@@ -336,10 +339,6 @@ impl AudioPlayer {
                         self.sink.stop();
                         self.sink.clear();
                         self.audio_file.playback_position = 0;
-                        ratatui::crossterm::execute!(
-                            std::io::stdout(),
-                            ratatui::crossterm::event::DisableMouseCapture
-                        )?;
                         return Ok(());
                     }
                     // move the playhead right

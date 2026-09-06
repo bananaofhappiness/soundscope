@@ -34,21 +34,14 @@ pub fn build_input_stream(
 ) -> Result<Stream> {
     let dev = audio_device.device();
     let cfg = audio_device.config();
-    let is_mono = cfg.channels == 1;
     let stream = dev.build_input_stream(
         cfg,
         move |data: &[f32], _info| {
-            let mut audio_buf = latest_captured_samples.lock().unwrap();
-            if is_mono {
-                let data: Vec<f32> = data
-                    .iter()
-                    .enumerate()
-                    .flat_map(|(i, &x)| if i == 0 { vec![x] } else { vec![0., x] })
-                    .collect();
-                audio_buf.extend(data);
-            } else {
-                audio_buf.extend(data.iter().copied());
-            }
+            // store the raw interleaved samples as-is; channel handling is done by the analyzer
+            latest_captured_samples
+                .lock()
+                .unwrap()
+                .extend(data.iter().copied());
         },
         |err| {
             eprintln!("got stream error: {err}");
