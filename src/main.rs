@@ -2,17 +2,12 @@ mod analyzer;
 mod audio_capture;
 mod audio_player;
 mod builtin_themes;
+mod system_sound_capture;
 mod tui;
 use crate::audio_player::{AudioFile, AudioPlayer, PlaybackPosition, PlayerCommand};
 use crossbeam::channel::{bounded, unbounded};
 use eyre::Result;
-use ringbuffer::{AllocRingBuffer, RingBuffer};
-use std::{
-    env,
-    path::PathBuf,
-    sync::{Arc, Mutex},
-    thread,
-};
+use std::{env, path::PathBuf, thread};
 
 fn main() -> Result<()> {
     let args: Vec<String> = env::args().collect();
@@ -46,8 +41,8 @@ fn main() -> Result<()> {
     // create an audio player
     let mut player = AudioPlayer::new(playback_position_tx.clone())?;
 
-    // just a place holder audio_file to initialize app
-    let audio_file = AudioFile::new(playback_position_tx);
+    #[cfg(target_os = "macos")]
+    let _system_audio_device = unsafe { system_sound_capture::SystemAudioDevice::new() };
 
     let mut startup_file = None;
     let startup_path = args.get(1).map(PathBuf::from);
@@ -65,22 +60,26 @@ fn main() -> Result<()> {
         }
     }
 
-    let mut buf = AllocRingBuffer::new(44100usize * 30);
-    buf.fill(0.0);
-    let latest_captured_samples = Arc::new(Mutex::new(buf));
-
-    thread::spawn(|| {
+    let tui_handler = thread::spawn(|| {
         tui::run(
-            audio_file,
+            None,
             player_command_tx,
             audio_file_rx,
             playback_position_rx,
             error_rx,
-            latest_captured_samples,
             startup_file,
         )
     });
-    player.run(&player_command_rx, &audio_file_tx, &error_tx)
+    player.run(&player_command_rx, &audio_file_tx, &error_tx)?;
+
+    let _ = tui_handler.join().unwrap();
+
+    ratatui::crossterm::execute!(
+        std::io::stdout(),
+        ratatui::crossterm::event::DisableMouseCapture
+    )?;
+
+    Ok(())
 }
 
 fn print_help() {

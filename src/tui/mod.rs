@@ -1,10 +1,17 @@
 //! This module contains the implementation of the terminal user interface (TUI) used to display audio analysis results.
 //! It uses `ratatui` under the hood.
+#[cfg(target_os = "macos")]
+use crate::system_sound_capture;
 use crate::{
-    analyzer::Analyzer,
-    audio_capture::{self, AudioDevice, list_input_devs},
-    audio_player::{self, AudioFile, PlayerCommand},
-    builtin_themes,
+    analyzer::{self, Analyzer},
+    audio_capture::{self, AudioDevice, list_input_devices},
+    audio_player::{AudioFile, PlayerCommand},
+    builtin_themes::{self, list_themes},
+    system_sound_capture::SYSTEM_TAP_DEVICE_NAME,
+    tui::{
+        lufs::Lufs,
+        spectrum::{SPECTRUM_LOWER_BOUND, SPECTRUM_TARGET_DBFS, SPECTRUM_UPPER_BOUND, Spectrum},
+    },
 };
 use cpal::{Stream, traits::StreamTrait as _};
 use crossbeam::channel::{Receiver, Sender};
@@ -14,17 +21,16 @@ use ratatui::{
     crossterm::event::{Event, KeyCode, KeyEvent, MouseEvent, MouseEventKind, poll, read},
     layout::Flex,
     prelude::*,
-    style::{Color, Style, Stylize},
-    text::{Line, Span, ToLine, ToSpan},
+    style::{Style, Stylize},
+    text::{ToLine, ToSpan},
     widgets::{
-        Axis, Block, BorderType, Cell, Chart, Clear, Dataset, FrameExt, GraphType, List, ListItem,
-        Paragraph, Row, Table, Wrap,
+        Block, BorderType, Cell, Clear, FrameExt, List, ListItem, ListState, Paragraph, Row, Table,
+        Wrap,
     },
 };
 use ratatui_explorer::{FileExplorer, FileExplorerBuilder};
 use ringbuffer::{AllocRingBuffer, RingBuffer};
 use rodio::Source;
-use serde::Deserialize;
 use std::path::Path;
 use std::{
     fmt::Display,
@@ -34,6 +40,14 @@ use std::{
     sync::{Arc, Mutex},
     time::{Duration, Instant},
 };
+
+mod lufs;
+mod spectrum;
+pub mod theme;
+mod waveform;
+
+use theme::Theme;
+use waveform::WaveForm;
 
 pub type RBuffer = Arc<Mutex<AllocRingBuffer<f32>>>;
 
@@ -47,69 +61,57 @@ const SUPPORTED_FORMATS: [&str; 22] = [
     "theme", "toml", // Theme file
 ];
 
-const FFT_TARGET_LUFS: f32 = -13.0;
-const FFT_LOWER_BOUND: f64 = -100.0;
-const FFT_UPPER_BOUND: f64 = -18.0;
+enum PopupState {
+    InExplorer,
+    InDeviceList,
+    InThemesList,
+    InHelpMessage,
+    None,
+}
+
+bitflags::bitflags! {
+    struct ShowWindow: u8 {
+        const SPECTRUM = 1 << 0;
+        const LUFS = 1 << 1;
+        const WAVEFORM = 1 << 2;
+    }
+}
+
+impl Default for ShowWindow {
+    fn default() -> Self {
+        Self::SPECTRUM | Self::LUFS | Self::WAVEFORM
+    }
+}
 
 /// Settings like showing/hiding UI elements.
 struct UI {
     theme: Theme,
-    show_explorer: bool,
-    show_fft_chart: bool,
-    show_mid_fft: bool,
-    show_side_fft: bool,
-    show_devices_list: bool,
-    show_lufs: bool,
-    show_waveform: bool,
-    show_themes_list: bool,
-    show_help_message: bool,
+    show_window: ShowWindow,
+    popup_state: PopupState,
     error_text: String,
     error_timer: Option<Instant>,
-    device_name: String,
-    waveform_window: f64,
-    // Used to flash control elements when the button is pressed
-    left_arrow_timer: Option<Instant>,
-    right_arrow_timer: Option<Instant>,
-    plus_sign_timer: Option<Instant>,
-    minus_sign_timer: Option<Instant>,
-    // Used to be able to hover fft chart to get more precise frequencies
+    /// Used to be able to hover spectrum to get more precise frequencies
     chart_rect: Option<Rect>,
     /// Track if render is needed to avoid unnecessary redraws
     needs_render: bool,
     /// Selected theme index in themes list
-    selected_theme_index: usize,
+    selected_theme: ListState,
     /// Selected device index in devices list
-    selected_device_index: usize,
-    /// Gain compensation in dB to normalize track to target LUFS
-    fft_gain_compensation_db: f32,
+    selected_device: ListState,
 }
 
 impl Default for UI {
     fn default() -> Self {
         Self {
             theme: Theme::default(),
-            show_explorer: false,
-            show_fft_chart: true,
-            show_mid_fft: true,
-            show_side_fft: false,
-            show_devices_list: false,
-            show_lufs: true,
-            show_waveform: true,
-            show_themes_list: false,
-            show_help_message: false,
+            popup_state: PopupState::None,
+            show_window: ShowWindow::default(),
             error_text: String::new(),
             error_timer: None,
-            device_name: String::new(),
-            waveform_window: 15.,
-            left_arrow_timer: None,
-            right_arrow_timer: None,
-            plus_sign_timer: None,
-            minus_sign_timer: None,
             chart_rect: None,
             needs_render: true,
-            selected_theme_index: 0,
-            selected_device_index: 0,
-            fft_gain_compensation_db: 0.0,
+            selected_theme: ListState::default().with_selected(Some(0)),
+            selected_device: ListState::default().with_selected(Some(0)),
         }
     }
 }
@@ -120,7 +122,7 @@ enum Mode {
     #[default]
     Player,
     Microphone,
-    _System,
+    System,
 }
 
 impl Display for Mode {
@@ -128,278 +130,40 @@ impl Display for Mode {
         match self {
             Mode::Player => write!(f, "Player"),
             Mode::Microphone => write!(f, "Microphone"),
-            Mode::_System => write!(f, "System"),
+            Mode::System => write!(f, "System"),
         }
     }
-}
-
-/// Defines theme using .toml file
-/// Otherwise, uses default values.
-#[derive(Deserialize, Default)]
-pub struct Theme {
-    pub global: GlobalTheme,
-    pub waveform: WaveformTheme,
-    pub fft: FftTheme,
-    pub lufs: LufsTheme,
-    pub devices: DeviceListTheme,
-    pub explorer: ExplorerTheme,
-    pub error: ErrorTheme,
-    pub help: HelpMessageTheme,
-}
-
-/// Uses [fill] to conviniently fill all fields of a struct.
-macro_rules! fill_fields {
-    ($self:ident.$section:ident.$($field:ident <- $value:expr),* $(,)?) => {
-        $( fill(&mut $self.$section.$field, $value); )*
-    };
-}
-
-/// Used to set `default: T` to a `field` if it is not set (it is None).
-/// Used in [`fill_fields`] macro
-fn fill<T>(field: &mut Option<T>, default: T) {
-    if field.is_none() {
-        *field = Some(default);
-    }
-}
-
-impl Theme {
-    /// Sets `self.global.foreground` and `self.global.background` for every field that was not defined in a theme file.
-    pub fn apply_global_as_default(&mut self) {
-        let fg = self.global.foreground;
-        let bg = self.global.background;
-        self.global.highlight = self.global.highlight.or(Some(fg));
-        let hl = self.global.highlight.unwrap();
-
-        fill_fields!(self.waveform.
-            borders <- fg,
-            controls <- fg,
-            controls_highlight <- hl,
-            labels <- fg,
-            playhead <- hl,
-            current_time <- fg,
-            total_duration <- fg,
-            waveform <- fg,
-            background <- bg,
-            highlight <- hl,
-        );
-
-        fill_fields!(self.lufs.
-            axis <- fg,
-            chart <- fg,
-            foreground <- fg,
-            labels <- fg,
-            numbers <- fg,
-            borders <- fg,
-            background <- bg,
-            highlight <- hl,
-        );
-
-        fill_fields!(self.fft.
-            axes <- fg,
-            axes_labels <- fg,
-            borders <- fg,
-            labels <- fg,
-            mid_fft <- fg,
-            side_fft <- hl,
-            background <- bg,
-            highlight <- hl,
-        );
-
-        fill_fields!(self.explorer.
-            background <- bg,
-            borders <- fg,
-            dir_foreground <- fg,
-            item_foreground <- fg,
-            highlight_dir_foreground <- hl,
-            highlight_item_foreground <- hl,
-        );
-
-        fill_fields!(self.devices.
-            background <- bg,
-            foreground <- fg,
-            borders <- fg,
-            highlight <- hl,
-        );
-
-        fill_fields!(self.error.
-            background <- bg,
-            foreground <- fg,
-            borders <- fg,
-        );
-
-        fill_fields!(self.help.
-            background <- bg,
-            foreground <- fg,
-            borders <- fg,
-            highlight <- hl,
-        );
-    }
-}
-
-/// Used to set default values of every UI element if they are not specified in the config file.
-#[derive(Deserialize)]
-pub struct GlobalTheme {
-    pub background: Color,
-    /// It is default value for everything that is not a background
-    pub foreground: Color,
-    /// Color used to highlight corresponding characters
-    /// Like highlighting L in LUFS to let the user know
-    /// that pressing L will open the LUFS meter
-    pub highlight: Option<Color>,
-}
-
-impl Default for GlobalTheme {
-    fn default() -> Self {
-        Self {
-            background: Color::Black,
-            foreground: Color::Indexed(221),
-            highlight: Some(Color::Indexed(160)),
-        }
-    }
-}
-
-/// Used to define the theme for the waveform display.
-#[derive(Deserialize, Default)]
-pub struct WaveformTheme {
-    pub borders: Option<Color>,
-    pub waveform: Option<Color>,
-    pub playhead: Option<Color>,
-    /// Current playing time and total duration
-    pub current_time: Option<Color>,
-    pub total_duration: Option<Color>,
-    /// Buttons like <-, +, -, ->
-    pub controls: Option<Color>,
-    pub controls_highlight: Option<Color>,
-    pub labels: Option<Color>,
-    /// Background of the chart
-    pub background: Option<Color>,
-    pub highlight: Option<Color>,
-}
-
-/// Used to define the theme for the FFT display.
-#[derive(Deserialize, Default)]
-pub struct FftTheme {
-    pub borders: Option<Color>,
-    /// Frequencies and LUFS tabs text
-    pub labels: Option<Color>,
-    pub axes: Option<Color>,
-    pub axes_labels: Option<Color>,
-    pub mid_fft: Option<Color>,
-    pub side_fft: Option<Color>,
-    /// Background of the chart
-    pub background: Option<Color>,
-    pub highlight: Option<Color>,
-}
-
-/// Used to define the theme for the LUFS display.
-#[derive(Deserialize, Default)]
-pub struct LufsTheme {
-    pub axis: Option<Color>,
-    pub chart: Option<Color>,
-    /// Frequencies and LUFS tabs text
-    pub labels: Option<Color>,
-    /// Text color on the left
-    pub foreground: Option<Color>,
-    /// Color of the numbers on the left
-    pub numbers: Option<Color>,
-    pub borders: Option<Color>,
-    /// Background of the chart
-    pub background: Option<Color>,
-    pub highlight: Option<Color>,
-}
-
-/// Used to define the theme for the devices list.
-#[derive(Deserialize, Default)]
-pub struct DeviceListTheme {
-    pub background: Option<Color>,
-    pub foreground: Option<Color>,
-    pub borders: Option<Color>,
-    pub highlight: Option<Color>,
-}
-
-/// Used to define the theme for the explorer.
-#[derive(Deserialize, Default)]
-pub struct ExplorerTheme {
-    pub background: Option<Color>,
-    pub borders: Option<Color>,
-    pub item_foreground: Option<Color>,
-    pub highlight_item_foreground: Option<Color>,
-    pub dir_foreground: Option<Color>,
-    pub highlight_dir_foreground: Option<Color>,
-}
-
-/// Used to define the theme for the error popup.
-#[derive(Deserialize)]
-pub struct ErrorTheme {
-    pub background: Option<Color>,
-    pub foreground: Option<Color>,
-    pub borders: Option<Color>,
-}
-
-impl Default for ErrorTheme {
-    fn default() -> Self {
-        Self {
-            background: Some(Color::Black),
-            foreground: Some(Color::Indexed(160)),
-            borders: Some(Color::Indexed(160)),
-        }
-    }
-}
-
-/// Used to define the theme for the devices list.
-#[derive(Deserialize, Default)]
-pub struct HelpMessageTheme {
-    pub background: Option<Color>,
-    pub foreground: Option<Color>,
-    pub borders: Option<Color>,
-    pub highlight: Option<Color>,
 }
 
 /// Settings for the [App]. Currently only the [Mode] is supported.
 #[derive(Default)]
 struct Settings {
     mode: Mode,
+    selected_device_index: Option<usize>,
 }
 
-/// FFT data for the UI.
-#[derive(Default)]
-struct FFTData {
-    mid_fft: Vec<(f64, f64)>,
-    side_fft: Vec<(f64, f64)>,
-}
-
-/// Waveform data for the UI.
-struct WaveForm {
-    audio_file_chart: Vec<(f64, f64)>,
-    microphone_input_chart: Vec<(f64, f64)>,
-    playhead: usize,
-}
-
-impl Default for WaveForm {
-    fn default() -> Self {
-        Self {
-            audio_file_chart: vec![(0., 0.)],
-            microphone_input_chart: vec![(0., 0.)],
-            playhead: 0,
-        }
-    }
+struct DeviceData {
+    channels: u16,
 }
 
 /// `App` contains the necessary components for the application like senders, receivers, [`AudioFile`] data, [`UIsettings`].
 struct App {
     /// Audio file which is loaded into the player.
-    audio_file: AudioFile,
+    audio_file: Option<AudioFile>,
     /// If file is not selected, the app crashes when you try to play it.
     /// It is easier to use this bool instead of Option<AudioFile> because
     /// we would always have to check if it is not None. But it can be None only before
     /// the first file is selected.
-    is_file_selected: bool,
     is_playing_audio: bool,
     audio_file_rx: Receiver<AudioFile>,
-    /// [`RingBuffer`] used to store the latest captured samples when the `Mode` is not `Mode::Player`.
-    latest_captured_samples: RBuffer,
+    /// [`RingBuffer`] used to store the latest captured samples of a microphone.
+    latest_captured_microphone_samples: RBuffer,
     /// The stream that captures the audio through input device
-    audio_capture_stream: Option<Stream>,
+    microphone_capture_stream: Option<Stream>,
+    /// [`RingBuffer`] used to store the latest captured samples of system sound.
+    latest_captured_system_sound_samples: RBuffer,
+    /// The stream that captures system audio
+    system_sound_capture_stream: Option<Stream>,
     /// Sends commands like pause and play to the player.
     player_command_tx: Sender<PlayerCommand>,
     /// Gets playback position of an audio file when the mode is player
@@ -411,21 +175,24 @@ struct App {
     file_analyzer: Analyzer,
     /// Used to get LUFS of microphone input.
     device_analyzer: Analyzer,
+    /// Used to get LUFS of microphone input.
+    system_sound_analyzer: Analyzer,
+    /// Device data like sample rate
+    device_data: DeviceData,
 
     // Charts data
-    /// Data used to render FFT chart.
-    fft_data: FFTData,
+    /// Data used to render spectrum chart.
+    spectrum: Spectrum,
     /// Data used to render waveform.
     waveform: WaveForm,
-    /// LUFS chart.
-    lufs: [f64; 300],
     settings: Settings,
+    lufs: Lufs,
     //UI
     explorer: FileExplorer,
     ui: UI,
-    // Used to conviniently return to current directory when opening an explorer
+    /// Used to conviniently return to current directory when opening an explorer
     current_directory: PathBuf,
-    // Used to print info about fft chart when it's hovered
+    /// Used to print info about spectrum chart when it's hovered
     mouse_position: Option<(u16, u16)>,
 }
 
@@ -440,28 +207,32 @@ macro_rules! help_message_row {
 
 impl App {
     fn new(
-        audio_file: AudioFile,
+        audio_file: Option<AudioFile>,
         player_command_tx: Sender<PlayerCommand>,
         audio_file_rx: Receiver<AudioFile>,
         playback_position_rx: Receiver<usize>,
         error_rx: Receiver<String>,
-        latest_captured_samples: RBuffer,
+        latest_captured_microphone_samples: RBuffer,
+        latest_captured_system_sound_samples: RBuffer,
     ) -> Result<Self> {
         Ok(Self {
             audio_file,
-            is_file_selected: false,
             is_playing_audio: false,
             audio_file_rx,
-            latest_captured_samples,
-            audio_capture_stream: None,
+            latest_captured_microphone_samples,
+            latest_captured_system_sound_samples,
+            microphone_capture_stream: None,
+            system_sound_capture_stream: None,
             player_command_tx,
             playback_position_rx,
             error_rx,
             file_analyzer: Analyzer::default(),
             device_analyzer: Analyzer::default(),
-            fft_data: FFTData::default(),
+            system_sound_analyzer: Analyzer::default(),
+            device_data: DeviceData { channels: 1 },
+            spectrum: Spectrum::default(),
             waveform: WaveForm::default(),
-            lufs: [-100.; 300],
+            lufs: Lufs::default(),
             settings: Settings::default(),
             explorer: FileExplorerBuilder::build_with_theme(
                 ratatui_explorer::Theme::default()
@@ -505,8 +276,12 @@ impl App {
         f.render_widget(background, area);
 
         // if we should show top window (waveform)
-        let top_constraint = if self.ui.show_waveform {
-            if self.ui.show_fft_chart || self.ui.show_lufs {
+        let top_constraint = if self.ui.show_window.contains(ShowWindow::WAVEFORM) {
+            if self
+                .ui
+                .show_window
+                .intersects(ShowWindow::SPECTRUM | ShowWindow::LUFS)
+            {
                 Constraint::Percentage(30)
             } else {
                 Constraint::Percentage(100)
@@ -516,8 +291,12 @@ impl App {
         };
 
         // if we should show bottom windows (spectrum & lufs)
-        let bottom_constraint = if self.ui.show_fft_chart || self.ui.show_lufs {
-            if self.ui.show_waveform {
+        let bottom_constraint = if self
+            .ui
+            .show_window
+            .intersects(ShowWindow::SPECTRUM | ShowWindow::LUFS)
+        {
+            if self.ui.show_window.contains(ShowWindow::WAVEFORM) {
                 Constraint::Percentage(70)
             } else {
                 Constraint::Percentage(100)
@@ -532,20 +311,30 @@ impl App {
             .constraints([top_constraint, bottom_constraint])
             .split(area);
 
-        if self.ui.show_waveform {
-            self.render_waveform(f, vertical_chunks[0]);
+        if self.ui.show_window.contains(ShowWindow::WAVEFORM) {
+            self.waveform.render(
+                f,
+                vertical_chunks[0],
+                &self.ui.theme.waveform,
+                self.audio_file.as_ref().map(|f| f.data.as_ref()),
+                &self.settings.mode,
+            );
         }
 
         // draw bottom windows
-        if self.ui.show_fft_chart || self.ui.show_lufs {
-            // if we should split bottom part to lufs and fft
+        if self
+            .ui
+            .show_window
+            .intersects(ShowWindow::SPECTRUM | ShowWindow::LUFS)
+        {
+            // if we should split bottom part to lufs and spectrum
             // or fill the bottom part with only 1 of them
-            let left_constraint = if self.ui.show_fft_chart {
+            let left_constraint = if self.ui.show_window.contains(ShowWindow::SPECTRUM) {
                 Constraint::Min(0)
             } else {
                 Constraint::Length(0)
             };
-            let right_constraint = if self.ui.show_lufs {
+            let right_constraint = if self.ui.show_window.contains(ShowWindow::LUFS) {
                 Constraint::Min(0)
             } else {
                 Constraint::Length(0)
@@ -556,19 +345,27 @@ impl App {
                 .constraints([left_constraint, right_constraint])
                 .split(vertical_chunks[1]);
 
-            if self.ui.show_fft_chart {
+            if self.ui.show_window.contains(ShowWindow::SPECTRUM) {
                 self.ui.chart_rect = Some(horizontal_chunks[0]);
-                self.render_fft_chart(f, horizontal_chunks[0]);
+                self.spectrum
+                    .render(f, horizontal_chunks[0], &self.ui.theme.spectrum);
                 if let Some((x, y)) = self.mouse_position {
-                    self.render_fft_info(f, x, y);
+                    self.render_spectrum_info(f, x, y);
                 }
             }
-            if self.ui.show_lufs {
-                self.render_lufs(f, horizontal_chunks[1]);
+            if self.ui.show_window.contains(ShowWindow::LUFS)
+                && let Err(err) = self.lufs.render(
+                    f,
+                    horizontal_chunks[1],
+                    &self.ui.theme.lufs,
+                    &mut self.file_analyzer,
+                )
+            {
+                self.handle_error(format!("Error while computing loudness: {err}"));
             }
         }
 
-        if !(self.ui.show_waveform || self.ui.show_fft_chart || self.ui.show_lufs) {
+        if self.ui.show_window.is_empty() {
             self.render_empty_window(f, area);
         }
 
@@ -579,20 +376,22 @@ impl App {
         }
         self.render_error_message(f);
 
-        // render explorer
-        if self.ui.show_explorer {
-            let area = Self::get_popup_area_with_percentage(area, 50, 70);
-            f.render_widget(Clear, area);
-            f.render_widget_ref(self.explorer.widget(), area);
-        }
-        if self.ui.show_devices_list {
-            self.render_devices_list(f);
-        }
-        if self.ui.show_themes_list {
-            self.render_themes_list(f);
-        }
-        if self.ui.show_help_message {
-            self.render_help_message(f);
+        match self.ui.popup_state {
+            PopupState::InExplorer => {
+                let area = Self::get_popup_area_with_percentage(area, 50, 70);
+                f.render_widget(Clear, area);
+                f.render_widget_ref(self.explorer.widget(), area);
+            }
+            PopupState::InDeviceList => {
+                self.render_devices_list(f);
+            }
+            PopupState::InThemesList => {
+                self.render_themes_list(f);
+            }
+            PopupState::InHelpMessage => {
+                self.render_help_message(f);
+            }
+            PopupState::None => (),
         }
     }
 
@@ -630,424 +429,7 @@ impl App {
         frame.render_widget(big_text, big_text_area);
     }
 
-    fn render_waveform(&mut self, frame: &mut Frame, area: Rect) {
-        let s = Style::default().bg(self.ui.theme.waveform.background.unwrap());
-        let lb = s.fg(self.ui.theme.waveform.labels.unwrap());
-        let bd = s.fg(self.ui.theme.waveform.borders.unwrap());
-        let hl = s.fg(self.ui.theme.waveform.highlight.unwrap());
-        let pl = s.fg(self.ui.theme.waveform.playhead.unwrap());
-        let ct = s.fg(self.ui.theme.waveform.current_time.unwrap());
-        let td = s.fg(self.ui.theme.waveform.total_duration.unwrap());
-        let wv = s.fg(self.ui.theme.waveform.waveform.unwrap());
-
-        // playhead is just a function that looks like a vertical line
-        let samples_in_one_ms = self.audio_file.sample_rate() / 1000;
-
-        let playhead_chart = if !matches!(self.settings.mode, Mode::Player) {
-            [(-1., -1.), (-1., -1.)]
-        } else {
-            let playhead_x = self.waveform.playhead as f64 / samples_in_one_ms as f64;
-            [(playhead_x, 1.), (playhead_x, -1.)]
-        };
-
-        // get current playback time in seconds
-        let playhead_ms =
-            (self.waveform.playhead as f64 / self.audio_file.sample_rate() as f64 * 1000.) as u64;
-        let current_total_sec = playhead_ms / 1000;
-        let current_min = current_total_sec / 60;
-        let current_sec = current_total_sec % 60;
-
-        // get total audio file duration
-        let total_duration = self.audio_file.duration().as_secs();
-        let total_min = total_duration / 60;
-        let total_sec = total_duration % 60;
-
-        let (x_min, x_max) = match self.settings.mode {
-            Mode::Microphone | Mode::_System => {
-                let window_millis = self.ui.waveform_window as usize * 1000;
-                (15000. - window_millis as f64, 15000.)
-            }
-            Mode::Player => {
-                let half_window = self.ui.waveform_window * 500.;
-                let playhead_millis = playhead_ms as f64;
-                let max_x = self.waveform.audio_file_chart.len() as f64 / 2.;
-                let min_bound = (playhead_millis - half_window)
-                    .min(max_x - self.ui.waveform_window * 1000.)
-                    .max(0.);
-                let max_bound = (playhead_millis + half_window)
-                    .min(max_x)
-                    .max(self.ui.waveform_window * 1000.);
-                (min_bound, max_bound)
-            }
-        };
-
-        // make datasets
-        // first one to render a waveform
-        // the other one to render the playhead
-        let datasets = vec![
-            Dataset::default()
-                .marker(symbols::Marker::Braille)
-                .graph_type(GraphType::Line)
-                .style(wv)
-                .data({
-                    if matches!(self.settings.mode, Mode::Player) {
-                        &self.waveform.audio_file_chart
-                    } else {
-                        &self.waveform.microphone_input_chart
-                    }
-                }),
-            Dataset::default()
-                .marker(symbols::Marker::Braille)
-                .graph_type(GraphType::Line)
-                .style(pl)
-                .data(&playhead_chart),
-        ];
-
-        // render chart
-        let title = self.audio_file.title();
-        let mode_text = self.settings.mode.to_span().style(lb);
-        let upper_right_title = match self.settings.mode {
-            Mode::Player => Line::from(vec![
-                "m".bold().style(hl),
-                "ode: ".to_span().style(lb),
-                mode_text,
-            ])
-            .right_aligned(),
-            _ => Line::from(vec![
-                "d".bold().style(hl),
-                "evice: ".to_span().style(lb),
-                self.ui.device_name.to_span().style(lb),
-                " ".to_span(),
-                "m".bold().style(hl),
-                "ode: ".to_span().style(lb),
-                mode_text,
-            ])
-            .right_aligned(),
-        };
-
-        // build the chart widget
-        let chart = Chart::new(datasets)
-            .block(
-                Block::bordered()
-                    .border_type(BorderType::Rounded)
-                    .title("¹".to_span().style(hl).bold() + title.to_span().style(lb))
-                    .title_bottom(self.get_flashing_controls_text().left_aligned())
-                    .title_bottom(
-                        Line::styled(format!("{current_min:0>2}:{current_sec:0>2}"), ct).centered(),
-                    )
-                    .title_bottom(
-                        Line::styled(format!("{total_min:0>2}:{total_sec:0>2}"), td)
-                            .right_aligned(),
-                    )
-                    .title(upper_right_title)
-                    .style(bd),
-            )
-            .style(wv)
-            .x_axis(Axis::default().bounds([x_min, x_max]))
-            .y_axis(Axis::default().bounds([-1., 1.]));
-
-        frame.render_widget(chart, area);
-    }
-
-    fn get_flashing_controls_text(&self) -> Line<'_> {
-        let t = 100;
-        let s = Style::default()
-            .bg(self.ui.theme.waveform.background.unwrap())
-            .fg(self.ui.theme.waveform.controls.unwrap());
-        let hl = s.fg(self.ui.theme.waveform.controls_highlight.unwrap());
-        let left_arrow = match self.ui.left_arrow_timer {
-            Some(timer) if timer.elapsed().as_millis() < t => "<-".to_span().style(hl),
-            _ => "<-".to_span().style(s),
-        };
-        let right_arrow = match self.ui.right_arrow_timer {
-            Some(timer) if timer.elapsed().as_millis() < t => "->".to_span().style(hl),
-            _ => "->".to_span().style(s),
-        };
-        let minus = match self.ui.minus_sign_timer {
-            Some(timer) if timer.elapsed().as_millis() < t => "-".to_span().style(hl),
-            _ => "-".to_span().style(s),
-        };
-        let plus = match self.ui.plus_sign_timer {
-            Some(timer) if timer.elapsed().as_millis() < t => "+".to_span().style(hl),
-            _ => "+".to_span().style(s),
-        };
-        Line::from(vec![
-            left_arrow,
-            " ".to_span(),
-            minus,
-            " ".to_span(),
-            format!("{:0>2}s", self.ui.waveform_window.to_span().style(s)).into(),
-            " ".to_span(),
-            plus,
-            " ".to_span(),
-            right_arrow,
-        ])
-    }
-
-    fn render_fft_chart(&mut self, frame: &mut Frame, area: Rect) {
-        let s = Style::default().bg(self.ui.theme.fft.background.unwrap());
-        let fg = s.fg(self.ui.theme.fft.axes_labels.unwrap());
-        let ax = s.fg(self.ui.theme.fft.axes.unwrap());
-        let lb = s.fg(self.ui.theme.fft.labels.unwrap());
-        let bd = s.fg(self.ui.theme.fft.borders.unwrap());
-        let mf = s.fg(self.ui.theme.fft.mid_fft.unwrap());
-        let sf = s.fg(self.ui.theme.fft.side_fft.unwrap());
-        let hl = s.fg(self.ui.theme.fft.highlight.unwrap());
-        let x_labels = vec![
-            Span::styled("20Hz", fg),
-            Span::styled("632.46Hz", fg),
-            Span::styled("20kHz", fg),
-        ];
-
-        let gain_comp = self.ui.fft_gain_compensation_db as f64;
-
-        let mid_fft_normalized: Vec<(f64, f64)> = if self.ui.show_mid_fft {
-            self.fft_data
-                .mid_fft
-                .iter()
-                .map(|(x, y)| (*x, y + gain_comp))
-                .collect()
-        } else {
-            vec![(-1000.0, -1000.0)]
-        };
-
-        let side_fft_normalized: Vec<(f64, f64)> = if self.ui.show_side_fft {
-            self.fft_data
-                .side_fft
-                .iter()
-                .map(|(x, y)| (*x, y + gain_comp))
-                .collect()
-        } else {
-            vec![(-1000.0, -1000.0)]
-        };
-
-        let datasets = vec![
-            Dataset::default()
-                .marker(symbols::Marker::Braille)
-                .graph_type(GraphType::Area)
-                .style(mf)
-                .fill_to_y(FFT_LOWER_BOUND)
-                .data(&mid_fft_normalized),
-            Dataset::default()
-                .marker(symbols::Marker::Braille)
-                .graph_type(GraphType::Area)
-                .style(sf)
-                .fill_to_y(FFT_LOWER_BOUND)
-                .data(&side_fft_normalized),
-        ];
-
-        let chart = Chart::new(datasets)
-            .block(
-                Block::bordered()
-                    .border_type(BorderType::Rounded)
-                    .style(bd)
-                    .title(vec![
-                        "²".to_span().style(hl).bold(),
-                        "spectrum".to_span().style(lb).bold(),
-                    ])
-                    .title({
-                        let mut mid = if self.ui.show_mid_fft {
-                            vec![
-                                "M".to_span().style(hl).bold(),
-                                "id".to_span().bold(),
-                                "/".to_span(),
-                            ]
-                        } else {
-                            vec!["M".to_span().style(hl), "id".to_span(), "/".to_span()]
-                        };
-                        let mut side = if self.ui.show_side_fft {
-                            vec!["S".to_span().style(hl).bold(), "ide".to_span().bold()]
-                        } else {
-                            vec!["S".to_span().style(hl), "ide".to_span()]
-                        };
-                        mid.append(&mut side);
-                        Line::from(mid).right_aligned()
-                    }),
-            )
-            .x_axis(
-                Axis::default()
-                    .title("Hz")
-                    .labels(x_labels)
-                    .style(ax)
-                    .bounds([0., 100.]),
-            )
-            .y_axis(
-                Axis::default()
-                    .title("dBFS")
-                    .labels(vec![
-                        Span::raw(FFT_LOWER_BOUND.to_string()).style(fg),
-                        Span::raw(((FFT_UPPER_BOUND + FFT_LOWER_BOUND) / 2f64).to_string())
-                            .style(fg),
-                        Span::raw(FFT_UPPER_BOUND.to_string()).style(fg),
-                    ])
-                    .style(ax)
-                    .bounds([FFT_LOWER_BOUND, FFT_UPPER_BOUND]),
-            )
-            .style(s);
-
-        frame.render_widget(chart, area);
-    }
-
-    fn render_lufs(&mut self, f: &mut Frame, area: Rect) {
-        let s = Style::default().bg(self.ui.theme.lufs.background.unwrap());
-        let fg = s.fg(self.ui.theme.lufs.foreground.unwrap());
-        let ax = s.fg(self.ui.theme.lufs.axis.unwrap());
-        let hl = s.fg(self.ui.theme.lufs.highlight.unwrap());
-        let bd = s.fg(self.ui.theme.lufs.borders.unwrap());
-        let ch = s.fg(self.ui.theme.lufs.chart.unwrap());
-        let lb = s.fg(self.ui.theme.lufs.labels.unwrap());
-        let nb = s.fg(self.ui.theme.lufs.numbers.unwrap());
-        let layout = Layout::default()
-            .direction(Direction::Horizontal)
-            .constraints([Constraint::Percentage(80), Constraint::Percentage(20)].as_ref())
-            .split(area);
-        let data = self
-            .lufs
-            .iter()
-            .enumerate()
-            .map(|(x, &y)| (x as f64, y))
-            .collect::<Vec<(f64, f64)>>();
-
-        let integrated_lufs = match self.file_analyzer.get_integrated_lufs() {
-            Ok(lufs) => lufs,
-            Err(err) => {
-                self.handle_error(format!("Error getting integrated LUFS: {err}"));
-                0.0
-            }
-        };
-
-        // it should not display `-inf`
-        let integrated_lufs = if integrated_lufs.is_infinite() {
-            -50.0
-        } else {
-            integrated_lufs
-        };
-
-        // text layout
-        let paragraph_layout = Layout::default()
-            .direction(Direction::Vertical)
-            .constraints([
-                Constraint::Ratio(1, 4),
-                Constraint::Ratio(1, 4),
-                Constraint::Ratio(1, 4),
-                Constraint::Ratio(1, 4),
-            ])
-            .split(layout[1]);
-
-        // get lufs text
-        let integrated = format!("{integrated_lufs:05.1}");
-        let short_term = format!("{:05.1}", self.lufs[299]);
-        let integrated_lufs_text = integrated.to_span().style(nb) + " LUFS".to_span();
-        let short_term_lufs_text = short_term.to_span().style(nb) + " LUFS".to_span();
-
-        // get true peak
-        let (tp_left, tp_right) = match self.file_analyzer.get_true_peak() {
-            Ok((tp_left, tp_right)) => (tp_left, tp_right),
-            Err(err) => {
-                self.handle_error(format!("Error getting true peak: {err}"));
-                (0.0, 0.0)
-            }
-        };
-
-        // get true peak text
-        let left = format!("{tp_left:.1}");
-        let right = format!("{tp_right:.1}");
-        let left = left.to_span().style(nb);
-        let right = right.to_span().style(nb);
-        let true_peak_text = vec![
-            "L: ".bold().style(fg) + left + " Db".bold().style(fg),
-            "R: ".bold().style(fg) + right + " Db".bold().style(fg),
-        ];
-
-        //get range text
-        let range = match self.file_analyzer.get_loudness_range() {
-            Ok(range) => range,
-            Err(err) => {
-                self.handle_error(format!("Error getting loudness range: {err}"));
-                0.0
-            }
-        };
-        let range_text = format!("{range:.1} LU");
-
-        // paragraphs
-        let lufs_paragraph = Paragraph::new(short_term_lufs_text)
-            .block(
-                Block::bordered()
-                    .border_type(BorderType::Rounded)
-                    .style(bd)
-                    .title_alignment(Alignment::Center)
-                    .title("Short term".bold()),
-            )
-            .alignment(Alignment::Center);
-        let integrated_paragraph = Paragraph::new(integrated_lufs_text)
-            .block(
-                Block::bordered()
-                    .border_type(BorderType::Rounded)
-                    .style(bd)
-                    .title_alignment(Alignment::Center)
-                    .title("Integrated".bold()),
-            )
-            .alignment(Alignment::Center);
-        let true_peak_paragraph = Paragraph::new(true_peak_text)
-            .block(
-                Block::bordered()
-                    .border_type(BorderType::Rounded)
-                    .style(bd)
-                    .title_alignment(Alignment::Center)
-                    .title("True Peak".bold()),
-            )
-            .alignment(Alignment::Center)
-            .style(bd);
-        let range_paragraph = Paragraph::new(range_text)
-            .block(
-                Block::bordered()
-                    .border_type(BorderType::Rounded)
-                    .style(bd)
-                    .title_alignment(Alignment::Center)
-                    .title("Range".bold()),
-            )
-            .alignment(Alignment::Center)
-            .style(bd);
-
-        // chart section
-        let dataset = vec![
-            Dataset::default()
-                .marker(symbols::Marker::Braille)
-                // GraphType::Area is not part of the ratatui yet,
-                // waiting for my PR to get accepted
-                // https://github.com/ratatui/ratatui/pull/2426
-                .graph_type(GraphType::Area)
-                .style(ch)
-                .fill_to_y(-50.0)
-                .data(&data),
-        ];
-        let chart = Chart::new(dataset)
-            .block(
-                Block::bordered()
-                    .border_type(BorderType::Rounded)
-                    .style(bd)
-                    .title(vec![
-                        "³".to_span().style(hl).bold(),
-                        "lufs".to_span().style(lb).bold(),
-                    ]),
-            )
-            .x_axis(Axis::default().bounds([0., 300.]).style(ax))
-            .y_axis(
-                Axis::default()
-                    .bounds([-50., 0.])
-                    .labels(["-50".bold(), "0".bold()])
-                    .style(ax),
-            )
-            .style(s);
-        f.render_widget(lufs_paragraph, paragraph_layout[0]);
-        f.render_widget(integrated_paragraph, paragraph_layout[1]);
-        f.render_widget(range_paragraph, paragraph_layout[2]);
-        f.render_widget(true_peak_paragraph, paragraph_layout[3]);
-
-        f.render_widget(chart, layout[0]);
-    }
-
-    fn render_devices_list(&self, f: &mut Frame) {
+    fn render_devices_list(&mut self, f: &mut Frame) {
         let s = Style::default()
             .fg(self.ui.theme.devices.foreground.unwrap())
             .bg(self.ui.theme.devices.background.unwrap());
@@ -1055,14 +437,19 @@ impl App {
         let hl = s.fg(self.ui.theme.devices.highlight.unwrap());
         let area = Self::get_popup_area_with_percentage(f.area(), 20, 30);
         f.render_widget(Clear, area);
-        let devs = list_input_devs();
+        let devs = list_input_devices();
+        let mut device_number_offset = 1;
         let list_items: Vec<ListItem> = devs
             .iter()
             .enumerate()
-            .map(|(i, (name, _dev))| {
-                let num = format!("[{}]", i + 1);
+            .filter_map(|(i, (name, _dev))| {
+                if name == SYSTEM_TAP_DEVICE_NAME {
+                    device_number_offset -= 1;
+                    return None;
+                }
+                let num = format!("[{}]", i + device_number_offset);
                 let name = format!(" {name}");
-                let is_selected = i == self.ui.selected_device_index;
+                let is_selected = i == self.ui.selected_device.selected().unwrap_or(0);
 
                 let item_style = if is_selected {
                     hl.bg(self.ui.theme.devices.background.unwrap())
@@ -1072,7 +459,7 @@ impl App {
 
                 let num = num.bold().reset().style(item_style);
                 let name = name.bold().reset().style(item_style);
-                ListItem::from(num + name)
+                Some(ListItem::from(num + name))
             })
             .collect();
         let list = List::new(list_items).style(s).block(
@@ -1082,10 +469,10 @@ impl App {
                 .style(bd),
         );
 
-        f.render_widget(list, area);
+        f.render_stateful_widget(list, area, &mut self.ui.selected_device);
     }
 
-    fn render_themes_list(&self, f: &mut Frame) {
+    fn render_themes_list(&mut self, f: &mut Frame) {
         let s = Style::default()
             .fg(self.ui.theme.devices.foreground.unwrap())
             .bg(self.ui.theme.devices.background.unwrap());
@@ -1102,7 +489,7 @@ impl App {
             .map(|(i, name)| {
                 let num = format!("[{}]", i + 1);
                 let name = format!(" {name}");
-                let is_selected = i + 1 == self.ui.selected_theme_index;
+                let is_selected = i + 1 == self.ui.selected_theme.selected().unwrap_or(0);
 
                 let item_style = if is_selected {
                     hl.bg(self.ui.theme.devices.background.unwrap())
@@ -1119,7 +506,7 @@ impl App {
         // Add Default Theme option at the beginning
         let default_num = "[0]".to_string();
         let default_name = " Default Theme";
-        let is_default_selected = self.ui.selected_theme_index == 0;
+        let is_default_selected = self.ui.selected_theme.selected().unwrap_or(0) == 0;
 
         let default_style = if is_default_selected {
             hl.bg(self.ui.theme.devices.background.unwrap())
@@ -1134,7 +521,7 @@ impl App {
         // Add Custom Theme option at the end
         let custom_num = format!("[{}]", themes.len() + 1);
         let custom_name = " Custom Theme";
-        let is_custom_selected = self.ui.selected_theme_index == themes.len() + 1;
+        let is_custom_selected = themes.len() + 1 == self.ui.selected_theme.selected().unwrap_or(0);
 
         let custom_style = if is_custom_selected {
             hl.bg(self.ui.theme.devices.background.unwrap())
@@ -1153,10 +540,10 @@ impl App {
                 .style(bd),
         );
 
-        f.render_widget(list, area);
+        f.render_stateful_widget(list, area, &mut self.ui.selected_theme);
     }
 
-    fn render_fft_info(&self, f: &mut Frame<'_>, x: u16, y: u16) {
+    fn render_spectrum_info(&self, f: &mut Frame<'_>, x: u16, y: u16) {
         let rect_width = self.ui.chart_rect.unwrap().width;
         let rect_height = self.ui.chart_rect.unwrap().height;
 
@@ -1198,37 +585,33 @@ impl App {
     }
 
     fn receive_audio_file(&mut self, audio_file: AudioFile) {
-        self.audio_file = audio_file;
-        self.is_file_selected = true;
-        if self.audio_file.duration().as_secs_f64() < 15. {
-            self.ui.waveform_window = self.audio_file.duration().as_secs_f64();
+        if audio_file.data.duration.as_secs_f64() < 15. {
+            self.waveform.window = audio_file.data.duration.as_secs_f64();
         }
         self.waveform.audio_file_chart = Analyzer::get_waveform(
-            self.audio_file.samples(),
-            self.audio_file.duration().as_secs_f64(),
+            &audio_file.data.samples,
+            audio_file.data.duration.as_secs_f64(),
         );
-        // TODO: channels
-        if let Err(err) = self.file_analyzer.create_loudness_meter(
-            // self.audio_file.channels() as u32,
-            2,
-            self.audio_file.sample_rate(),
-        ) {
+        if let Err(err) = self
+            .file_analyzer
+            .create_loudness_meter(audio_file.channels() as u32, audio_file.sample_rate())
+        {
             self.handle_error(format!(
                 "Could not create an analyzer for an audio file: {err}"
             ));
         }
 
         // Calculate gain compensation to normalize track to target LUFS
-        if let Some(integrated_lufs) = self.file_analyzer.calculate_integrated_lufs(
-            // self.audio_file.channels(),
-            2,
-            self.audio_file.samples(),
-        ) {
-            let gain_db = FFT_TARGET_LUFS - integrated_lufs as f32;
-            self.ui.fft_gain_compensation_db = gain_db;
+        if let Some(integrated_lufs) = self
+            .file_analyzer
+            .calculate_integrated_lufs(audio_file.channels() as u32, &audio_file.data.samples)
+        {
+            let gain_db = SPECTRUM_TARGET_DBFS - integrated_lufs as f32;
+            self.spectrum.gain_compensation = gain_db;
         } else {
-            self.ui.fft_gain_compensation_db = 0.0;
+            self.spectrum.gain_compensation = 0.0;
         }
+        self.audio_file = Some(audio_file);
 
         self.ui.needs_render = true;
     }
@@ -1266,6 +649,13 @@ impl App {
 
             if keep { Some(file) } else { None }
         })?;
+
+        if let Err(err) = self.connect_system_tap_device() {
+            self.handle_error(format!(
+                "Couldn't connect to system sound capture device: {err}"
+            ));
+        }
+
         terminal.draw(|f| self.draw(f))?;
 
         // blocking audio file receiver
@@ -1283,7 +673,7 @@ impl App {
             // receive playback position
             let prev_playhead = self.waveform.playhead;
             if let Ok(pos) = self.playback_position_rx.try_recv()
-                && self.is_file_selected
+                && self.audio_file.is_some()
                 && matches!(self.settings.mode, Mode::Player)
             {
                 self.analyze_audio_file_samples(pos);
@@ -1292,7 +682,7 @@ impl App {
             }
 
             // use ringbuf to analyze data if the `Mode` is not `Mode::Player`
-            if matches!(self.settings.mode, Mode::Microphone) {
+            if !matches!(self.settings.mode, Mode::Player) {
                 self.analyze_microphone_input();
                 self.ui.needs_render = true; // Always render in microphone mode
             }
@@ -1300,20 +690,24 @@ impl App {
             // check if flashing controls need update (timers)
             let t = 100; // flash duration in ms
             let left_arrow_flash = self
-                .ui
-                .left_arrow_timer
+                .waveform
+                .timer
+                .left_arrow
                 .map(|timer| timer.elapsed().as_millis());
             let right_arrow_flash = self
-                .ui
-                .right_arrow_timer
+                .waveform
+                .timer
+                .right_arrow
                 .map(|timer| timer.elapsed().as_millis());
             let plus_sign_flash = self
-                .ui
-                .plus_sign_timer
+                .waveform
+                .timer
+                .plus_sign
                 .map(|timer| timer.elapsed().as_millis());
             let minus_sign_flash = self
-                .ui
-                .minus_sign_timer
+                .waveform
+                .timer
+                .minus_sign
                 .map(|timer| timer.elapsed().as_millis());
 
             // render if currently flashing or just stopped flashing (was <t, now >=t)
@@ -1329,19 +723,19 @@ impl App {
             // clean up expired timers and trigger final render
             let mut timers_need_cleanup = false;
             if left_arrow_flash.is_some_and(|ms| ms >= t) {
-                self.ui.left_arrow_timer = None;
+                self.waveform.timer.left_arrow = None;
                 timers_need_cleanup = true;
             }
             if right_arrow_flash.is_some_and(|ms| ms >= t) {
-                self.ui.right_arrow_timer = None;
+                self.waveform.timer.right_arrow = None;
                 timers_need_cleanup = true;
             }
             if plus_sign_flash.is_some_and(|ms| ms >= t) {
-                self.ui.plus_sign_timer = None;
+                self.waveform.timer.plus_sign = None;
                 timers_need_cleanup = true;
             }
             if minus_sign_flash.is_some_and(|ms| ms >= t) {
-                self.ui.minus_sign_timer = None;
+                self.waveform.timer.minus_sign = None;
                 timers_need_cleanup = true;
             }
 
@@ -1378,20 +772,16 @@ impl App {
                     }
                 };
 
-                if self.ui.show_explorer {
+                if matches!(self.ui.popup_state, PopupState::InExplorer) {
                     self.explorer.handle(&event)?;
                     self.ui.needs_render = true;
                 }
 
-                // if let Event::Key(key) = event {
                 match event {
                     Event::Key(key) => {
                         // quit (only if not in any popup)
                         if key.code == KeyCode::Char('q')
-                            && !(self.ui.show_themes_list
-                                || self.ui.show_explorer
-                                || self.ui.show_devices_list
-                                || self.ui.show_help_message)
+                            && matches!(self.ui.popup_state, PopupState::None)
                         {
                             self.player_command_tx.send(PlayerCommand::Quit)?;
                             return Ok(());
@@ -1401,7 +791,7 @@ impl App {
                     }
                     Event::Mouse(m) => {
                         if matches!(m.kind, MouseEventKind::Moved) {
-                            if self.in_fft_chart(m) {
+                            if self.in_spectrum_chart(m) {
                                 self.mouse_position = Some((m.column, m.row));
                             } else {
                                 self.mouse_position = None;
@@ -1426,52 +816,71 @@ impl App {
     }
 
     fn analyze_microphone_input(&mut self) {
-        let samples = self.latest_captured_samples.lock().unwrap().to_vec();
-        let (mid_samples, side_samples) = audio_player::get_mid_and_side_samples(&samples);
+        let samples = match self.settings.mode {
+            Mode::Microphone => self
+                .latest_captured_microphone_samples
+                .lock()
+                .unwrap()
+                .to_vec(),
+            Mode::System => self
+                .latest_captured_system_sound_samples
+                .lock()
+                .unwrap()
+                .to_vec(),
+            Mode::Player => unreachable!(),
+        };
+        let (mid_samples, side_samples) = if self.device_data.channels == 2 {
+            analyzer::get_mid_and_side_samples(&samples)
+        } else {
+            // mono input: the signal itself is the mid channel, side is silence
+            (samples.clone(), vec![0.; samples.len()])
+        };
         let sample_rate = self.device_analyzer.sample_rate() as usize;
-        let left_bound = 15 * sample_rate - 2usize.pow(14);
 
-        // get fft
-        self.fft_data.mid_fft = match self
+        let right_bound = mid_samples.len();
+        let left_bound = right_bound.saturating_sub(analyzer::fft_window_size(sample_rate as u32));
+
+        // get spectrum
+        self.spectrum.mid_freq = match self
             .device_analyzer
-            .get_fft(&mid_samples[left_bound..15 * sample_rate])
+            .get_spectrum(&mid_samples[left_bound..right_bound])
         {
-            Ok(fft) => fft,
+            Ok(spectrum) => spectrum,
             Err(err) => {
-                self.handle_error(format!("Error getting frequencies: {err}. Perhaps your microphone's sample rate is too low."));
+                self.handle_error(format!("Error getting frequencies: {err}"));
                 vec![(0., 0.)]
             }
         };
-        self.fft_data.side_fft = match self
+        self.spectrum.side_freq = match self
             .device_analyzer
-            .get_fft(&side_samples[left_bound..15 * sample_rate])
+            .get_spectrum(&side_samples[left_bound..right_bound])
         {
-            Ok(fft) => fft,
+            Ok(spectrum) => spectrum,
             Err(err) => {
-                self.handle_error(format!("Error getting frequencies: {err}. Perhaps your microphone's sample rate is too low."));
+                self.handle_error(format!("Error getting frequencies: {err}"));
                 vec![(0., 0.)]
             }
         };
 
-        // get waveform
-        self.waveform.microphone_input_chart = Analyzer::get_waveform(&mid_samples, 15.);
-
-        let samples = self.latest_captured_samples.lock().unwrap().to_vec();
-        let sample_rate = self.device_analyzer.sample_rate() as usize;
+        // get waveform of the last 15 seconds
+        let waveform_left_bound = mid_samples.len().saturating_sub(15 * sample_rate);
+        self.waveform.microphone_input_chart =
+            Analyzer::get_waveform(&mid_samples[waveform_left_bound..], 15.);
 
         // get lufs
-        for i in 0..self.lufs.len() - 1 {
-            self.lufs[i] = self.lufs[i + 1];
+        for i in 0..self.lufs.0.len() - 1 {
+            self.lufs.0[i] = self.lufs.0[i + 1];
         }
 
-        let lb = 30 * sample_rate - 2usize.pow(14);
+        let lufs_right_bound = samples.len().min(30 * sample_rate);
+        let lb = lufs_right_bound.saturating_sub(2usize.pow(14));
         if let Err(err) = self
             .device_analyzer
-            .add_samples(&samples[lb..30 * sample_rate])
+            .add_samples(&samples[lb..lufs_right_bound])
         {
             self.handle_error(format!("Could not get samples for LUFS analyzer: {err}"));
         }
-        self.lufs[299] = match self.device_analyzer.get_shortterm_lufs() {
+        self.lufs.0[299] = match self.device_analyzer.get_shortterm_lufs() {
             Ok(lufs) => lufs,
             Err(err) => {
                 self.handle_error(format!("Error getting short-term LUFS: {err}"));
@@ -1482,29 +891,35 @@ impl App {
 
     fn analyze_audio_file_samples(&mut self, pos: usize) {
         // if using mid side we must divide the position by 2
-        let pos = pos / self.audio_file.channels() as usize;
+        let audio_file = self
+            .audio_file
+            .as_ref()
+            .expect("guarded by is_some() in run()");
+        let pos = pos / audio_file.channels() as usize;
         self.waveform.playhead = pos;
 
-        // get fft
-        let fft_left_bound = pos.saturating_sub(16384);
-        if fft_left_bound != 0 {
-            let mid_samples_len = self.audio_file.mid_samples().len();
-            let side_samples_len = self.audio_file.side_samples().len();
+        // get spectrum
+        let spectrum_left_bound =
+            pos.saturating_sub(analyzer::fft_window_size(audio_file.sample_rate()));
+        if spectrum_left_bound != 0 {
+            let mid_samples_len = audio_file.data.mid_samples.len();
+            let side_samples_len = audio_file.data.side_samples.len();
 
             // check bounds to prevent panic when file was changed
-            let mid_samples = if pos <= mid_samples_len && fft_left_bound < mid_samples_len {
-                &self.audio_file.mid_samples()[fft_left_bound..pos]
+            let mid_samples = if pos <= mid_samples_len && spectrum_left_bound < mid_samples_len {
+                &audio_file.data.mid_samples[spectrum_left_bound..pos]
             } else {
                 &[]
             };
-            let side_samples = if pos <= side_samples_len && fft_left_bound < side_samples_len {
-                &self.audio_file.side_samples()[fft_left_bound..pos]
+            let side_samples = if pos <= side_samples_len && spectrum_left_bound < side_samples_len
+            {
+                &audio_file.data.side_samples[spectrum_left_bound..pos]
             } else {
                 &[]
             };
 
-            self.fft_data.mid_fft = match self.file_analyzer.get_fft(mid_samples) {
-                Ok(fft) => fft,
+            self.spectrum.mid_freq = match self.file_analyzer.get_spectrum(mid_samples) {
+                Ok(spectrum) => spectrum,
                 Err(_err) => {
                     // can't log the error because this fn takes a mutable reference
                     // but we already have 2 shared references.
@@ -1513,8 +928,8 @@ impl App {
                     vec![(0., 0.)]
                 }
             };
-            self.fft_data.side_fft = match self.file_analyzer.get_fft(side_samples) {
-                Ok(fft) => fft,
+            self.spectrum.side_freq = match self.file_analyzer.get_spectrum(side_samples) {
+                Ok(spectrum) => spectrum,
                 Err(_err) => {
                     // can't log the error because this fn takes a mutable reference
                     // but we already have 2 shared references.
@@ -1526,22 +941,22 @@ impl App {
         }
 
         // get lufs lufs uses all channels (update every frame for accuracy)
-        let pos = pos * self.audio_file.channels() as usize;
+        let pos = pos * audio_file.channels() as usize;
         let lufs_left_bound = pos.saturating_sub(16384);
         if lufs_left_bound != 0 {
-            for i in 0..self.lufs.len() - 1 {
-                self.lufs[i] = self.lufs[i + 1];
+            for i in 0..self.lufs.0.len() - 1 {
+                self.lufs.0[i] = self.lufs.0[i + 1];
             }
-            let samples_len = self.audio_file.samples().len();
+            let samples_len = audio_file.data.samples.len();
             // check bounds to prevent panic when file was changed
             if pos <= samples_len && lufs_left_bound < samples_len {
                 if let Err(err) = self
                     .file_analyzer
-                    .add_samples(&self.audio_file.samples()[lufs_left_bound..pos])
+                    .add_samples(&audio_file.data.samples[lufs_left_bound..pos])
                 {
                     self.handle_error(format!("Could not get samples for LUFS analyzer: {err}"));
                 }
-                self.lufs[299] = match self.file_analyzer.get_shortterm_lufs() {
+                self.lufs.0[299] = match self.file_analyzer.get_shortterm_lufs() {
                     Ok(lufs) => lufs,
                     Err(err) => {
                         self.handle_error(format!("Error getting short-term LUFS: {err}"));
@@ -1555,31 +970,20 @@ impl App {
     fn handle_input(&mut self, key: KeyEvent) {
         match key.code {
             // show explorer
-            KeyCode::Char('e')
-                if matches!(self.settings.mode, Mode::Player) && !self.ui.show_help_message =>
-            {
-                self.explorer.set_cwd(&self.current_directory).unwrap();
-                self.ui.show_explorer = !self.ui.show_explorer;
-            }
-            // select audio file
-            KeyCode::Enter if self.ui.show_explorer => {
-                let file = self.explorer.current();
-                let file_path = self.explorer.current().path.clone();
-                if file.is_file() {
-                    if file_path.extension().unwrap() == "theme"
-                        || file_path.extension().unwrap() == "toml"
-                    {
-                        self.apply_theme_file(&file_path);
-                    } else {
-                        self.select_audio_file(file_path);
+            KeyCode::Char('e') if matches!(self.settings.mode, Mode::Player) => {
+                match self.ui.popup_state {
+                    PopupState::None => {
+                        self.explorer.set_cwd(&self.current_directory).unwrap();
+                        self.ui.popup_state = PopupState::InExplorer;
                     }
+                    PopupState::InExplorer => self.ui.popup_state = PopupState::None,
+                    _ => (),
                 }
             }
-
-            // show side fft
-            KeyCode::Char('S') => self.ui.show_side_fft = !self.ui.show_side_fft,
-            // show mid fft
-            KeyCode::Char('M') => self.ui.show_mid_fft = !self.ui.show_mid_fft,
+            // show side spectrum
+            KeyCode::Char('S') => self.spectrum.show_side_freq = !self.spectrum.show_side_freq,
+            // show mid spectrum
+            KeyCode::Char('M') => self.spectrum.show_mid_freq = !self.spectrum.show_mid_freq,
             // pause/play
             KeyCode::Char(' ') => {
                 if let Err(_err) = self.player_command_tx.send(PlayerCommand::ChangeState) {
@@ -1588,19 +992,17 @@ impl App {
                 self.is_playing_audio = !self.is_playing_audio;
                 // do this so lufs update only on play, not pause
                 if self.is_playing_audio {
-                    self.lufs = [-100.; 300];
+                    self.lufs.0 = [-100.; 300];
                     self.file_analyzer.reset();
                 }
             }
             // move playhead right and left
             KeyCode::Right
                 if matches!(self.settings.mode, Mode::Player)
-                    && !(self.ui.show_devices_list
-                        || self.ui.show_explorer
-                        || self.ui.show_themes_list) =>
+                    && matches!(self.ui.popup_state, PopupState::None) =>
             {
-                self.ui.right_arrow_timer = Some(Instant::now());
-                self.lufs = [-100.; 300];
+                self.waveform.timer.right_arrow = Some(Instant::now());
+                self.lufs.0 = [-100.; 300];
                 self.file_analyzer.reset();
                 if let Err(_err) = self.player_command_tx.send(PlayerCommand::MoveRight) {
                     //TODO: log sending error
@@ -1608,28 +1010,29 @@ impl App {
             }
             KeyCode::Left
                 if matches!(self.settings.mode, Mode::Player)
-                    && !(self.ui.show_devices_list
-                        || self.ui.show_explorer
-                        || self.ui.show_themes_list) =>
+                    && matches!(self.ui.popup_state, PopupState::None) =>
             {
-                self.ui.left_arrow_timer = Some(Instant::now());
-                self.lufs = [-100.; 300];
+                self.waveform.timer.left_arrow = Some(Instant::now());
+                self.lufs.0 = [-100.; 300];
                 self.file_analyzer.reset();
                 if let Err(_err) = self.player_command_tx.send(PlayerCommand::MoveLeft) {
                     //TODO: log sending error
                 }
             }
-            KeyCode::Char('1') if !self.ui.show_devices_list && !self.ui.show_themes_list => {
-                self.ui.show_waveform = !self.ui.show_waveform;
+            KeyCode::Char('1') if matches!(self.ui.popup_state, PopupState::None) => {
+                self.ui.show_window.toggle(ShowWindow::WAVEFORM);
             }
-            KeyCode::Char('2') if !self.ui.show_devices_list && !self.ui.show_themes_list => {
-                self.ui.show_fft_chart = !self.ui.show_fft_chart;
+            KeyCode::Char('2') if matches!(self.ui.popup_state, PopupState::None) => {
+                self.ui.show_window.toggle(ShowWindow::SPECTRUM);
             }
-            KeyCode::Char('3') if !self.ui.show_devices_list && !self.ui.show_themes_list => {
-                self.ui.show_lufs = !self.ui.show_lufs;
+            KeyCode::Char('3') if matches!(self.ui.popup_state, PopupState::None) => {
+                self.ui.show_window.toggle(ShowWindow::LUFS);
             }
             // Quick selection with numbers 0-9 when themes list is open
-            KeyCode::Char(c) if self.ui.show_themes_list && c.is_ascii_digit() => {
+            KeyCode::Char(c)
+                if matches!(self.ui.popup_state, PopupState::InThemesList)
+                    && c.is_ascii_digit() =>
+            {
                 let index = (c as usize) - ('0' as usize);
                 self.select_theme(index);
             }
@@ -1641,155 +1044,169 @@ impl App {
                 .send(PlayerCommand::ShowTestError)
                 .unwrap(),
             // show devices
-            KeyCode::Char('d')
-                if matches!(self.settings.mode, Mode::Microphone) && !self.ui.show_help_message =>
-            {
-                self.ui.show_devices_list = !self.ui.show_devices_list;
+            KeyCode::Char('d') if matches!(self.settings.mode, Mode::Microphone) => {
+                match self.ui.popup_state {
+                    PopupState::None => self.ui.popup_state = PopupState::InDeviceList,
+                    PopupState::InDeviceList => self.ui.popup_state = PopupState::None,
+                    _ => (),
+                }
             }
             // change mode
-            KeyCode::Char('m')
-                if !(self.ui.show_devices_list
-                    || self.ui.show_explorer
-                    || self.ui.show_themes_list) =>
-            {
-                self.settings.mode = if matches!(self.settings.mode, Mode::Microphone) {
-                    self.reset_charts();
-                    if let Some(stream) = self.audio_capture_stream.as_ref() {
-                        let _ = stream.pause();
+            KeyCode::Char('m') if matches!(self.ui.popup_state, PopupState::None) => {
+                self.settings.mode = match self.settings.mode {
+                    Mode::Player => {
+                        self.reset_charts();
+                        Mode::Microphone
                     }
-                    Mode::Player
-                } else {
-                    if let Some(stream) = self.audio_capture_stream.as_ref() {
-                        let _ = stream.play();
+                    Mode::Microphone => {
+                        if cfg!(target_os = "macos") {
+                            self.reset_charts();
+                            system_sound_capture::ensure_screen_capture_permission();
+                            Mode::System
+                        } else {
+                            self.reset_charts();
+                            Mode::Player
+                        }
                     }
-                    Mode::Microphone
+                    Mode::System => {
+                        self.reset_charts();
+                        Mode::Player
+                    }
                 };
             }
             // Select device using its index if the device list is shown
-            KeyCode::Char(c) if self.ui.show_devices_list && c.is_ascii_digit() && c != '0' => {
-                let index = (c as usize) - ('1' as usize);
+            KeyCode::Char(c)
+                if matches!(self.ui.popup_state, PopupState::InDeviceList)
+                    && c.is_ascii_digit()
+                    && c != '0' =>
+            {
+                let index = (c as usize) - ('0' as usize);
                 if let Err(err) = self.select_device(index) {
                     self.handle_error(format!("Failed to select device: {err}"));
                 }
+                self.settings.selected_device_index = Some(index);
             }
-            // Arrow key navigation for devices list
-            KeyCode::Up if self.ui.show_devices_list => {
-                let devs = list_input_devs();
-                if !devs.is_empty() {
-                    if self.ui.selected_device_index > 0 {
-                        self.ui.selected_device_index -= 1;
-                    } else {
-                        self.ui.selected_device_index = devs.len() - 1; // Wrap to end
+            // Arrow key navigation for device and theme list
+            KeyCode::Up => match self.ui.popup_state {
+                PopupState::InThemesList => {
+                    let total = list_themes().len() + 2; // + 1 for default and + 1 for custom theme
+                    let current = self.ui.selected_theme.selected().unwrap_or(0);
+                    self.ui
+                        .selected_theme
+                        .select(Some(wrap_index(current, -1, total)));
+                }
+                PopupState::InDeviceList => {
+                    let total = list_input_devices().len();
+                    let current = self.ui.selected_device.selected().unwrap_or(0);
+                    self.ui
+                        .selected_device
+                        .select(Some(wrap_index(current, -1, total)));
+                }
+                _ => (),
+            },
+            KeyCode::Down => match self.ui.popup_state {
+                PopupState::InThemesList => {
+                    let total = list_themes().len() + 2; // + 1 for default and + 1 for custom theme
+                    let current = self.ui.selected_theme.selected().unwrap_or(0);
+                    self.ui
+                        .selected_theme
+                        .select(Some(wrap_index(current, 1, total)));
+                }
+                PopupState::InDeviceList => {
+                    let total = list_input_devices().len();
+                    let current = self.ui.selected_device.selected().unwrap_or(0);
+                    self.ui
+                        .selected_device
+                        .select(Some(wrap_index(current, 1, total)));
+                }
+                _ => (),
+            },
+            KeyCode::Enter => match self.ui.popup_state {
+                PopupState::InDeviceList => {
+                    if let Err(err) =
+                        self.select_device(self.ui.selected_device.selected().unwrap_or(0))
+                    {
+                        self.handle_error(format!("Failed to select device: {err}"));
                     }
-                    self.ui.needs_render = true;
                 }
-            }
-            KeyCode::Down if self.ui.show_devices_list => {
-                let devs = list_input_devs();
-                if !devs.is_empty() {
-                    if self.ui.selected_device_index < devs.len() - 1 {
-                        self.ui.selected_device_index += 1;
-                    } else {
-                        self.ui.selected_device_index = 0; // Wrap to beginning
+                PopupState::InThemesList => {
+                    self.select_theme(self.ui.selected_theme.selected().unwrap_or(0));
+                }
+                PopupState::InExplorer => {
+                    let file = self.explorer.current();
+                    let file_path = self.explorer.current().path.clone();
+                    if file.is_file() {
+                        if file_path.extension().unwrap() == "theme"
+                            || file_path.extension().unwrap() == "toml"
+                        {
+                            self.apply_theme_file(&file_path);
+                        } else {
+                            self.select_audio_file(file_path);
+                        }
                     }
-                    self.ui.needs_render = true;
                 }
-            }
-            KeyCode::Enter if self.ui.show_devices_list => {
-                if let Err(err) = self.select_device(self.ui.selected_device_index) {
-                    self.handle_error(format!("Failed to select device: {err}"));
-                }
-            }
-            // Arrow key navigation for themes list
-            KeyCode::Up if self.ui.show_themes_list => {
-                let themes = builtin_themes::list_themes();
-                let total_items = themes.len() + 2; // +1 for Default Theme, +1 for Custom Theme
-                if self.ui.selected_theme_index > 0 {
-                    self.ui.selected_theme_index -= 1;
-                } else {
-                    self.ui.selected_theme_index = total_items - 1; // Wrap to end
-                }
-                self.ui.needs_render = true;
-            }
-            KeyCode::Down if self.ui.show_themes_list => {
-                let themes = builtin_themes::list_themes();
-                let total_items = themes.len() + 2; // +1 for Default Theme, +1 for Custom Theme
-                if self.ui.selected_theme_index < total_items - 1 {
-                    self.ui.selected_theme_index += 1;
-                } else {
-                    self.ui.selected_theme_index = 0; // Wrap to beginning
-                }
-                self.ui.needs_render = true;
-            }
-            KeyCode::Enter if self.ui.show_themes_list => {
-                self.select_theme(self.ui.selected_theme_index);
-            }
-            KeyCode::Char('t')
-                if !(self.ui.show_help_message
-                    || self.ui.show_devices_list
-                    || self.ui.show_explorer) =>
-            {
-                self.ui.show_themes_list = !self.ui.show_themes_list;
-            }
+                _ => (),
+            },
+            KeyCode::Char('t') => match self.ui.popup_state {
+                PopupState::None => self.ui.popup_state = PopupState::InThemesList,
+                PopupState::InThemesList => self.ui.popup_state = PopupState::None,
+                _ => (),
+            },
             KeyCode::Esc | KeyCode::Char('q')
-                if self.ui.show_themes_list
-                    || self.ui.show_explorer
-                    || self.ui.show_devices_list
-                    || self.ui.show_help_message =>
+                if !matches!(self.ui.popup_state, PopupState::None) =>
             {
-                self.ui.show_themes_list = false;
-                self.ui.show_explorer = false;
-                self.ui.show_devices_list = false;
-                self.ui.show_help_message = false;
+                self.ui.popup_state = PopupState::None;
             }
             KeyCode::Char('=' | '+') => {
-                self.ui.plus_sign_timer = Some(Instant::now());
-                self.ui.waveform_window = f64::max(self.ui.waveform_window - 1., 1.);
+                self.waveform.timer.plus_sign = Some(Instant::now());
+                self.waveform.window = f64::max(self.waveform.window - 1., 1.);
             }
             KeyCode::Char('-' | '_') => {
-                let bound = if self.audio_file.duration().as_secs_f64() < 15. {
-                    self.audio_file.duration().as_secs_f64()
+                let bound = if let Some(file) = self.audio_file.as_ref()
+                    && file.data.duration.as_secs_f64() < 15.
+                {
+                    file.data.duration.as_secs_f64()
                 } else {
                     15.
                 };
-                self.ui.minus_sign_timer = Some(Instant::now());
-                self.ui.waveform_window = f64::min(self.ui.waveform_window + 1., bound);
+                self.waveform.timer.minus_sign = Some(Instant::now());
+                self.waveform.window = f64::min(self.waveform.window + 1., bound);
             }
-            KeyCode::Char('h' | '?') | KeyCode::F(1)
-                if !(self.ui.show_devices_list
-                    || self.ui.show_explorer
-                    || self.ui.show_themes_list) =>
-            {
-                self.ui.show_help_message = !self.ui.show_help_message;
-            }
+            KeyCode::Char('h' | '?') | KeyCode::F(1) => match self.ui.popup_state {
+                PopupState::None => self.ui.popup_state = PopupState::InHelpMessage,
+                PopupState::InHelpMessage => self.ui.popup_state = PopupState::None,
+                _ => (),
+            },
             _ => (),
         }
     }
 
     fn select_device(&mut self, index: usize) -> Result<()> {
-        let devices = list_input_devs();
+        let devices = list_input_devices();
         if index > devices.len() - 1 {
             return Err(eyre!("Invalid device index: {}", index + 1));
         }
 
-        if let Some(stream) = &self.audio_capture_stream {
+        if let Some(stream) = &self.microphone_capture_stream {
             stream.pause().unwrap();
-            self.audio_capture_stream = None;
+            self.microphone_capture_stream = None;
         }
         let device = devices[index].1.clone();
         let audio_device = AudioDevice::new(Some(device));
 
-        self.ui.device_name.clone_from(&devices[index].0);
+        self.waveform.device_name.clone_from(&devices[index].0);
         let sr = audio_device.config().sample_rate.0;
         let channels = audio_device.config().channels;
+
+        self.device_data.channels = channels;
 
         let mut buf = AllocRingBuffer::new(sr as usize * 30);
         buf.fill(0.0);
         let latest_captured_samples = Arc::new(Mutex::new(buf));
-        self.latest_captured_samples = latest_captured_samples;
+        self.latest_captured_microphone_samples = latest_captured_samples;
 
         let stream = match audio_capture::build_input_stream(
-            self.latest_captured_samples.clone(),
+            self.latest_captured_microphone_samples.clone(),
             &audio_device,
         ) {
             Ok(stream) => stream,
@@ -1797,19 +1214,49 @@ impl App {
                 return Err(eyre!("Failed to create audio capture stream: {}", err));
             }
         };
-        self.audio_capture_stream = Some(stream);
-        self.audio_capture_stream.as_ref().unwrap().play()?;
-        self.ui.show_devices_list = false;
+        self.microphone_capture_stream = Some(stream);
+        self.microphone_capture_stream.as_ref().unwrap().play()?;
+        self.ui.popup_state = PopupState::None;
         if let Err(err) = self
             .device_analyzer
             .create_loudness_meter(channels as u32, sr)
         {
+            self.handle_error(format!("Could not create an analyzer for a device: {err}"));
+        }
+
+        self.spectrum.gain_compensation = 0.0;
+        Ok(())
+    }
+
+    fn connect_system_tap_device(&mut self) -> Result<()> {
+        let devices = list_input_devices();
+        let device = devices[0].1.clone();
+        let audio_device = AudioDevice::new(Some(device));
+
+        let sr = audio_device.config().sample_rate.0;
+        let channels = audio_device.config().channels;
+
+        let stream = match audio_capture::build_input_stream(
+            self.latest_captured_system_sound_samples.clone(),
+            &audio_device,
+        ) {
+            Ok(stream) => stream,
+            Err(err) => {
+                return Err(eyre!("Failed to create audio capture stream: {}", err));
+            }
+        };
+        self.system_sound_capture_stream = Some(stream);
+        self.system_sound_capture_stream.as_ref().unwrap().play()?;
+        if let Err(err) = self
+            .system_sound_analyzer
+            .create_loudness_meter(channels as u32, sr)
+        {
             self.handle_error(format!(
-                "Could not create an analyzer for an audio file: {err}"
+                "Could not create an analyzer for a system sound capture device: {err}"
             ));
         }
 
-        self.ui.fft_gain_compensation_db = 0.0;
+        self.spectrum.gain_compensation = 0.0;
         Ok(())
     }
 
@@ -1837,7 +1284,7 @@ impl App {
                 }
             }
 
-            self.ui.show_themes_list = false;
+            self.ui.popup_state = PopupState::None;
             return;
         }
 
@@ -1851,19 +1298,17 @@ impl App {
                     );
                     return;
                 }
-                self.ui.show_explorer = true;
                 self.explorer
                     .set_cwd(config_path.join("soundscope"))
                     .unwrap();
-                self.ui.show_themes_list = false;
+                self.ui.popup_state = PopupState::InExplorer;
             }
             return;
         }
 
         // Get theme name and load it (index - 1 because 0 is default)
         let theme_name = themes[index - 1];
-        if let Some(mut theme) = builtin_themes::get_by_name(theme_name) {
-            theme.apply_global_as_default();
+        if let Some(theme) = builtin_themes::get_by_name(theme_name) {
             self.set_theme(theme);
 
             // Save theme choice to current_theme file
@@ -1891,7 +1336,7 @@ impl App {
                 }
             }
 
-            self.ui.show_themes_list = false;
+            self.ui.popup_state = PopupState::None;
         }
     }
 
@@ -1903,7 +1348,7 @@ impl App {
     fn select_audio_file(&mut self, file_path: PathBuf) {
         // reset everything
         self.reset_charts();
-        self.ui.show_explorer = false;
+        self.ui.popup_state = PopupState::None;
 
         if let Err(_err) = self
             .player_command_tx
@@ -2018,12 +1463,12 @@ impl App {
     }
 
     fn reset_charts(&mut self) {
-        self.fft_data.mid_fft.clear();
-        self.fft_data.side_fft.clear();
-        self.lufs = [-100.; 300];
+        self.spectrum.mid_freq.clear();
+        self.spectrum.side_freq.clear();
+        self.lufs.0 = [-100.; 300];
         self.is_playing_audio = false;
         self.waveform.playhead = 0;
-        self.ui.fft_gain_compensation_db = 0.0;
+        self.spectrum.gain_compensation = 0.0;
     }
 
     fn load_theme(&mut self, path: &PathBuf) -> Option<Theme> {
@@ -2073,8 +1518,7 @@ impl App {
                 } else if theme_file.starts_with("builtin:") {
                     // Load builtin theme
                     let theme_name = theme_file.strip_prefix("builtin:").unwrap();
-                    if let Some(mut theme) = builtin_themes::get_by_name(theme_name) {
-                        theme.apply_global_as_default();
+                    if let Some(theme) = builtin_themes::get_by_name(theme_name) {
                         self.set_theme(theme);
                     } else {
                         self.handle_error(format!(
@@ -2086,7 +1530,7 @@ impl App {
                     }
                 } else {
                     let theme_file = path.join(&theme_file);
-                    let mut theme = if theme_file.exists() {
+                    let theme = if theme_file.exists() {
                         self.load_theme(&theme_file).unwrap_or_default()
                     } else {
                         self.handle_error(format!(
@@ -2096,9 +1540,10 @@ impl App {
                         if let Err(err) = fs::write(current_theme_file, "DEFAULT") {
                             self.handle_error(format!("Error setting theme to DEFAULT: {err}"));
                         }
-                        Theme::default()
+                        let mut theme = Theme::default();
+                        theme.apply_global_as_default();
+                        theme
                     };
-                    theme.apply_global_as_default();
                     self.set_theme(theme);
                 }
             }
@@ -2116,15 +1561,15 @@ impl App {
         }
     }
 
-    fn in_fft_chart(&self, m: MouseEvent) -> bool {
-        if self.ui.show_fft_chart
+    fn in_spectrum_chart(&self, m: MouseEvent) -> bool {
+        if self.ui.show_window.contains(ShowWindow::SPECTRUM)
             && let Some(r) = self.ui.chart_rect
         {
             let x = m.column;
             let y = m.row;
             let width = r.width;
             let height = r.height;
-            // hardcode boundries of the fft chart.
+            // hardcode boundries of the spectrum chart.
             // because it does not occupy the whole rectangle
             let x_min = r.x + 8;
             let y_min = r.y + 1;
@@ -2147,10 +1592,15 @@ impl App {
 
         // y
         let t = y as f32 / max_y as f32;
-        let y = FFT_UPPER_BOUND as f32 + t * (FFT_LOWER_BOUND - FFT_UPPER_BOUND) as f32;
+        let y =
+            SPECTRUM_UPPER_BOUND as f32 + t * (SPECTRUM_LOWER_BOUND - SPECTRUM_UPPER_BOUND) as f32;
 
         (x, y)
     }
+}
+
+fn wrap_index(current: usize, delta: isize, len: usize) -> usize {
+    (current as isize + delta).rem_euclid(len as isize) as usize
 }
 
 fn config_dir() -> Option<PathBuf> {
@@ -2165,12 +1615,11 @@ fn config_dir() -> Option<PathBuf> {
 
 /// pub run function that initializes the terminal and runs the application
 pub fn run(
-    audio_file: AudioFile,
+    audio_file: Option<AudioFile>,
     player_command_tx: Sender<PlayerCommand>,
     audio_file_rx: Receiver<AudioFile>,
     playback_position_rx: Receiver<usize>,
     error_rx: Receiver<String>,
-    latest_captured_samples: RBuffer,
     startup_file: Option<PathBuf>,
 ) -> Result<()> {
     let terminal = ratatui::init();
@@ -2178,13 +1627,22 @@ pub fn run(
         std::io::stdout(),
         ratatui::crossterm::event::EnableMouseCapture
     )?;
+
+    let mut microphone_buf = AllocRingBuffer::new(44100usize * 30);
+    microphone_buf.fill(0.0);
+    let latest_captured_microphone_samples = Arc::new(Mutex::new(microphone_buf));
+    let mut system_buf = AllocRingBuffer::new(44100usize * 30);
+    system_buf.fill(0.0);
+    let latest_captured_system_sound_samples = Arc::new(Mutex::new(system_buf));
+
     let app_result = App::new(
         audio_file,
         player_command_tx,
         audio_file_rx,
         playback_position_rx,
         error_rx,
-        latest_captured_samples,
+        latest_captured_microphone_samples,
+        latest_captured_system_sound_samples,
     )?
     .run(terminal, startup_file);
     ratatui::restore();
@@ -2204,15 +1662,19 @@ mod tests {
         let (_, error_rx) = channel::unbounded();
 
         let audio_file = AudioFile::new(playback_position_tx);
-        let latest_captured_samples = Arc::new(Mutex::new(AllocRingBuffer::new(44100 * 30)));
+        let latest_captured_microphone_samples =
+            Arc::new(Mutex::new(AllocRingBuffer::new(44100 * 30)));
+        let latest_captured_system_sound_samples =
+            Arc::new(Mutex::new(AllocRingBuffer::new(44100 * 30)));
 
         let app = App::new(
-            audio_file,
+            Some(audio_file),
             player_command_tx.clone(),
             audio_file_rx,
             playback_position_rx,
             error_rx,
-            latest_captured_samples,
+            latest_captured_microphone_samples,
+            latest_captured_system_sound_samples,
         )
         .unwrap();
 
@@ -2280,10 +1742,12 @@ mod tests {
         let (mut app, _, _) = create_test_app();
         app.settings.mode = Mode::Microphone;
         let sr = 44100;
+        app.device_data.channels = 1;
+        app.device_analyzer.create_loudness_meter(1, sr).unwrap();
 
         // Fill the buffer with test data
         {
-            let mut buffer = app.latest_captured_samples.lock().unwrap();
+            let mut buffer = app.latest_captured_microphone_samples.lock().unwrap();
             buffer.clear();
             for i in 0..sr * 30 {
                 let sample = (i as f32 * 500.0 * 2.0 * std::f32::consts::PI / sr as f32).sin();
@@ -2292,20 +1756,8 @@ mod tests {
         }
 
         app.analyze_microphone_input();
-
-        assert!(!app.fft_data.mid_fft.is_empty());
-
-        // Check that there's a peak around 500 Hz
-        let freq_bin = 500.0 / (sr as f32 / 2.0) * (app.fft_data.mid_fft.len() as f32);
-        let bin_idx = freq_bin.round() as usize;
-
-        // Check that this bin has non-trivial amplitude
-        if bin_idx < app.fft_data.mid_fft.len() {
-            let amp = app.fft_data.mid_fft[bin_idx].1; // assuming (freq, amp)
-            assert!(amp < -20.0, "Expected strong signal at ~500Hz, got: {amp}");
-        } else {
-            panic!("Bin index out of range: {bin_idx}");
-        }
+        assert_spectrum_peak_near_500hz(&app);
+        assert_side_is_silent(&app);
     }
 
     #[test]
@@ -2313,10 +1765,12 @@ mod tests {
         let (mut app, _, _) = create_test_app();
         app.settings.mode = Mode::Microphone;
         let sr = 48000;
+        app.device_data.channels = 1;
+        app.device_analyzer.create_loudness_meter(1, sr).unwrap();
 
         // Fill the buffer with test data
         {
-            let mut buffer = app.latest_captured_samples.lock().unwrap();
+            let mut buffer = app.latest_captured_microphone_samples.lock().unwrap();
             buffer.clear();
             for i in 0..sr * 30 {
                 let sample = (i as f32 * 500.0 * 2.0 * std::f32::consts::PI / sr as f32).sin();
@@ -2325,20 +1779,8 @@ mod tests {
         }
 
         app.analyze_microphone_input();
-
-        assert!(!app.fft_data.mid_fft.is_empty());
-
-        // Check that there's a peak around 500 Hz
-        let freq_bin = 500.0 / (sr as f32 / 2.0) * (app.fft_data.mid_fft.len() as f32);
-        let bin_idx = freq_bin.round() as usize;
-
-        // Check that this bin has non-trivial amplitude
-        if bin_idx < app.fft_data.mid_fft.len() {
-            let amp = app.fft_data.mid_fft[bin_idx].1; // assuming (freq, amp)
-            assert!(amp < -20.0, "Expected strong signal at ~500Hz, got: {amp}");
-        } else {
-            panic!("Bin index out of range: {bin_idx}");
-        }
+        assert_spectrum_peak_near_500hz(&app);
+        assert_side_is_silent(&app);
     }
 
     #[test]
@@ -2346,10 +1788,12 @@ mod tests {
         let (mut app, _, _) = create_test_app();
         app.settings.mode = Mode::Microphone;
         let sr = 96000;
+        app.device_data.channels = 1;
+        app.device_analyzer.create_loudness_meter(1, sr).unwrap();
 
         // Fill the buffer with test data
         {
-            let mut buffer = app.latest_captured_samples.lock().unwrap();
+            let mut buffer = app.latest_captured_microphone_samples.lock().unwrap();
             buffer.clear();
             for i in 0..sr * 30 {
                 let sample = (i as f32 * 500.0 * 2.0 * std::f32::consts::PI / sr as f32).sin();
@@ -2358,66 +1802,83 @@ mod tests {
         }
 
         app.analyze_microphone_input();
-
-        assert!(!app.fft_data.mid_fft.is_empty());
-
-        // Check that there's a peak around 500 Hz
-        let freq_bin = 500.0 / (sr as f32 / 2.0) * (app.fft_data.mid_fft.len() as f32);
-        let bin_idx = freq_bin.round() as usize;
-
-        // Check that this bin has non-trivial amplitude
-        if bin_idx < app.fft_data.mid_fft.len() {
-            let amp = app.fft_data.mid_fft[bin_idx].1; // assuming (freq, amp)
-            assert!(amp < -20.0, "Expected strong signal at ~500Hz, got: {amp}");
-        } else {
-            panic!("Bin index out of range: {bin_idx}");
-        }
+        assert_spectrum_peak_near_500hz(&app);
+        assert_side_is_silent(&app);
     }
 
     #[test]
-    fn test_fill_macro() {
-        let mut theme = Theme {
-            global: GlobalTheme::default(),
-            waveform: WaveformTheme::default(),
-            fft: FftTheme::default(),
-            lufs: LufsTheme::default(),
-            devices: DeviceListTheme::default(),
-            explorer: ExplorerTheme::default(),
-            error: ErrorTheme::default(),
-            help: HelpMessageTheme::default(),
-        };
-        theme.global.foreground = Color::LightCyan;
-        theme.global.background = Color::Magenta;
+    fn test_analyze_microphone_input_16000() {
+        let (mut app, _, _) = create_test_app();
+        app.settings.mode = Mode::Microphone;
+        let sr = 16000;
+        app.device_data.channels = 1;
+        app.device_analyzer.create_loudness_meter(1, sr).unwrap();
 
-        theme.fft.mid_fft = None;
-        theme.fft.side_fft = None;
-        theme.fft.labels = None;
+        // Fill the buffer with test data (16 kHz device, e.g. a Bluetooth headset)
+        {
+            let mut buffer = app.latest_captured_microphone_samples.lock().unwrap();
+            buffer.clear();
+            for i in 0..sr * 30 {
+                let sample = (i as f32 * 500.0 * 2.0 * std::f32::consts::PI / sr as f32).sin();
+                buffer.enqueue(sample);
+            }
+        }
 
-        theme.waveform.playhead = None;
-        theme.waveform.highlight = None;
-        theme.waveform.current_time = None;
+        app.analyze_microphone_input();
+        assert_spectrum_peak_near_500hz(&app);
+        assert_side_is_silent(&app);
+    }
 
-        theme.lufs.numbers = None;
+    #[test]
+    fn test_analyze_microphone_input_stereo() {
+        let (mut app, _, _) = create_test_app();
+        app.settings.mode = Mode::Microphone;
+        let sr = 48000;
+        app.device_data.channels = 2;
+        app.device_analyzer.create_loudness_meter(2, sr).unwrap();
 
-        theme.devices.background = None;
+        // Fill the buffer with interleaved stereo: L = R = 500 Hz sine
+        {
+            let mut buffer = app.latest_captured_microphone_samples.lock().unwrap();
+            buffer.clear();
+            for frame in 0..sr * 15 {
+                let sample = (frame as f32 * 500.0 * 2.0 * std::f32::consts::PI / sr as f32).sin();
+                buffer.enqueue(sample);
+                buffer.enqueue(sample);
+            }
+        }
 
-        theme.explorer.highlight_dir_foreground = None;
-        theme.explorer.item_foreground = None;
+        app.analyze_microphone_input();
+        // L = R means mid = signal and side = silence
+        assert_spectrum_peak_near_500hz(&app);
+        assert_side_is_silent(&app);
+    }
 
-        theme.apply_global_as_default();
-        assert!(theme.fft.mid_fft == Some(Color::LightCyan));
-        assert!(theme.fft.side_fft == Some(Color::Indexed(160)));
-        assert!(theme.fft.labels == Some(Color::LightCyan));
+    /// Finds the highest peak of the mid spectrum and checks that it is near 500 Hz.
+    fn assert_spectrum_peak_near_500hz(app: &App) {
+        assert!(!app.spectrum.mid_freq.is_empty());
 
-        assert!(theme.waveform.playhead == Some(Color::Indexed(160)));
-        assert!(theme.waveform.highlight == Some(Color::Indexed(160)));
-        assert!(theme.waveform.current_time == Some(Color::LightCyan));
+        let (_, (chart_x, val)) = app
+            .spectrum
+            .mid_freq
+            .iter()
+            .enumerate()
+            .max_by(|a, b| a.1.1.partial_cmp(&b.1.1).unwrap())
+            .unwrap();
 
-        assert!(theme.lufs.numbers == Some(Color::LightCyan));
+        // chart_x is the logarithmic position on the 20 Hz..20000 Hz axis
+        let peak_freq = 20. * 1000f64.powf(chart_x / 100.);
+        assert!(
+            (450.0..=550.0).contains(&peak_freq),
+            "Expected spectrum peak near 500 Hz, got {peak_freq} Hz (val {val})"
+        );
+    }
 
-        assert!(theme.devices.background == Some(Color::Magenta));
-
-        assert!(theme.explorer.highlight_dir_foreground == Some(Color::Indexed(160)));
-        assert!(theme.explorer.item_foreground == Some(Color::LightCyan));
+    /// Checks that the side spectrum contains no signal.
+    fn assert_side_is_silent(app: &App) {
+        assert!(
+            app.spectrum.side_freq.iter().all(|(_, val)| *val < -60.),
+            "Expected silent side channel"
+        );
     }
 }

@@ -4,7 +4,7 @@ Soundscope is a crossplatform CLI tool for analyzing audio files.
 
 ---
 ## ✨ Features
-- 🎤 Analysis of both **audio files** and **microphone input** in **real-time**.
+- 🎤 Analysis of **audio files**, **microphone input** and **system sound** (macOS only for now) in **real-time**.
 - 📊 **Frequency Spectrum** — view the frequency distribution.
 - 📉 **Waveform Display** — see the amplitude over time with Min-Max Decimation algorithm.
 - 🔊 **LUFS Metering and True Peak** — measure loudness precisely.
@@ -165,9 +165,6 @@ After saving your theme into `.toml` file and placing it into `{YOUR_CONFIG_DIRE
 ---
 ## 🐛 Known Issues
 
-- **Note:** The frequency spectrum visualization may appear noisy in this release. This will be improved in a future version once [ratatui#2426](https://github.com/ratatui/ratatui/pull/2426) is merged, which adds a filled-area chart rendering mode that will fill the area under the curve.
-
-Other known issues:
 - Rapidly seeking through an audio file may cause lag, resulting in the playhead being in an incorrect position. Pausing playback and waiting for the playhead to return to the correct spot before resuming usually resolves the issue.
 - In some audio files the playhead may gradually drift slightly to the right of the waveform center over time.
 - Some files with high sample rate play back normally, but real-time visualization (waveform, spectrum, LUFS) lags significantly behind. For example, this occurs with `.wav` files with a sample rate > 48000, while `.mp3` files at 92000 play without noticeable lag.
@@ -187,6 +184,7 @@ This project is licensed under the **MIT License** — see [LICENSE](LICENSE) fo
 
 If you like **Soundscope** and want to support its development:
 
+- [Buy Me a Coffee](https://buymeacoffee.com/bananaofhappiness)
 - Ethereum (ERC-20): 0xe8f2dd8a2d3a6ba9c571aadc720b6f1bea47fe4a
 - Bitcoin: bc1qype09urnpfztgrw6af83a2g86jrfhf5tr8dwp8
 - Solana: 9YmZXS7uYJSY9AwLmVmbDTgAAp987W3mQ1P3U5MUQ9Sv

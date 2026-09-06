@@ -52,15 +52,17 @@ impl Analyzer {
         Ok(())
     }
 
-    pub fn get_fft(&self, samples: &[f32]) -> Result<Vec<(f64, f64)>> {
+    pub fn get_spectrum(&self, samples: &[f32]) -> Result<Vec<(f64, f64)>> {
         // apply hann window for smoothing
         let hann_window = hann_window(samples);
+
+        let max_frequency = (self.sample_rate as f32 / 2.0).min(20000.);
 
         // calc spectrum with proper dBFS scaling
         let spectrum = samples_fft_to_spectrum(
             &hann_window,
             self.sample_rate,
-            FrequencyLimit::Range(20., 20000.),
+            FrequencyLimit::Range(20., max_frequency),
             Some(&scale_to_dbfs),
         )?;
 
@@ -90,7 +92,7 @@ impl Analyzer {
         let log_range = max_freq_log - min_freq_log;
         let chart_width = 100.;
 
-        let fft_vec = data
+        let spectrum_vec = data
             .into_iter()
             .map(|(freq, val)| {
                 let log_freq = freq.log10();
@@ -101,7 +103,7 @@ impl Analyzer {
             })
             .collect();
 
-        Ok(fft_vec)
+        Ok(spectrum_vec)
     }
 
     pub fn get_waveform(samples: &[f32], waveform_window: f64) -> Vec<(f64, f64)> {
@@ -182,13 +184,49 @@ impl Analyzer {
     }
 }
 
+/// Returns the FFT window size in samples (a power of two) for the given
+/// sample rate, but never longer in time than the proven 16384-sample window
+/// at 44.1 kHz (~371 ms).
+//  Useful when we are dealing with devices with sample rate
+//  lower than this. E.g. 16k microphone with 16384 sample rate window will
+//  take ~1 second to update the fft
+pub fn fft_window_size(sample_rate: u32) -> usize {
+    const MAX_WINDOW: usize = 16384;
+    // largest power of two N with N / sample_rate <= 16384 / 44100,
+    // rounded down
+    let target = (sample_rate as usize * MAX_WINDOW / 44100).max(1);
+    let window = 1 << (usize::BITS - 1 - target.leading_zeros());
+    window.clamp(1024, MAX_WINDOW)
+}
+
+pub fn get_mid_and_side_samples(samples: &[f32]) -> (Vec<f32>, Vec<f32>) {
+    let left_samples = samples.iter().step_by(2).copied().collect::<Vec<f32>>();
+    let right_samples = samples
+        .iter()
+        .skip(1)
+        .step_by(2)
+        .copied()
+        .collect::<Vec<f32>>();
+    let mid_samples = left_samples
+        .iter()
+        .zip(right_samples.iter())
+        .map(|(l, r)| (l + r) / 2.)
+        .collect::<Vec<f32>>();
+    let side_samples = left_samples
+        .iter()
+        .zip(right_samples.iter())
+        .map(|(l, r)| (l - r) / 2.)
+        .collect::<Vec<f32>>();
+    (mid_samples, side_samples)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
     /// Tests the FFT functionality with a simple sine wave
-    fn test_get_fft() {
+    fn test_get_spectrum() {
         let analyzer = Analyzer::default();
 
         // Generate a simple sine wave at 440Hz with amplitude 1.0 (0 dBFS for float)
@@ -203,10 +241,10 @@ mod tests {
             })
             .collect();
 
-        let fft_result = analyzer.get_fft(&samples).unwrap();
+        let spectrum = analyzer.get_spectrum(&samples).unwrap();
 
         // Find max to verify calibration is reasonable
-        let max_db = fft_result
+        let max_db = spectrum
             .iter()
             .map(|(_, db)| *db)
             .fold(f64::NEG_INFINITY, f64::max);
@@ -216,7 +254,7 @@ mod tests {
         );
 
         // Should have some data points
-        assert!(!fft_result.is_empty());
+        assert!(!spectrum.is_empty());
     }
 
     #[test]
@@ -242,10 +280,10 @@ mod tests {
             })
             .collect();
 
-        let fft_result = analyzer.get_fft(&samples).unwrap();
+        let spectrum = analyzer.get_spectrum(&samples).unwrap();
 
         // Find the maximum value in the spectrum
-        let max_db = fft_result
+        let max_db = spectrum
             .iter()
             .map(|(_, db)| *db)
             .fold(f64::NEG_INFINITY, f64::max);
@@ -283,8 +321,8 @@ mod tests {
             })
             .collect();
 
-        let fft_1khz = analyzer.get_fft(&samples_1khz).unwrap();
-        let max_1khz = fft_1khz
+        let spectrum_1khz = analyzer.get_spectrum(&samples_1khz).unwrap();
+        let max_1khz = spectrum_1khz
             .iter()
             .map(|(_, db)| *db)
             .fold(f64::NEG_INFINITY, f64::max);
@@ -300,8 +338,8 @@ mod tests {
             })
             .collect();
 
-        let fft_125hz = analyzer.get_fft(&samples_125hz).unwrap();
-        let max_125hz = fft_125hz
+        let spectrum_125hz = analyzer.get_spectrum(&samples_125hz).unwrap();
+        let max_125hz = spectrum_125hz
             .iter()
             .map(|(_, db)| *db)
             .fold(f64::NEG_INFINITY, f64::max);
@@ -319,6 +357,64 @@ mod tests {
             (-10.5..=-8.0).contains(&diff),
             "Pink noise compensation not working correctly: expected ~-9 dB difference, got {diff}"
         );
+    }
+
+    #[test]
+    /// Tests that low sample rates (e.g. 16 kHz Bluetooth microphones) are
+    /// supported: the frequency range is capped at the Nyquist frequency.
+    fn test_get_spectrum_low_sample_rate() {
+        let mut analyzer = Analyzer::default();
+        analyzer.create_loudness_meter(1, 16000).unwrap();
+
+        let sample_rate = 16000;
+        // 500 Hz lands exactly on a bin: 16000 / 16384 * 512 == 500
+        let frequency = 500.0f32;
+        let samples: Vec<f32> = (0..16384_usize)
+            .map(|i| {
+                let t = i as f32 / sample_rate as f32;
+                (2.0 * std::f32::consts::PI * frequency * t).sin()
+            })
+            .collect();
+
+        let spectrum = analyzer.get_spectrum(&samples).unwrap();
+
+        // the peak must be at ~500 Hz
+        let (_, (chart_x, _)) = spectrum
+            .iter()
+            .enumerate()
+            .max_by(|a, b| a.1.1.partial_cmp(&b.1.1).unwrap())
+            .unwrap();
+        // chart_x is the logarithmic position on the 20 Hz..20000 Hz axis
+        let peak_freq = 20. * 1000f64.powf(chart_x / 100.);
+        assert!(
+            (450.0..=550.0).contains(&peak_freq),
+            "Expected peak near {frequency} Hz, got {peak_freq} Hz"
+        );
+
+        // the spectrum must end at the Nyquist frequency (8 kHz), which is
+        // chart_x = log10(8000/20) / log10(20000/20) * 100 ≈ 86.7
+        let last_chart_x = spectrum.last().unwrap().0;
+        assert!(
+            (86.0..=87.0).contains(&last_chart_x),
+            "Spectrum must end at Nyquist (chart_x ≈ 86.7), got {last_chart_x}"
+        );
+    }
+
+    #[test]
+    /// Tests that the FFT window is the full 16384 samples for 44.1 kHz and
+    /// above, and that lower rates never exceed the ~371 ms reference
+    /// duration (rounding down to a power of two).
+    fn test_fft_window_size() {
+        assert_eq!(fft_window_size(8000), 2048); // 256 ms
+        assert_eq!(fft_window_size(16000), 4096); // 256 ms
+        assert_eq!(fft_window_size(22050), 8192); // ~371 ms
+        assert_eq!(fft_window_size(44100), 16384); // ~371 ms
+        assert_eq!(fft_window_size(48000), 16384); // ~341 ms
+        assert_eq!(fft_window_size(96000), 16384); // ~171 ms
+        assert_eq!(fft_window_size(192000), 16384); // ~85 ms
+        // degenerate inputs stay in bounds
+        assert_eq!(fft_window_size(0), 1024);
+        assert_eq!(fft_window_size(u32::MAX), 16384);
     }
 
     #[test]

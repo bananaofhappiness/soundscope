@@ -10,22 +10,22 @@ permissions:
   contents: write
 
 jobs:
-  publish-crate:
-    name: Publish to crates.io
-    runs-on: ubuntu-latest
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v5
-      - name: Install Alsa
-        run: | 
-          sudo apt-get update -yqq
-          sudo apt-get install -yqq libasound2-dev
-      - name: Cache cargo
-        uses: Swatinem/rust-cache@v2
-      - name: Publish crate
-        uses: katyo/publish-crates@v2
-        with:
-          registry-token: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+  # publish-crate:
+  #   name: Publish to crates.io
+  #   runs-on: ubuntu-latest
+  #   steps:
+  #     - name: Checkout
+  #       uses: actions/checkout@v5
+  #     - name: Install Alsa
+  #       run: |
+  #         sudo apt-get update -yqq
+  #         sudo apt-get install -yqq libasound2-dev
+  #     - name: Cache cargo
+  #       uses: Swatinem/rust-cache@v2
+  #     - name: Publish crate
+  #       uses: katyo/publish-crates@v2
+  #       with:
+  #         registry-token: ${{ secrets.CARGO_REGISTRY_TOKEN }}
 
   release:
     name: Release - ${{ matrix.platform.os_name }}
@@ -35,23 +35,18 @@ jobs:
           - os_name: Linux-x86_64
             os: ubuntu-latest
             target: x86_64-unknown-linux-gnu
-            bin: soundscope
-            name: soundscope-Linux-x86_64-musl.tar.gz
+          - os_name: Linux-aarch64
+            os: ubuntu-latest-arm
+            target: aarch64-unknown-linux-gnu
           - os_name: macOS-x86_64
             os: macOS-latest
             target: x86_64-apple-darwin
-            bin: soundscope
-            name: soundscope-Darwin-x86_64.tar.gz
           - os_name: macOS-aarch64
             os: macOS-latest
             target: aarch64-apple-darwin
-            bin: soundscope
-            name: soundscope-Darwin-aarch64.tar.gz
           - os_name: Windows-x86_64
             os: windows-latest
             target: x86_64-pc-windows-gnu
-            bin: soundscope
-            name: soundscope-Windows-x86_64.zip
         toolchain:
           - stable
     runs-on: ${{ matrix.platform.os }}
@@ -59,18 +54,25 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v5
       - name: Install Alsa (Linux only)
-        if: matrix.platform.os == 'ubuntu-latest'
-        run: | 
+        if: startsWith(matrix.platform.os, 'ubuntu')
+        run: |
           sudo apt-get update -yqq
           sudo apt-get install -yqq libasound2-dev
       - name: Cache cargo
         uses: Swatinem/rust-cache@v2
       - name: Build executable
+        if: matrix.platform.os != 'ubuntu-latest-arm'
         uses: houseabsolute/actions-rust-cross@v0
         with:
           target: ${{ matrix.platform.target }}
           args: "--locked --release"
           strip: true
+      - name: Build executable (native Linux aarch64)
+        if: matrix.platform.os == 'ubuntu-latest-arm'
+        run: |
+          rustup target add ${{ matrix.platform.target }}
+          cargo build --locked --release --target ${{ matrix.platform.target }}
+          strip target/${{ matrix.platform.target }}/release/soundscope
       - name: Run tests
         run: cargo test --verbose
       - name: Publish artifacts and release

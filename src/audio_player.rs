@@ -3,7 +3,7 @@
 use crossbeam::channel::{Receiver, Sender};
 use eyre::{Result, eyre};
 use rodio::{ChannelCount, OutputStream, OutputStreamBuilder, Sink, Source, source};
-use std::{path::PathBuf, time::Duration};
+use std::{path::PathBuf, sync::Arc, time::Duration};
 use symphonia::core::{
     audio::{Channels, SampleBuffer},
     codecs::{CODEC_TYPE_NULL, DecoderOptions},
@@ -13,6 +13,8 @@ use symphonia::core::{
     meta::MetadataOptions,
     probe::Hint,
 };
+
+use crate::analyzer;
 
 // Samples of the whole file
 pub type Samples = Vec<f32>;
@@ -39,17 +41,21 @@ pub enum PlayerCommand {
 /// It implements [`Source`] and [`Iterator`] for playback.
 #[derive(Clone)]
 pub struct AudioFile {
-    title: String,
-    samples: Samples,
-    mid_samples: Samples,
-    side_samples: Samples,
-    sample_rate: SampleRate,
-    duration: Duration,
-    // channels of the file (mono, stereo, etc.)
-    channels: Channels,
+    pub data: Arc<AudioData>,
     // Global state and the sender of it
     playback_position: usize, // Index of the Samples vec
     playback_position_tx: Sender<usize>,
+}
+
+pub struct AudioData {
+    pub title: String,
+    pub samples: Samples,
+    pub mid_samples: Samples,
+    pub side_samples: Samples,
+    pub sample_rate: SampleRate,
+    pub duration: Duration,
+    // channels of the file (mono, stereo, etc.)
+    pub channels: Channels,
 }
 
 impl Iterator for AudioFile {
@@ -57,8 +63,8 @@ impl Iterator for AudioFile {
 
     fn next(&mut self) -> Option<Self::Item> {
         let pos = self.playback_position;
-        let res = if pos < self.samples.len() {
-            Some(self.samples[pos])
+        let res = if pos < self.data.samples.len() {
+            Some(self.data.samples[pos])
         } else {
             None
         };
@@ -78,15 +84,15 @@ impl Source for AudioFile {
     }
 
     fn channels(&self) -> ChannelCount {
-        self.channels.count() as u16
+        self.data.channels.count() as u16
     }
 
     fn sample_rate(&self) -> SampleRate {
-        self.sample_rate
+        self.data.sample_rate
     }
 
     fn total_duration(&self) -> Option<Duration> {
-        Some(self.duration)
+        Some(self.data.duration)
     }
 
     fn try_seek(&mut self, pos: Duration) -> Result<(), source::SeekError> {
@@ -95,7 +101,7 @@ impl Source for AudioFile {
         let new_pos = pos.as_secs_f32() * self.sample_rate() as f32 * self.channels() as f32;
         // saturate pos at the end of the source
         let new_pos = new_pos as usize;
-        let new_pos = new_pos.min(self.samples.len());
+        let new_pos = new_pos.min(self.data.samples.len());
         // make sure the next sample is for the right channel
         let new_pos = new_pos.next_multiple_of(self.channels() as usize);
         let new_pos = new_pos - curr_channel;
@@ -110,28 +116,8 @@ impl Source for AudioFile {
 }
 
 impl AudioFile {
-    pub fn title(&self) -> &str {
-        &self.title
-    }
-
-    pub fn samples(&self) -> &Samples {
-        &self.samples
-    }
-
-    pub fn mid_samples(&self) -> &Samples {
-        &self.mid_samples
-    }
-
-    pub fn side_samples(&self) -> &Samples {
-        &self.side_samples
-    }
-
-    pub fn duration(&self) -> &Duration {
-        &self.duration
-    }
-
     pub fn new(playback_position_tx: Sender<usize>) -> Self {
-        AudioFile {
+        let data = AudioData {
             title: String::new(),
             samples: Vec::new(),
             mid_samples: Vec::new(),
@@ -139,6 +125,9 @@ impl AudioFile {
             sample_rate: 44100,
             duration: Duration::from_secs(15),
             channels: Channels::all(),
+        };
+        AudioFile {
+            data: Arc::new(data),
             playback_position: 0,
             playback_position_tx,
         }
@@ -149,10 +138,13 @@ impl AudioFile {
         // get file name
         let title = path.file_name().unwrap().to_string_lossy().to_string();
         let (samples, sample_rate, channels) = Self::decode_file(path)?;
-        // TODO: other channels, not only stereo sound.
-        let (mid_samples, side_samples) = get_mid_and_side_samples(&samples);
+        let (mid_samples, side_samples) = if channels.count() == 2 {
+            analyzer::get_mid_and_side_samples(&samples)
+        } else {
+            (samples.clone(), samples.clone())
+        };
         let duration = mid_samples.len() as f64 / sample_rate as f64 * 1000.;
-        Ok(AudioFile {
+        let data = AudioData {
             title,
             samples,
             mid_samples,
@@ -160,6 +152,9 @@ impl AudioFile {
             sample_rate,
             duration: Duration::from_millis(duration as u64),
             channels,
+        };
+        Ok(AudioFile {
+            data: Arc::new(data),
             playback_position: 0,
             playback_position_tx,
         })
@@ -277,7 +272,8 @@ pub struct AudioPlayer {
 
 impl AudioPlayer {
     pub fn new(playback_position_tx: Sender<usize>) -> Result<Self> {
-        let stream_handle = OutputStreamBuilder::open_default_stream()?;
+        let mut stream_handle = OutputStreamBuilder::open_default_stream()?;
+        stream_handle.log_on_drop(false);
         let sink = Sink::connect_new(stream_handle.mixer());
         let audio_file = AudioFile::new(playback_position_tx.clone());
         Ok(Self {
@@ -343,10 +339,6 @@ impl AudioPlayer {
                         self.sink.stop();
                         self.sink.clear();
                         self.audio_file.playback_position = 0;
-                        ratatui::crossterm::execute!(
-                            std::io::stdout(),
-                            ratatui::crossterm::event::DisableMouseCapture
-                        )?;
                         return Ok(());
                     }
                     // move the playhead right
@@ -355,7 +347,8 @@ impl AudioPlayer {
                         if self.sink.empty() {
                             continue;
                         }
-                        let seek = (pos + Duration::from_secs(5)).min(self.audio_file.duration);
+                        let seek =
+                            (pos + Duration::from_secs(5)).min(self.audio_file.data.duration);
 
                         if let Err(err) = self.sink.try_seek(seek) {
                             println!("Error seeking: {err:?}");
@@ -367,6 +360,7 @@ impl AudioPlayer {
                         if self.sink.empty() {
                             let pos = self
                                 .audio_file
+                                .data
                                 .duration
                                 .checked_sub(Duration::from_secs(5))
                                 .unwrap_or_default();
@@ -395,25 +389,4 @@ impl AudioPlayer {
         }
         // Ok(())
     }
-}
-
-pub fn get_mid_and_side_samples(samples: &[f32]) -> (Vec<f32>, Vec<f32>) {
-    let left_samples = samples.iter().step_by(2).copied().collect::<Vec<f32>>();
-    let right_samples = samples
-        .iter()
-        .skip(1)
-        .step_by(2)
-        .copied()
-        .collect::<Vec<f32>>();
-    let mid_samples = left_samples
-        .iter()
-        .zip(right_samples.iter())
-        .map(|(l, r)| (l + r) / 2.)
-        .collect::<Vec<f32>>();
-    let side_samples = left_samples
-        .iter()
-        .zip(right_samples.iter())
-        .map(|(l, r)| (l - r) / 2.)
-        .collect::<Vec<f32>>();
-    (mid_samples, side_samples)
 }
