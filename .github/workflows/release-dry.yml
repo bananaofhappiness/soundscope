@@ -19,12 +19,12 @@ jobs:
         run: | 
           sudo apt-get update -yqq
           sudo apt-get install -yqq libasound2-dev
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
       - name: Lint
         run: |
           cargo fmt --all -- --check
           cargo clippy -- -D warnings
-      - name: Cache cargo
-        uses: Swatinem/rust-cache@v2
       - name: Dry-run publish
         run: cargo publish --dry-run
 
@@ -36,6 +36,9 @@ jobs:
           - os_name: Linux-x86_64
             os: ubuntu-latest
             target: x86_64-unknown-linux-gnu
+          - os_name: Linux-aarch64
+            os: ubuntu-latest-arm
+            target: aarch64-unknown-linux-gnu
           - os_name: macOS-x86_64
             os: macOS-latest
             target: x86_64-apple-darwin
@@ -52,17 +55,24 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v5
       - name: Install Alsa (Linux only)
-        if: matrix.platform.os == 'ubuntu-latest'
+        if: startsWith(matrix.platform.os, 'ubuntu')
         run: |
-          sudo apt-get update
+          sudo apt-get update -yqq
           sudo apt-get install -yqq libasound2-dev
       - name: Cache cargo
         uses: Swatinem/rust-cache@v2
       - name: Build executable
+        if: matrix.platform.os != 'ubuntu-latest-arm'
         uses: houseabsolute/actions-rust-cross@v0
         with:
           target: ${{ matrix.platform.target }}
           args: "--locked --release"
           strip: true
+      - name: Build executable (native Linux aarch64)
+        if: matrix.platform.os == 'ubuntu-latest-arm'
+        run: |
+          rustup target add ${{ matrix.platform.target }}
+          cargo build --locked --release --target ${{ matrix.platform.target }}
+          strip target/${{ matrix.platform.target }}/release/soundscope
       - name: Run tests
         run: cargo test --verbose
