@@ -1058,15 +1058,16 @@ impl App {
                         self.reset_charts();
                         Mode::Microphone
                     }
+                    #[cfg(target_os = "macos")]
                     Mode::Microphone => {
-                        if cfg!(target_os = "macos") {
-                            self.reset_charts();
-                            system_sound_capture::ensure_screen_capture_permission();
-                            Mode::System
-                        } else {
-                            self.reset_charts();
-                            Mode::Player
-                        }
+                        self.reset_charts();
+                        system_sound_capture::ensure_screen_capture_permission();
+                        Mode::System
+                    }
+                    #[cfg(not(target_os = "macos"))]
+                    Mode::Microphone => {
+                        self.reset_charts();
+                        Mode::Player
                     }
                     Mode::System => {
                         self.reset_charts();
