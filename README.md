@@ -1,4 +1,4 @@
-# Soundscope — a CLI audio file analyzer tool.
+# Soundscope — a TUI audio file analyzer tool.
 Soundscope is a crossplatform TUI tool for analyzing audio files, microphone input and system sound.
 ![](assets/soundscope-demo.gif)
 
