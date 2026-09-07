@@ -176,10 +176,12 @@ struct App {
     file_analyzer: Analyzer,
     /// Used to get LUFS of microphone input.
     device_analyzer: Analyzer,
-    /// Used to get LUFS of microphone input.
+    /// Used to get LUFS of system sound.
     system_sound_analyzer: Analyzer,
-    /// Device data like sample rate
+    /// Device data like channels of the microphone input device
     device_data: DeviceData,
+    /// Device data like channels of the system sound capture device
+    system_device_data: DeviceData,
 
     // Charts data
     /// Data used to render spectrum chart.
@@ -231,6 +233,7 @@ impl App {
             device_analyzer: Analyzer::default(),
             system_sound_analyzer: Analyzer::default(),
             device_data: DeviceData { channels: 1 },
+            system_device_data: DeviceData { channels: 2 },
             spectrum: Spectrum::default(),
             waveform: WaveForm::default(),
             lufs: Lufs::default(),
@@ -817,45 +820,55 @@ impl App {
     }
 
     fn analyze_microphone_input(&mut self) {
-        let samples = match self.settings.mode {
-            Mode::Microphone => self
-                .latest_captured_microphone_samples
-                .lock()
-                .unwrap()
-                .to_vec(),
-            Mode::System => self
-                .latest_captured_system_sound_samples
-                .lock()
-                .unwrap()
-                .to_vec(),
+        let (samples, sample_rate, channels) = match self.settings.mode {
+            Mode::Microphone => (
+                self.latest_captured_microphone_samples
+                    .lock()
+                    .unwrap()
+                    .to_vec(),
+                self.device_analyzer.sample_rate(),
+                self.device_data.channels,
+            ),
+            Mode::System => (
+                self.latest_captured_system_sound_samples
+                    .lock()
+                    .unwrap()
+                    .to_vec(),
+                self.system_sound_analyzer.sample_rate(),
+                self.system_device_data.channels,
+            ),
             Mode::Player => unreachable!(),
         };
-        let (mid_samples, side_samples) = if self.device_data.channels == 2 {
+        let sample_rate = sample_rate as usize;
+
+        let (mid_samples, side_samples) = if channels == 2 {
             analyzer::get_mid_and_side_samples(&samples)
         } else {
             // mono input: the signal itself is the mid channel, side is silence
             (samples.clone(), vec![0.; samples.len()])
         };
-        let sample_rate = self.device_analyzer.sample_rate() as usize;
 
+        // the mid/side buffers end at the most recent sample, so anchor the
+        // FFT window at their end. The window size adapts to the sample rate
+        // (~370 ms, capped at 16384 samples).
         let right_bound = mid_samples.len();
         let left_bound = right_bound.saturating_sub(analyzer::fft_window_size(sample_rate as u32));
 
         // get spectrum
-        self.spectrum.mid_freq = match self
-            .device_analyzer
-            .get_spectrum(&mid_samples[left_bound..right_bound])
-        {
+        let mid_spectrum = self
+            .mode_analyzer()
+            .get_spectrum(&mid_samples[left_bound..right_bound]);
+        self.spectrum.mid_freq = match mid_spectrum {
             Ok(spectrum) => spectrum,
             Err(err) => {
                 self.handle_error(format!("Error getting frequencies: {err}"));
                 vec![(0., 0.)]
             }
         };
-        self.spectrum.side_freq = match self
-            .device_analyzer
-            .get_spectrum(&side_samples[left_bound..right_bound])
-        {
+        let side_spectrum = self
+            .mode_analyzer()
+            .get_spectrum(&side_samples[left_bound..right_bound]);
+        self.spectrum.side_freq = match side_spectrum {
             Ok(spectrum) => spectrum,
             Err(err) => {
                 self.handle_error(format!("Error getting frequencies: {err}"));
@@ -875,19 +888,36 @@ impl App {
 
         let lufs_right_bound = samples.len().min(30 * sample_rate);
         let lb = lufs_right_bound.saturating_sub(2usize.pow(14));
-        if let Err(err) = self
-            .device_analyzer
-            .add_samples(&samples[lb..lufs_right_bound])
-        {
+        let add_samples_result = self
+            .mode_analyzer_mut()
+            .add_samples(&samples[lb..lufs_right_bound]);
+        if let Err(err) = add_samples_result {
             self.handle_error(format!("Could not get samples for LUFS analyzer: {err}"));
         }
-        self.lufs.0[299] = match self.device_analyzer.get_shortterm_lufs() {
+        let shortterm_lufs = self.mode_analyzer_mut().get_shortterm_lufs();
+        self.lufs.0[299] = match shortterm_lufs {
             Ok(lufs) => lufs,
             Err(err) => {
                 self.handle_error(format!("Error getting short-term LUFS: {err}"));
                 0.0
             }
         };
+    }
+
+    fn mode_analyzer(&self) -> &Analyzer {
+        match self.settings.mode {
+            Mode::Microphone => &self.device_analyzer,
+            Mode::System => &self.system_sound_analyzer,
+            Mode::Player => &self.file_analyzer,
+        }
+    }
+
+    fn mode_analyzer_mut(&mut self) -> &mut Analyzer {
+        match self.settings.mode {
+            Mode::Microphone => &mut self.device_analyzer,
+            Mode::System => &mut self.system_sound_analyzer,
+            Mode::Player => &mut self.file_analyzer,
+        }
     }
 
     fn analyze_audio_file_samples(&mut self, pos: usize) {
@@ -1237,6 +1267,14 @@ impl App {
 
         let sr = audio_device.config().sample_rate.0;
         let channels = audio_device.config().channels;
+
+        self.system_device_data.channels = channels;
+
+        // the buffer must match the device's sample rate, otherwise the
+        // 30 s / 15 s window arithmetic is wrong (like for the microphone)
+        let mut buf = AllocRingBuffer::new(sr as usize * 30);
+        buf.fill(0.0);
+        self.latest_captured_system_sound_samples = Arc::new(Mutex::new(buf));
 
         let stream = match audio_capture::build_input_stream(
             self.latest_captured_system_sound_samples.clone(),
@@ -1829,6 +1867,46 @@ mod tests {
         app.analyze_microphone_input();
         assert_spectrum_peak_near_500hz(&app);
         assert_side_is_silent(&app);
+    }
+
+    #[test]
+    fn test_analyze_system_sound_input() {
+        let (mut app, _, _) = create_test_app();
+        app.settings.mode = Mode::System;
+        let sr = 48000;
+        app.system_device_data.channels = 2;
+        app.system_sound_analyzer
+            .create_loudness_meter(2, sr)
+            .unwrap();
+
+        // simulate a 16 kHz mono microphone being selected as the input device:
+        // system sound analysis must not depend on the microphone's config
+        app.device_data.channels = 1;
+        app.device_analyzer.create_loudness_meter(1, 16000).unwrap();
+
+        // Fill the buffer with interleaved stereo: L = R = 500 Hz sine
+        {
+            let mut buffer = app.latest_captured_system_sound_samples.lock().unwrap();
+            buffer.clear();
+            for frame in 0..sr * 15 {
+                let sample = (frame as f32 * 500.0 * 2.0 * std::f32::consts::PI / sr as f32).sin();
+                buffer.enqueue(sample);
+                buffer.enqueue(sample);
+            }
+        }
+
+        app.analyze_microphone_input();
+        // L = R means mid = signal and side = silence
+        assert_spectrum_peak_near_500hz(&app);
+        assert_side_is_silent(&app);
+
+        // the spectrum must span the full 20 Hz..20 kHz axis (48 kHz device),
+        // not be cut off at the microphone's Nyquist frequency
+        let last_chart_x = app.spectrum.mid_freq.last().unwrap().0;
+        assert!(
+            last_chart_x > 95.,
+            "Spectrum must reach 20 kHz, last chart_x = {last_chart_x}"
+        );
     }
 
     #[test]

@@ -4,12 +4,29 @@ All notable changes to this project will be documented in this file.
 
 ---
 
-## [1.10.0] - 2026-09-06
+## [1.10.1] - 2026-09-07
+
+### Fixes
+- **Fixed** an issue where the system audio capture device used the wrong sample rate and channel count, causing the waveform and spectrum to appear faster than they actually were.
+
+### Known issues
+- Rapidly seeking through an audio file may cause lag, resulting in the playhead being in an incorrect position. Pausing playback and waiting for the playhead to return to the correct spot before resuming usually resolves the issue.
+- In some audio files the playhead may gradually drift slightly to the right of the waveform center over time.
+- Some files with high sample rate play back normally, but real-time visualization (waveform, spectrum, LUFS) lags significantly behind. For example, this occurs with `.wav` files with a sample rate > 48000, while `.mp3` files at 92000 play without noticeable lag.
+
+---
+
+## [1.10.0] - 2026-09-07
 
 ### Features
 - **Added** system audio capture (macOS only for now)! To let the app capture your screen and system audio, grant System Audio Recording permission in System Settings > Privacy & Security > Screen & System Audio Recording.
 - Improve support for mono files and devices.
 - Microphones with low sample rate are now also supported.
+
+### Known issues
+- Rapidly seeking through an audio file may cause lag, resulting in the playhead being in an incorrect position. Pausing playback and waiting for the playhead to return to the correct spot before resuming usually resolves the issue.
+- In some audio files the playhead may gradually drift slightly to the right of the waveform center over time.
+- Some files with high sample rate play back normally, but real-time visualization (waveform, spectrum, LUFS) lags significantly behind. For example, this occurs with `.wav` files with a sample rate > 48000, while `.mp3` files at 92000 play without noticeable lag.
 
 ---
 

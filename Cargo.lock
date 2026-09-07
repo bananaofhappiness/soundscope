@@ -2102,7 +2102,7 @@ checksum = "b9be42f50aa861c555654aa3a37f52f4b1074bacf4e48fe0ef7fa584e80f1f0f"
 
 [[package]]
 name = "soundscope"
-version = "1.10.0"
+version = "1.10.1"
 dependencies = [
  "bitflags 2.13.1",
  "cpal",
