@@ -1,6 +1,6 @@
 [package]
 name = "soundscope"
-version = "1.10.0"
+version = "1.10.1"
 edition = "2024"
 description = "A TUI for real-time analysis of audio files, system audio, and microphone input"
 repository = "https://github.com/bananaofhappiness/soundscope"
