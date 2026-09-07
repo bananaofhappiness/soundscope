@@ -37,7 +37,7 @@ jobs:
             os: ubuntu-latest
             target: x86_64-unknown-linux-gnu
           - os_name: Linux-aarch64
-            os: ubuntu-latest-arm
+            os: ubuntu-24.04-arm
             target: aarch64-unknown-linux-gnu
           - os_name: macOS-x86_64
             os: macOS-latest
@@ -62,14 +62,14 @@ jobs:
       - name: Cache cargo
         uses: Swatinem/rust-cache@v2
       - name: Build executable
-        if: matrix.platform.os != 'ubuntu-latest-arm'
+        if: matrix.platform.os != 'ubuntu-24.04-arm'
         uses: houseabsolute/actions-rust-cross@v0
         with:
           target: ${{ matrix.platform.target }}
           args: "--locked --release"
           strip: true
       - name: Build executable (native Linux aarch64)
-        if: matrix.platform.os == 'ubuntu-latest-arm'
+        if: matrix.platform.os == 'ubuntu-24.04-arm'
         run: |
           rustup target add ${{ matrix.platform.target }}
           cargo build --locked --release --target ${{ matrix.platform.target }}
