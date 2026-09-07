@@ -2,7 +2,7 @@
 name = "soundscope"
 version = "1.10.0"
 edition = "2024"
-description = "A command-line tool for analyzing audio files and real-time input (Spectrum, LUFS)"
+description = "A TUI for real-time analysis of audio files, system audio, and microphone input"
 repository = "https://github.com/bananaofhappiness/soundscope"
 license = "MIT"
 readme = "README.md"
