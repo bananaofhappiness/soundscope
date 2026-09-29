@@ -1,5 +1,7 @@
 //! This module is responsible for capturing audio from the PC and microphone.
-use crate::tui::RBuffer;
+use std::sync::Arc;
+
+use crate::ring_buffer::RingBuffer;
 use cpal::{
     Device, Stream, StreamConfig, default_host,
     traits::{DeviceTrait, HostTrait},
@@ -29,7 +31,7 @@ impl AudioDevice {
 }
 
 pub fn build_input_stream(
-    latest_captured_samples: RBuffer,
+    latest_captured_samples: Arc<RingBuffer>,
     audio_device: &AudioDevice,
 ) -> Result<Stream> {
     let dev = audio_device.device();
@@ -38,10 +40,9 @@ pub fn build_input_stream(
         cfg,
         move |data: &[f32], _info| {
             // store the raw interleaved samples as-is; channel handling is done by the analyzer
-            latest_captured_samples
-                .lock()
-                .unwrap()
-                .extend(data.iter().copied());
+            data.iter().for_each(|sample| {
+                latest_captured_samples.push(*sample);
+            });
         },
         |err| {
             eprintln!("got stream error: {err}");

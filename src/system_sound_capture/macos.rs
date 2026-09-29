@@ -13,18 +13,32 @@ use std::{
 
 use objc2::AnyThread as _;
 use objc2_core_audio::{
-    AudioDeviceID, AudioHardwareCreateAggregateDevice, AudioHardwareCreateProcessTap,
-    AudioHardwareDestroyAggregateDevice, AudioHardwareDestroyProcessTap,
-    AudioObjectGetPropertyData, AudioObjectID, AudioObjectPropertyAddress,
-    AudioObjectPropertyElement, AudioObjectPropertyScope, AudioObjectPropertySelector,
-    CATapDescription, kAudioAggregateDeviceIsPrivateKey, kAudioAggregateDeviceNameKey,
-    kAudioAggregateDeviceTapAutoStartKey, kAudioAggregateDeviceTapListKey,
-    kAudioAggregateDeviceUIDKey, kAudioDevicePropertyStreamConfiguration,
-    kAudioObjectPropertyElementMain, kAudioObjectPropertyScopeGlobal,
-    kAudioObjectPropertyScopeInput, kAudioSubTapDriftCompensationKey, kAudioSubTapUIDKey,
+    AudioDeviceID,
+    AudioHardwareCreateAggregateDevice,
+    AudioHardwareCreateProcessTap,
+    AudioHardwareDestroyAggregateDevice,
+    AudioHardwareDestroyProcessTap,
+    AudioObjectGetPropertyData,
+    AudioObjectID,
+    AudioObjectPropertyAddress,
+    AudioObjectPropertyElement,
+    AudioObjectPropertyScope,
+    AudioObjectPropertySelector,
+    CATapDescription,
+    kAudioAggregateDeviceIsPrivateKey,
+    kAudioAggregateDeviceNameKey,
+    kAudioAggregateDeviceTapAutoStartKey,
+    kAudioAggregateDeviceTapListKey,
+    kAudioAggregateDeviceUIDKey,
+    // kAudioDevicePropertyStreamConfiguration,
+    kAudioObjectPropertyElementMain,
+    kAudioObjectPropertyScopeGlobal,
+    // kAudioObjectPropertyScopeInput,
+    kAudioSubTapDriftCompensationKey,
+    kAudioSubTapUIDKey,
     kAudioTapPropertyUID,
 };
-use objc2_core_audio_types::{AudioBuffer, AudioBufferList};
+// use objc2_core_audio_types::{AudioBuffer, AudioBufferList};
 use objc2_core_foundation::{CFArray, CFBoolean, CFDictionary, CFRetained, CFString, CFType};
 use objc2_foundation::{NSArray, NSNumber};
 
@@ -112,12 +126,13 @@ impl SystemAudioDevice {
             );
 
             // wait for an aggregate to initialize
-            for _ in 0..40 {
-                if scope_channel_count(id, kAudioObjectPropertyScopeInput) > 0 {
-                    break;
-                }
-                thread::sleep(Duration::from_millis(50));
-            }
+            // for _ in 0..40 {
+            //     if scope_channel_count(id, kAudioObjectPropertyScopeInput) > 0 {
+            //         break;
+            //     }
+            //     thread::sleep(Duration::from_millis(50));
+            // }
+            thread::sleep(Duration::from_millis(1000));
 
             Self { id, tap_id }
         }
@@ -159,34 +174,34 @@ fn cf_key(key: &'static CStr) -> CFRetained<CFString> {
     CFString::from_str(key.to_str().expect("non-utf8 key"))
 }
 
-unsafe fn scope_channel_count(id: AudioObjectID, scope: AudioObjectPropertyScope) -> u32 {
-    unsafe {
-        let property_address = AudioObjectPropertyAddress {
-            mSelector: kAudioDevicePropertyStreamConfiguration,
-            mScope: scope,
-            mElement: kAudioObjectPropertyElementMain,
-        };
-        // AudioBufferList
-        let mut storage =
-            [0u8; mem::size_of::<AudioBufferList>() + 32 * mem::size_of::<AudioBuffer>()];
-        let mut data_size = storage.len() as u32;
-        let status = AudioObjectGetPropertyData(
-            id,
-            NonNull::from(&property_address),
-            0,
-            null(),
-            NonNull::from(&mut data_size),
-            NonNull::from(&mut storage).cast(),
-        );
-        if status != 0 {
-            return 0;
-        }
-        let list = &*(storage.as_ptr() as *const AudioBufferList);
-        (0..list.mNumberBuffers)
-            .map(|i| list.mBuffers[i as usize].mNumberChannels)
-            .sum()
-    }
-}
+// unsafe fn scope_channel_count(id: AudioObjectID, scope: AudioObjectPropertyScope) -> u32 {
+//     unsafe {
+//         let property_address = AudioObjectPropertyAddress {
+//             mSelector: kAudioDevicePropertyStreamConfiguration,
+//             mScope: scope,
+//             mElement: kAudioObjectPropertyElementMain,
+//         };
+//         // AudioBufferList
+//         let mut storage =
+//             [0u8; mem::size_of::<AudioBufferList>() + 32 * mem::size_of::<AudioBuffer>()];
+//         let mut data_size = storage.len() as u32;
+//         let status = AudioObjectGetPropertyData(
+//             id,
+//             NonNull::from(&property_address),
+//             0,
+//             null(),
+//             NonNull::from(&mut data_size),
+//             NonNull::from(&mut storage).cast(),
+//         );
+//         if status != 0 {
+//             return 0;
+//         }
+//         let list = &*(storage.as_ptr() as *const AudioBufferList);
+//         (0..list.mNumberBuffers)
+//             .map(|i| list.mBuffers[i as usize].mNumberChannels)
+//             .sum()
+//     }
+// }
 
 fn get_property_address(
     selector: AudioObjectPropertySelector,
