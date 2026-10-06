@@ -40,9 +40,7 @@ pub fn build_input_stream(
         cfg,
         move |data: &[f32], _info| {
             // store the raw interleaved samples as-is; channel handling is done by the analyzer
-            data.iter().for_each(|sample| {
-                latest_captured_samples.push(*sample);
-            });
+            latest_captured_samples.push_slice(data);
         },
         |err| {
             eprintln!("got stream error: {err}");
