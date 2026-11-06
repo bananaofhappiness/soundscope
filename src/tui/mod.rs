@@ -1800,7 +1800,7 @@ mod tests {
         app.last_captured_samples_from_ring_buffer = vec![0.; capacity];
     }
 
-    /// Same as [connect_test_microphone], but for system sound capture
+    /// Same as [`connect_test_microphone`], but for system sound capture
     /// (mirrors `connect_system_tap_device`).
     fn connect_test_system_sound(app: &mut App, channels: u16, sample_rate: u32) {
         app.settings.mode = Mode::System;
