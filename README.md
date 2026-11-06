@@ -38,6 +38,31 @@ cargo install --git https://github.com/bananaofhappiness/soundscope
 
 Grab the latest release for your platform from the [**Releases page**](https://github.com/bananaofhappiness/soundscope/releases).
 
+### Building from source
+
+1. Make sure you have [Rust](https://rustup.rs) (stable toolchain) and Git installed.
+2. On Linux, install the ALSA development libraries first (required by the audio backend):
+   ```
+   # Debian / Ubuntu
+   sudo apt install libasound2-dev
+
+   # Arch Linux
+   sudo pacman -S alsa-lib
+
+   # Fedora
+   sudo dnf install alsa-lib-devel
+   ```
+3. Clone the repository and build:
+   ```
+   git clone https://github.com/bananaofhappiness/soundscope
+   cd soundscope
+   cargo build --release
+   ```
+4. The binary will be available at `target/release/soundscope`. Optionally, install it into `~/.cargo/bin`:
+   ```
+   cargo install --path .
+   ```
+
 ---
 ## 🔧 Usage
 - Run the tool using `soundscope` command. You can optionally provide an audio file path to open it directly on startup:
