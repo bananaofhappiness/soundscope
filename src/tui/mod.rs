@@ -64,6 +64,7 @@ enum PopupState {
     InDeviceList,
     InThemesList,
     InHelpMessage,
+    InInfo,
     None,
 }
 
@@ -198,11 +199,23 @@ struct App {
     mouse_position: Option<(u16, u16)>,
 }
 
-macro_rules! help_message_row {
-    ($key:expr, $description:expr, $hl:expr) => {
+macro_rules! table_row {
+    ($key:expr, $value:expr, $hl:expr) => {
         Row::new(vec![
             Cell::new($key.to_line().style($hl).centered()),
-            Cell::new($description.to_span()),
+            Cell::new($value.to_span()),
+        ])
+    };
+    ($key:expr, $value:expr, $hl:expr, $align:ident) => {
+        Row::new(vec![
+            Cell::new($key.to_line().style($hl).$align()),
+            Cell::new($value.to_span()),
+        ])
+    };
+    ($key:expr, $value:expr, $hl:expr, $align:ident, $align_value:ident) => {
+        Row::new(vec![
+            Cell::new($key.to_line().style($hl).$align()),
+            Cell::new($value.to_span().$align_value()),
         ])
     };
 }
@@ -398,6 +411,9 @@ impl App {
             }
             PopupState::InHelpMessage => {
                 self.render_help_message(f);
+            }
+            PopupState::InInfo => {
+                self.render_info(f);
             }
             PopupState::None => (),
         }
@@ -1310,6 +1326,11 @@ impl App {
                 PopupState::InHelpMessage => self.ui.popup_state = PopupState::None,
                 _ => (),
             },
+            KeyCode::Char('i') => match self.ui.popup_state {
+                PopupState::None => self.ui.popup_state = PopupState::InInfo,
+                PopupState::InInfo => self.ui.popup_state = PopupState::None,
+                _ => (),
+            },
             _ => (),
         }
     }
@@ -1566,34 +1587,137 @@ impl App {
         let area = Self::get_popup_area_with_lenght(f.area(), 24, 38);
         f.render_widget(Clear, area);
         let rows = vec![
-            help_message_row!["1", "Toggle waveform", hl],
-            help_message_row!["2", "Toggle spectrum", hl],
-            help_message_row!["3", "Toggle LUFS", hl],
-            help_message_row!["e", "Toggle explorer", hl],
-            help_message_row!["m", "Change mode", hl],
-            help_message_row!["d", "Toggle device list", hl],
-            help_message_row!["t", "Select theme", hl],
-            help_message_row!["?/h/F1", "Show this window", hl],
-            help_message_row!["q/Ctrl+c", "Quit", hl],
-            help_message_row!["q/Escape", "Close pop-up window", hl],
-            help_message_row!["M", "Toggle mid frequencies", hl],
-            help_message_row!["S", "Toggle side frequencies", hl],
-            help_message_row!["Right", "Jump forward 5s", hl],
-            help_message_row!["Left", "Jump back 5s", hl],
-            help_message_row!["Space", "Play/Pause (Player)", hl],
-            help_message_row!["Space", "Reset loudness meter", hl],
-            help_message_row!["", "(Microphone & System)", hl],
-            help_message_row!["-/_", "Zoom waveform in", hl],
-            help_message_row!["=/+", "Zoom waveform out", hl],
-            help_message_row!["1-9", "Select device/theme", hl],
-            help_message_row!["Up/Down", "Navigate in explorer", hl],
-            help_message_row!["", "device and theme lists", hl],
+            table_row!["1", "Toggle waveform", hl],
+            table_row!["2", "Toggle spectrum", hl],
+            table_row!["3", "Toggle LUFS", hl],
+            table_row!["e", "Toggle explorer", hl],
+            table_row!["m", "Change mode", hl],
+            table_row!["d", "Toggle device list", hl],
+            table_row!["t", "Select theme", hl],
+            table_row!["?/h/F1", "Show this window", hl],
+            table_row!["q/Ctrl+c", "Quit", hl],
+            table_row!["q/Escape", "Close pop-up window", hl],
+            table_row!["M", "Toggle mid frequencies", hl],
+            table_row!["S", "Toggle side frequencies", hl],
+            table_row!["Right", "Jump forward 5s", hl],
+            table_row!["Left", "Jump back 5s", hl],
+            table_row!["Space", "Play/Pause (Player)", hl],
+            table_row!["Space", "Reset loudness meter", hl],
+            table_row!["", "(Microphone & System)", hl],
+            table_row!["-/_", "Zoom waveform in", hl],
+            table_row!["=/+", "Zoom waveform out", hl],
+            table_row!["1-9", "Select device/theme", hl],
+            table_row!["Up/Down", "Navigate in explorer", hl],
+            table_row!["", "device and theme lists", hl],
         ];
         let widths = [Constraint::Percentage(30), Constraint::Percentage(70)];
         let table = Table::new(rows, widths).style(s).block(
             Block::bordered()
                 .border_type(BorderType::Rounded)
                 .title("Help")
+                .style(bd),
+        );
+
+        f.render_widget(table, area);
+    }
+
+    fn render_info(&self, f: &mut Frame) {
+        let s = Style::default()
+            .fg(self.ui.theme.help.foreground.unwrap())
+            .bg(self.ui.theme.help.background.unwrap());
+        let bd = s.fg(self.ui.theme.help.borders.unwrap());
+        let hl = s.fg(self.ui.theme.help.highlight.unwrap());
+
+        let (field_name, name, sample_rate, channels) = match self.settings.mode {
+            Mode::Microphone => {
+                let name = self.waveform.device_name.clone();
+                if name.is_empty() {
+                    (
+                        "Device:",
+                        "---".to_owned(),
+                        "---".to_owned(),
+                        "---".to_owned(),
+                    )
+                } else {
+                    (
+                        "Device:",
+                        name,
+                        self.device_analyzer.sample_rate().to_string(),
+                        self.device_data.channels.to_string(),
+                    )
+                }
+            }
+            Mode::System => (
+                "Device:",
+                SYSTEM_TAP_DEVICE_NAME.to_owned(),
+                self.system_sound_analyzer.sample_rate().to_string(),
+                self.system_device_data.channels.to_string(),
+            ),
+            Mode::Player => match self.audio_file {
+                Some(ref f) => (
+                    "Name:",
+                    f.data.title.clone(),
+                    self.system_sound_analyzer.sample_rate().to_string(),
+                    self.system_device_data.channels.to_string(),
+                ),
+                None => (
+                    "Name:",
+                    "---".to_owned(),
+                    "---".to_owned(),
+                    "---".to_owned(),
+                ),
+            },
+        };
+        let duration_str = if let Some(ref f) = self.audio_file {
+            fmt_time(f.data.duration.as_secs())
+        } else {
+            "---".to_owned()
+        };
+
+        let field_width = "Sample rate:".len() as u16;
+        let value_width = (name.len() as u16).max(15);
+        let height = if matches!(self.settings.mode, Mode::Player) {
+            6
+        } else {
+            5
+        };
+        let area =
+            Self::get_popup_area_with_lenght(f.area(), height, value_width + field_width + 3);
+        f.render_widget(Clear, area);
+        let mut rows = vec![
+            table_row![field_name, name, hl, left_aligned, into_left_aligned_line],
+            table_row![
+                "Channels:",
+                channels,
+                hl,
+                left_aligned,
+                into_left_aligned_line
+            ],
+            table_row![
+                "Sample rate:",
+                sample_rate,
+                hl,
+                left_aligned,
+                into_left_aligned_line
+            ],
+        ];
+        if matches!(self.settings.mode, Mode::Player) {
+            rows.push(table_row![
+                "Duration:",
+                duration_str,
+                hl,
+                left_aligned,
+                into_left_aligned_line
+            ]);
+        }
+        let widths = [
+            Constraint::Length(field_width),
+            Constraint::Length(value_width),
+        ];
+        let table = Table::new(rows, widths).style(s).block(
+            Block::bordered()
+                .border_type(BorderType::Rounded)
+                .title("Info")
                 .style(bd),
         );
 
@@ -1750,6 +1874,11 @@ fn config_dir() -> Option<PathBuf> {
     } else {
         dirs::config_local_dir()
     }
+}
+
+#[inline]
+fn fmt_time(secs: u64) -> String {
+    format!("{:0>2}:{:0>2}", secs / 60, secs % 60)
 }
 
 /// pub run function that initializes the terminal and runs the application

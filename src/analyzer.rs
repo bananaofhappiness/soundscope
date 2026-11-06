@@ -196,7 +196,11 @@ impl Analyzer {
 
     pub fn get_true_peak(&mut self) -> Result<(f64, f64), ebur128::Error> {
         let tp_left = self.loudness_meter.true_peak(0)?;
-        let tp_right = self.loudness_meter.true_peak(1)?;
+        let tp_right = if self.loudness_meter.channels() > 1 {
+            self.loudness_meter.true_peak(1)?
+        } else {
+            tp_left
+        };
 
         Ok((tp_left, tp_right))
     }
@@ -581,6 +585,24 @@ mod tests {
             assert!(left <= 1.0);
             assert!(right <= 1.0);
         }
+    }
+
+    #[test]
+    /// A mono (1-channel) loudness meter has no right channel: true peak must
+    /// not fail with `InvalidChannelIndex`, both reported values must come
+    /// from the only channel.
+    fn test_true_peak_mono() {
+        let mut analyzer = Analyzer::default();
+        analyzer.create_loudness_meter(1, 44100).unwrap();
+
+        let samples: Vec<f32> = (0..44100)
+            .map(|i| 0.5 * (440.0 * 2.0 * std::f32::consts::PI * (i as f32 / 44100.0)).sin())
+            .collect();
+        analyzer.add_samples(&samples).unwrap();
+
+        let (tp_left, tp_right) = analyzer.get_true_peak().unwrap();
+        assert_eq!(tp_left, tp_right);
+        assert!(tp_left >= 0.5); // linear amplitude of the 0.5 sine
     }
 
     #[test]
