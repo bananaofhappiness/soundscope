@@ -4,6 +4,21 @@ All notable changes to this project will be documented in this file.
 
 ---
 
+## [1.11.0] - 2026-11-06
+
+### Improvements
+- Replace `AllocRingBuffer` from [ringbuffer](https://crates.io/crates/ringbuffer) crate with custom lock-free SPSC ring buffer, potentially improving performance.
+- Waveform now doesn't jitter when moving.
+
+### Added
+- Pressing `space` will now reset loudness meter when in microphone or system sound capture mode.
+- Added audio file and device info pop-up that can be toggled by pressing `i`.
+
+### Known issues
+- Some files with high sample rate play back normally, but real-time visualization (waveform, spectrum, LUFS) lags significantly behind. For example, this occurs with `.wav` files with a sample rate > 48000, while `.mp3` files at 92000 play without noticeable lag.
+
+---
+
 ## [1.10.1] - 2026-09-07
 
 ### Fixes
