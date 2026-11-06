@@ -1,0 +1,141 @@
+name: Update Homebrew tap
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Release tag (e.g. v1.10.1)"
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: update-homebrew-tap
+  cancel-in-progress: false
+
+env:
+  TAP_REPO: bananaofhappiness/homebrew-tap
+
+jobs:
+  update-formula:
+    name: Update soundscope formula in the tap
+    runs-on: ubuntu-latest
+    env:
+      TAG: ${{ inputs.tag || github.event.release.tag_name }}
+    steps:
+      - name: Checkout tap repository
+        uses: actions/checkout@v5
+        with:
+          repository: ${{ env.TAP_REPO }}
+          ref: main
+          token: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+          path: tap
+
+      - name: Download release archives and compute checksums
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          assets=(
+            "soundscope-macOS-arm64.tar.gz"
+            "soundscope-macOS-x86_64.tar.gz"
+            "soundscope-Linux-gnu-x86_64.tar.gz"
+            "soundscope-Linux-gnu-arm64.tar.gz"
+          )
+          mkdir -p archives
+
+          # The release is created as soon as the first matrix job finishes,
+          # so the remaining archives may not be uploaded yet. Retry for a while.
+          for attempt in $(seq 1 30); do
+            missing=0
+            for asset in "${assets[@]}"; do
+              if [[ ! -f "archives/$asset" ]]; then
+                gh release download "$TAG" --repo "$GITHUB_REPOSITORY" \
+                  --pattern "$asset" --dir archives || missing=1
+              fi
+            done
+            if [[ "$missing" -eq 0 ]]; then
+              break
+            fi
+            echo "Not all archives are uploaded yet (attempt $attempt/30), retrying in 30s..."
+            sleep 30
+          done
+
+          for asset in "${assets[@]}"; do
+            if [[ ! -f "archives/$asset" ]]; then
+              echo "::error::$asset was not found in release $TAG"
+              exit 1
+            fi
+          done
+
+          (cd archives && sha256sum *.tar.gz) > checksums.txt
+          cat checksums.txt
+
+      - name: Render Formula/soundscope.rb
+        run: |
+          version="${TAG#v}"
+          base_url="https://github.com/bananaofhappiness/soundscope/releases/download/$TAG"
+          sha_for() { awk -v f="$1" '$2 == f { print $1 }' checksums.txt; }
+
+          mac_arm64_sha=$(sha_for soundscope-macOS-arm64.tar.gz)
+          mac_x86_64_sha=$(sha_for soundscope-macOS-x86_64.tar.gz)
+          linux_x86_64_sha=$(sha_for soundscope-Linux-gnu-x86_64.tar.gz)
+          linux_arm64_sha=$(sha_for soundscope-Linux-gnu-arm64.tar.gz)
+
+          mkdir -p tap/Formula
+          cat > tap/Formula/soundscope.rb <<RUBY
+          class Soundscope < Formula
+            desc "TUI for real-time analysis of audio files, system audio, and microphone input"
+            homepage "https://github.com/bananaofhappiness/soundscope"
+            url "$base_url/soundscope-macOS-arm64.tar.gz"
+            sha256 "$mac_arm64_sha"
+            license "MIT"
+
+            on_macos do
+              on_intel do
+                url "$base_url/soundscope-macOS-x86_64.tar.gz"
+                sha256 "$mac_x86_64_sha"
+              end
+            end
+
+            on_linux do
+              on_intel do
+                url "$base_url/soundscope-Linux-gnu-x86_64.tar.gz"
+                sha256 "$linux_x86_64_sha"
+              end
+
+              on_arm do
+                url "$base_url/soundscope-Linux-gnu-arm64.tar.gz"
+                sha256 "$linux_arm64_sha"
+              end
+            end
+
+            def install
+              bin.install "soundscope"
+            end
+
+            test do
+              assert_match version.to_s, shell_output("#{bin}/soundscope --version")
+            end
+          end
+          RUBY
+
+          ruby -c tap/Formula/soundscope.rb
+          cat tap/Formula/soundscope.rb
+
+      - name: Commit and push
+        run: |
+          version="${TAG#v}"
+          cd tap
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add Formula/soundscope.rb
+          if git diff --cached --quiet; then
+            echo "Formula is already up to date, nothing to push."
+          else
+            git commit -m "soundscope $version"
+            git push
+          fi
