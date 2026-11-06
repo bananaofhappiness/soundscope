@@ -233,7 +233,7 @@ impl App {
             file_analyzer: Analyzer::default(),
             device_analyzer: Analyzer::default(),
             system_sound_analyzer: Analyzer::default(),
-            device_data: DeviceData { channels: 1 },
+            device_data: DeviceData { channels: 2 },
             system_device_data: DeviceData { channels: 2 },
             spectrum: Spectrum::default(),
             waveform: WaveForm::default(),
@@ -359,13 +359,15 @@ impl App {
                     self.render_spectrum_info(f, x, y);
                 }
             }
+            let analyzer = match self.settings.mode {
+                Mode::Player => &mut self.file_analyzer,
+                Mode::Microphone => &mut self.device_analyzer,
+                Mode::System => &mut self.system_sound_analyzer,
+            };
             if self.ui.show_window.contains(ShowWindow::LUFS)
-                && let Err(err) = self.lufs.render(
-                    f,
-                    horizontal_chunks[1],
-                    &self.ui.theme.lufs,
-                    &mut self.file_analyzer,
-                )
+                && let Err(err) =
+                    self.lufs
+                        .render(f, horizontal_chunks[1], &self.ui.theme.lufs, analyzer)
             {
                 self.handle_error(format!("Error while computing loudness: {err}"));
             }
@@ -883,11 +885,6 @@ impl App {
         let waveform_left_bound =
             available.saturating_sub(self.waveform.window * sample_rate * channels as usize);
 
-        // `last_captured_samples_from_ring_buffer` is a sliding snapshot:
-        // after every `copy_latest` its indices hold different stream
-        // samples. the absolute anchor of the window is therefore derived
-        // from the stream position `pos`, NOT from the buffer index (which
-        // would re-bin the waveform on every tick = jitter).
         let w = &self.last_captured_samples_from_ring_buffer[waveform_left_bound..available];
         Analyzer::get_waveform(w, &mut self.waveform.waveform, pos - w.len());
 
@@ -1095,14 +1092,36 @@ impl App {
             KeyCode::Char('M') => self.spectrum.show_mid_freq = !self.spectrum.show_mid_freq,
             // pause/play
             KeyCode::Char(' ') => {
-                if let Err(_err) = self.player_command_tx.send(PlayerCommand::ChangeState) {
-                    //TODO: log sending error
-                }
-                self.is_playing_audio = !self.is_playing_audio;
-                // do this so lufs update only on play, not pause
-                if self.is_playing_audio {
-                    self.lufs.0 = [-100.; 300];
-                    self.file_analyzer.reset();
+                match self.settings.mode {
+                    Mode::Player => {
+                        if let Err(_err) = self.player_command_tx.send(PlayerCommand::ChangeState) {
+                            //TODO: log sending error
+                        }
+                        self.is_playing_audio = !self.is_playing_audio;
+                        // do this so lufs update only on play, not pause
+                        if self.is_playing_audio {
+                            self.lufs.0 = [-100.; 300];
+                            self.file_analyzer.reset();
+                        }
+                    }
+                    Mode::Microphone => {
+                        self.lufs.0 = [-100.; 300];
+                        self.device_analyzer
+                            .create_loudness_meter(
+                                self.device_data.channels as u32,
+                                self.device_analyzer.sample_rate(),
+                            )
+                            .unwrap();
+                    }
+                    Mode::System => {
+                        self.lufs.0 = [-100.; 300];
+                        self.system_sound_analyzer
+                            .create_loudness_meter(
+                                self.system_device_data.channels as u32,
+                                self.system_sound_analyzer.sample_rate(),
+                            )
+                            .unwrap();
+                    }
                 }
             }
             // move playhead right and left
@@ -1544,7 +1563,7 @@ impl App {
         let bd = s.fg(self.ui.theme.help.borders.unwrap());
         let hl = s.fg(self.ui.theme.help.highlight.unwrap());
 
-        let area = Self::get_popup_area_with_lenght(f.area(), 22, 42);
+        let area = Self::get_popup_area_with_lenght(f.area(), 24, 38);
         f.render_widget(Clear, area);
         let rows = vec![
             help_message_row!["1", "Toggle waveform", hl],
@@ -1561,18 +1580,14 @@ impl App {
             help_message_row!["S", "Toggle side frequencies", hl],
             help_message_row!["Right", "Jump forward 5s", hl],
             help_message_row!["Left", "Jump back 5s", hl],
-            help_message_row!["Space", "Play/Pause", hl],
+            help_message_row!["Space", "Play/Pause (Player)", hl],
+            help_message_row!["Space", "Reset loudness meter", hl],
+            help_message_row!["", "(Microphone & System)", hl],
             help_message_row!["-/_", "Zoom waveform in", hl],
             help_message_row!["=/+", "Zoom waveform out", hl],
             help_message_row!["1-9", "Select device/theme", hl],
-            Row::new(vec![
-                Cell::new("Up/Down".to_line().style(hl).centered()),
-                Cell::new(vec![
-                    "Navigate in explorer,".to_line(),
-                    "device list and theme list".to_line(),
-                ]),
-            ])
-            .height(2),
+            help_message_row!["Up/Down", "Navigate in explorer", hl],
+            help_message_row!["", "device and theme lists", hl],
         ];
         let widths = [Constraint::Percentage(30), Constraint::Percentage(70)];
         let table = Table::new(rows, widths).style(s).block(
@@ -1586,12 +1601,13 @@ impl App {
     }
 
     fn reset_charts(&mut self) {
+        self.is_playing_audio = false;
+        self.waveform.waveform.clear();
+        self.waveform.playhead = 0;
         self.spectrum.mid_freq.clear();
         self.spectrum.side_freq.clear();
-        self.lufs.0 = [-100.; 300];
-        self.is_playing_audio = false;
-        self.waveform.playhead = 0;
         self.spectrum.gain_compensation = 0.0;
+        self.lufs.0 = [-100.; 300];
     }
 
     fn load_theme(&mut self, path: &PathBuf) -> Option<Theme> {
