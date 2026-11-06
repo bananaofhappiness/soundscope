@@ -270,6 +270,7 @@ impl App {
             .with_block(Block::bordered().border_type(BorderType::Rounded));
         self.explorer.set_theme(explorer_theme);
         self.ui.theme = theme;
+        self.ui.needs_render = true;
     }
 
     /// The function used to draw the UI.
@@ -593,7 +594,6 @@ impl App {
         if audio_file.data.duration.as_secs_f64() < 15. {
             self.waveform.window = audio_file.data.duration.as_secs() as usize;
         }
-        Analyzer::get_waveform(&audio_file.data.samples, &mut self.waveform.waveform);
         if let Err(err) = self
             .file_analyzer
             .create_loudness_meter(audio_file.channels() as u32, audio_file.sample_rate())
@@ -614,8 +614,7 @@ impl App {
             self.spectrum.gain_compensation = 0.0;
         }
         self.audio_file = Some(audio_file);
-
-        self.ui.needs_render = true;
+        self.update_waveform_data(0);
     }
 
     /// The main loop
@@ -672,21 +671,21 @@ impl App {
             std::thread::sleep(Duration::from_millis(8));
             self.ui.needs_render = false;
 
-            // receive playback position
-            let prev_playhead = self.waveform.playhead;
-            if let Ok(pos) = self.playback_position_rx.try_recv()
-                && self.audio_file.is_some()
-                && matches!(self.settings.mode, Mode::Player)
-            {
-                self.analyze_audio_file_samples(pos);
-                // render only if playhead position changed
-                self.ui.needs_render = prev_playhead != self.waveform.playhead;
-            }
-
-            // use ringbuf to analyze data if the `Mode` is not `Mode::Player`
-            if !matches!(self.settings.mode, Mode::Player) {
-                self.analyze_microphone_input();
-                self.ui.needs_render = true; // Always render in microphone mode
+            match self.settings.mode {
+                Mode::Player => {
+                    if let Ok(pos) = self.playback_position_rx.try_recv()
+                        && self.audio_file.is_some()
+                    {
+                        let prev_playhead = self.waveform.playhead;
+                        self.analyze_audio_file_samples(pos);
+                        // render only if playhead position changed
+                        self.ui.needs_render = prev_playhead != self.waveform.playhead;
+                    }
+                }
+                Mode::Microphone | Mode::System => {
+                    self.analyze_microphone_input();
+                    self.ui.needs_render = true; // Always render in microphone mode
+                }
             }
 
             // check if flashing controls need update (timers)
@@ -818,17 +817,19 @@ impl App {
     }
 
     fn analyze_microphone_input(&mut self) {
-        let (sample_rate, channels);
+        let (pos, sample_rate, channels);
 
         match self.settings.mode {
             Mode::Microphone => {
-                self.microphone_ringbuffer
+                pos = self
+                    .microphone_ringbuffer
                     .copy_latest(&mut self.last_captured_samples_from_ring_buffer);
                 sample_rate = self.device_analyzer.sample_rate();
                 channels = self.device_data.channels;
             }
             Mode::System => {
-                self.system_sound_ringbuffer
+                pos = self
+                    .system_sound_ringbuffer
                     .copy_latest(&mut self.last_captured_samples_from_ring_buffer);
                 // dbg!(&self.last_captured_samples_from_ring_buffer);
                 sample_rate = self.system_sound_analyzer.sample_rate();
@@ -877,42 +878,53 @@ impl App {
             }
         };
 
-        // get waveform of the last 15 seconds
-        let waveform_left_bound = self
-            .last_captured_samples_from_ring_buffer
-            .len()
-            .saturating_sub(self.waveform.window * sample_rate * channels as usize);
+        // get waveform of the last `window` seconds.
+        let available = pos.min(self.last_captured_samples_from_ring_buffer.len());
+        let waveform_left_bound =
+            available.saturating_sub(self.waveform.window * sample_rate * channels as usize);
 
-        // dbg!(&self.last_captured_samples_from_ring_buffer[waveform_left_bound..].len());
-        Analyzer::get_waveform(
-            &self.last_captured_samples_from_ring_buffer[waveform_left_bound..],
-            &mut self.waveform.waveform,
-        );
+        // `last_captured_samples_from_ring_buffer` is a sliding snapshot:
+        // after every `copy_latest` its indices hold different stream
+        // samples. the absolute anchor of the window is therefore derived
+        // from the stream position `pos`, NOT from the buffer index (which
+        // would re-bin the waveform on every tick = jitter).
+        let w = &self.last_captured_samples_from_ring_buffer[waveform_left_bound..available];
+        Analyzer::get_waveform(w, &mut self.waveform.waveform, pos - w.len());
 
         // get lufs
-        // for i in 0..self.lufs.0.len() - 1 {
-        //     self.lufs.0[i] = self.lufs.0[i + 1];
-        // }
+        for i in 0..self.lufs.0.len() - 1 {
+            self.lufs.0[i] = self.lufs.0[i + 1];
+        }
 
-        // let lufs_right_bound = self
-        //     .last_captured_samples_from_ring_buffer
-        //     .len()
-        //     .min(30 * sample_rate);
-        // let lb = lufs_right_bound.saturating_sub(2usize.pow(14));
-        // let add_samples_result = self
-        //     .mode_analyzer_mut()
-        //     .add_samples(&self.last_captured_samples_from_ring_buffer[lb..lufs_right_bound]);
-        // if let Err(err) = add_samples_result {
-        //     self.handle_error(format!("Could not get samples for LUFS analyzer: {err}"));
-        // }
-        // let shortterm_lufs = self.mode_analyzer_mut().get_shortterm_lufs();
-        // self.lufs.0[299] = match shortterm_lufs {
-        //     Ok(lufs) => lufs,
-        //     Err(err) => {
-        //         self.handle_error(format!("Error getting short-term LUFS: {err}"));
-        //         0.0
-        //     }
-        // };
+        let current_ring_buffer_pos = match self.settings.mode {
+            Mode::Microphone => self.microphone_ringbuffer.get_pos(),
+            Mode::System => self.system_sound_ringbuffer.get_pos(),
+            Mode::Player => unreachable!(),
+        };
+        let (analyzer, samples) = match self.settings.mode {
+            Mode::Microphone => (
+                &mut self.device_analyzer,
+                &self.last_captured_samples_from_ring_buffer,
+            ),
+            Mode::System => (
+                &mut self.system_sound_analyzer,
+                &self.last_captured_samples_from_ring_buffer,
+            ),
+            Mode::Player => unreachable!(),
+        };
+        let len = samples.len() - 1;
+        let count = current_ring_buffer_pos.saturating_sub(analyzer.last_analyzed_sample) % len;
+
+        let _ = analyzer.add_samples(&samples[len - count..len]);
+        analyzer.last_analyzed_sample = current_ring_buffer_pos;
+        let shortterm_lufs = self.mode_analyzer_mut().get_shortterm_lufs();
+        self.lufs.0[299] = match shortterm_lufs {
+            Ok(lufs) => lufs,
+            Err(err) => {
+                self.handle_error(format!("Error getting short-term LUFS: {err}"));
+                0.0
+            }
+        };
     }
 
     fn mode_analyzer(&self) -> &Analyzer {
@@ -931,14 +943,70 @@ impl App {
         }
     }
 
-    fn analyze_audio_file_samples(&mut self, pos: usize) {
-        // if using mid side we must divide the position by 2
+    // had to factor it out so we can update waveform while resizing the window while at pause.
+    fn update_waveform_data(&mut self, raw_pos: usize) {
+        let Some(audio_file) = self.audio_file.as_ref() else {
+            return;
+        };
+        let pos = raw_pos / audio_file.channels() as usize;
+        self.waveform.playhead = pos;
+
+        let pos_in_sec = pos as f32 / audio_file.sample_rate() as f32;
+
+        enum Pos {
+            AtBeginning,
+            AtEnd,
+            InMiddle,
+        }
+        let relative_position = if pos_in_sec <= (self.waveform.window as f32 / 2.) {
+            Pos::AtBeginning
+        } else if pos_in_sec * 1000.
+            >= (audio_file.data.duration.as_millis() - (self.waveform.window * 1000 / 2) as u128)
+                as f32
+        {
+            Pos::AtEnd
+        } else {
+            Pos::InMiddle
+        };
+
+        let win = self.waveform.window
+            * audio_file.sample_rate() as usize
+            * audio_file.channels() as usize;
+        let all_samples = &audio_file.data.samples;
+        let (w, w_start) = match relative_position {
+            Pos::AtBeginning => (&all_samples[0..win], 0),
+            Pos::AtEnd => {
+                let start = all_samples.len() - win;
+                (&all_samples[start..], start)
+            }
+            Pos::InMiddle => {
+                let half = win / 2;
+                let start = raw_pos - half;
+                (&all_samples[start..start + win], start)
+            }
+        };
+
+        Analyzer::get_waveform(w, &mut self.waveform.waveform, w_start);
+    }
+
+    fn refresh_waveform(&mut self) {
+        let channels = self
+            .audio_file
+            .as_ref()
+            .map_or(1, |file| file.channels() as usize);
+        let pos = self.waveform.playhead * channels;
+        self.update_waveform_data(pos);
+    }
+
+    fn analyze_audio_file_samples(&mut self, raw_pos: usize) {
+        self.update_waveform_data(raw_pos);
+
+        // we must divide the position by number of channels
         let audio_file = self
             .audio_file
             .as_ref()
             .expect("guarded by is_some() in run()");
-        let pos = pos / audio_file.channels() as usize;
-        self.waveform.playhead = pos;
+        let pos = self.waveform.playhead;
 
         // get spectrum
         let spectrum_left_bound =
@@ -983,18 +1051,17 @@ impl App {
         }
 
         // get lufs lufs uses all channels (update every frame for accuracy)
-        let pos = pos * audio_file.channels() as usize;
-        let lufs_left_bound = pos.saturating_sub(16384);
+        let lufs_left_bound = raw_pos.saturating_sub(16384);
         if lufs_left_bound != 0 {
             for i in 0..self.lufs.0.len() - 1 {
                 self.lufs.0[i] = self.lufs.0[i + 1];
             }
             let samples_len = audio_file.data.samples.len();
             // check bounds to prevent panic when file was changed
-            if pos <= samples_len && lufs_left_bound < samples_len {
+            if raw_pos <= samples_len && lufs_left_bound < samples_len {
                 if let Err(err) = self
                     .file_analyzer
-                    .add_samples(&audio_file.data.samples[lufs_left_bound..pos])
+                    .add_samples(&audio_file.data.samples[lufs_left_bound..raw_pos])
                 {
                     self.handle_error(format!("Could not get samples for LUFS analyzer: {err}"));
                 }
@@ -1203,6 +1270,8 @@ impl App {
             KeyCode::Char('=' | '+') => {
                 self.waveform.timer.plus_sign = Some(Instant::now());
                 self.waveform.window = usize::max(self.waveform.window - 1, 1);
+                self.refresh_waveform();
+                self.ui.needs_render = true;
             }
             KeyCode::Char('-' | '_') => {
                 let bound = if let Some(file) = self.audio_file.as_ref()
@@ -1214,6 +1283,8 @@ impl App {
                 };
                 self.waveform.timer.minus_sign = Some(Instant::now());
                 self.waveform.window = usize::min(self.waveform.window + 1, bound as usize);
+                self.refresh_waveform();
+                self.ui.needs_render = true;
             }
             KeyCode::Char('h' | '?') | KeyCode::F(1) => match self.ui.popup_state {
                 PopupState::None => self.ui.popup_state = PopupState::InHelpMessage,
@@ -1412,6 +1483,7 @@ impl App {
         if let Ok(audio_file) = self.audio_file_rx.recv() {
             self.receive_audio_file(audio_file);
         }
+        self.ui.needs_render = true;
     }
 
     fn apply_theme_file(&mut self, file_path: &PathBuf) {

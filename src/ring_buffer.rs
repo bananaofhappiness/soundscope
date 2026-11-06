@@ -80,6 +80,10 @@ impl RingBuffer {
         }
         pos
     }
+
+    pub fn get_pos(&self) -> usize {
+        self.write_pos.load(Ordering::Acquire)
+    }
 }
 
 #[cfg(test)]

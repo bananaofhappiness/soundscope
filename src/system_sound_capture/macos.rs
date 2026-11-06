@@ -7,8 +7,6 @@ use std::{
     ffi::CStr,
     mem,
     ptr::{NonNull, null},
-    thread,
-    time::Duration,
 };
 
 use objc2::AnyThread as _;
@@ -132,7 +130,7 @@ impl SystemAudioDevice {
             //     }
             //     thread::sleep(Duration::from_millis(50));
             // }
-            thread::sleep(Duration::from_millis(1000));
+            // thread::sleep(Duration::from_millis(1000));
 
             Self { id, tap_id }
         }

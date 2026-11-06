@@ -1,4 +1,4 @@
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use ratatui::{
     Frame,
@@ -14,8 +14,6 @@ use crate::{
     tui::{Mode, theme::WaveformTheme},
 };
 
-pub const WAVEFORM_CHART_LENGTH: usize = 1000;
-
 pub struct Timer {
     // Used to flash control elements when the button is pressed
     pub left_arrow: Option<Instant>,
@@ -26,7 +24,7 @@ pub struct Timer {
 
 /// Waveform data for the UI.
 pub struct WaveForm {
-    pub window: usize,
+    pub window: usize, // in seconds
     pub device_name: String,
     pub timer: Timer,
     pub waveform: Vec<(f64, f64)>,
@@ -42,6 +40,16 @@ impl WaveForm {
         audio_data: Option<&AudioData>,
         mode: &Mode,
     ) {
+        // Match the number of waveform bins to the number of dot columns of
+        // the chart. Minus 2 becasue the bordered block takes 2 cells
+        // times 2 since Braille gives 2 dot columns per cell.
+        let dots = usize::from(area.width.saturating_sub(2)) * 2;
+        if dots >= 2 && self.waveform.len() != dots * 2 {
+            self.waveform = vec![(0., 0.); dots * 2];
+        }
+        let bins = self.waveform.len() / 2;
+        let x_max = bins.saturating_sub(1).max(1) as f64;
+
         let s = Style::default().bg(theme.background.unwrap());
         let lb = s.fg(theme.labels.unwrap());
         let bd = s.fg(theme.borders.unwrap());
@@ -53,12 +61,39 @@ impl WaveForm {
 
         // playhead is just a function that looks like a vertical line
         let sample_rate = audio_data.map_or(44100, |d| d.sample_rate);
-        let samples_in_one_ms = sample_rate / 1000;
+        let duration = audio_data.map_or(Duration::ZERO, |d| d.duration);
 
         let playhead_chart = if !matches!(mode, Mode::Player) {
             [(-1., -1.), (-1., -1.)]
         } else {
-            let playhead_x = self.playhead as f64 / samples_in_one_ms as f64;
+            // just copy-pasted from tui/mod.rs:959
+            let pos_in_sec = self.playhead as f32 / sample_rate as f32;
+            enum Pos {
+                AtBeginning,
+                AtEnd,
+                InMiddle,
+            }
+            let relative_position = if pos_in_sec <= (self.window as f32 / 2.) {
+                Pos::AtBeginning
+            } else if pos_in_sec * 1000.
+                >= (duration.as_millis() - (self.window * 1000 / 2) as u128) as f32
+            {
+                Pos::AtEnd
+            } else {
+                Pos::InMiddle
+            };
+
+            // smooth playhead scrolling
+            let half_window = self.window as f32 / 2.;
+            let center = self.waveform.len() as f64 / 4.;
+            let playhead_x = match relative_position {
+                Pos::AtBeginning => (pos_in_sec / half_window) as f64 * center,
+                Pos::InMiddle => center,
+                Pos::AtEnd => {
+                    let secs_past_middle = pos_in_sec - (duration.as_secs_f32() - half_window);
+                    center + (secs_past_middle / half_window) as f64 * (x_max - center)
+                }
+            };
             [(playhead_x, 1.), (playhead_x, -1.)]
         };
 
@@ -128,7 +163,7 @@ impl WaveForm {
                     .style(bd),
             )
             .style(wv)
-            .x_axis(Axis::default().bounds([0., WAVEFORM_CHART_LENGTH as f64 / 2.0]))
+            .x_axis(Axis::default().bounds([0., x_max]))
             .y_axis(Axis::default().bounds([-1., 1.]));
 
         frame.render_widget(chart, area);
@@ -173,7 +208,8 @@ impl WaveForm {
 impl Default for WaveForm {
     fn default() -> Self {
         Self {
-            waveform: vec![(0., 0.); WAVEFORM_CHART_LENGTH],
+            // resized to the chart area on the first render
+            waveform: vec![(0., 0.); 1000],
             playhead: 0,
             window: 15,
             device_name: String::new(),
