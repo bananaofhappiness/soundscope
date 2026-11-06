@@ -1763,276 +1763,245 @@ pub fn run(
     app_result
 }
 
-// #[cfg(test)]
-// mod tests {
+#[cfg(test)]
+mod tests {
 
-//     use super::*;
-//     use crossbeam::channel;
+    use super::*;
+    use crossbeam::channel;
 
-//     fn create_test_app() -> (App, Sender<PlayerCommand>, Receiver<PlayerCommand>) {
-//         let (player_command_tx, player_command_rx) = channel::unbounded();
-//         let (_, audio_file_rx) = channel::unbounded();
-//         let (playback_position_tx, playback_position_rx) = channel::unbounded();
-//         let (_, error_rx) = channel::unbounded();
+    fn create_test_app() -> App {
+        let (player_command_tx, _) = channel::unbounded();
+        let (_, audio_file_rx) = channel::unbounded();
+        let (_, playback_position_rx) = channel::unbounded();
+        let (_, error_rx) = channel::unbounded();
 
-//         let audio_file = AudioFile::new(playback_position_tx);
-//         let latest_captured_microphone_samples =
-//             Arc::new(Mutex::new(AllocRingBuffer::new(44100 * 30)));
-//         let latest_captured_system_sound_samples =
-//             Arc::new(Mutex::new(AllocRingBuffer::new(44100 * 30)));
+        App::new(
+            None,
+            player_command_tx,
+            audio_file_rx,
+            playback_position_rx,
+            error_rx,
+        )
+        .unwrap()
+    }
 
-//         let app = App::new(
-//             Some(audio_file),
-//             player_command_tx.clone(),
-//             audio_file_rx,
-//             playback_position_rx,
-//             error_rx,
-//             latest_captured_microphone_samples,
-//             latest_captured_system_sound_samples,
-//         )
-//         .unwrap();
+    /// Simulates selecting a microphone: sets up the mode, analyzer, ring
+    /// buffer and snapshot buffer the same way `select_device` does, but
+    /// without a real input device.
+    fn connect_test_microphone(app: &mut App, channels: u16, sample_rate: u32) {
+        app.settings.mode = Mode::Microphone;
+        app.device_data.channels = channels;
+        app.device_analyzer
+            .create_loudness_meter(channels as u32, sample_rate)
+            .unwrap();
 
-//         (app, player_command_tx, player_command_rx)
-//     }
+        let capacity = (sample_rate as usize * 15 * channels as usize).next_power_of_two();
+        app.microphone_ringbuffer = Arc::new(RingBuffer::with_capacity(capacity));
+        app.last_captured_samples_from_ring_buffer = vec![0.; capacity];
+    }
 
-//     #[test]
-//     fn test_handle_error() {
-//         let (mut app, _, _) = create_test_app();
-//         let error_message = "Test error message";
+    /// Same as [connect_test_microphone], but for system sound capture
+    /// (mirrors `connect_system_tap_device`).
+    fn connect_test_system_sound(app: &mut App, channels: u16, sample_rate: u32) {
+        app.settings.mode = Mode::System;
+        app.system_device_data.channels = channels;
+        app.system_sound_analyzer
+            .create_loudness_meter(channels as u32, sample_rate)
+            .unwrap();
 
-//         app.handle_error(error_message.to_string());
+        let capacity = (sample_rate as usize * 15 * channels as usize).next_power_of_two();
+        app.system_sound_ringbuffer = Arc::new(RingBuffer::with_capacity(capacity));
+        app.last_captured_samples_from_ring_buffer = vec![0.; capacity];
+    }
 
-//         assert_eq!(app.ui.error_text, error_message);
-//         assert!(app.ui.error_timer.is_some());
-//     }
+    /// Fills the ring buffer with `seconds` seconds of a 500 Hz sine,
+    /// interleaved and identical on every channel.
+    fn push_sine(ringbuffer: &RingBuffer, sample_rate: u32, channels: u16, seconds: usize) {
+        let frames = sample_rate as usize * seconds;
+        let mut samples = Vec::with_capacity(frames * channels as usize);
+        for frame in 0..frames {
+            let sample =
+                (frame as f32 * 500.0 * 2.0 * std::f32::consts::PI / sample_rate as f32).sin();
+            for _ in 0..channels {
+                samples.push(sample);
+            }
+        }
+        ringbuffer.push_slice(&samples);
+    }
 
-//     #[test]
-//     fn test_get_explorer_popup_area() {
-//         let area = Rect::new(0, 0, 100, 50);
-//         let popup_area = App::get_popup_area_with_percentage(area, 50, 70);
+    #[test]
+    fn test_handle_error() {
+        let mut app = create_test_app();
+        let error_message = "Test error message";
 
-//         // Should be centered and smaller than original area
-//         assert!(popup_area.width <= area.width);
-//         assert!(popup_area.height <= area.height);
-//         assert!(popup_area.x >= area.x);
-//         assert!(popup_area.y >= area.y);
-//     }
+        app.handle_error(error_message.to_string());
 
-//     #[test]
-//     fn test_get_error_popup_area() {
-//         let area = Rect::new(0, 0, 100, 60);
-//         let popup_area = App::get_error_popup_area(area);
+        assert_eq!(app.ui.error_text, error_message);
+        assert!(app.ui.error_timer.is_some());
+    }
 
-//         // Should be positioned in the bottom-left portion
-//         assert!(popup_area.width < area.width);
-//         assert!(popup_area.height < area.height);
-//         assert!(popup_area.y > area.y);
-//     }
+    #[test]
+    fn test_get_explorer_popup_area() {
+        let area = Rect::new(0, 0, 100, 50);
+        let popup_area = App::get_popup_area_with_percentage(area, 50, 70);
 
-//     #[test]
-//     fn test_error_timer_logic() {
-//         let (mut app, _, _) = create_test_app();
+        // Should be centered and smaller than original area
+        assert!(popup_area.width <= area.width);
+        assert!(popup_area.height <= area.height);
+        assert!(popup_area.x >= area.x);
+        assert!(popup_area.y >= area.y);
+    }
 
-//         // No error initially
-//         assert!(app.ui.error_timer.is_none());
+    #[test]
+    fn test_get_error_popup_area() {
+        let area = Rect::new(0, 0, 100, 60);
+        let popup_area = App::get_error_popup_area(area);
 
-//         // Set error
-//         app.handle_error("Test error".to_string());
-//         let error_time = app.ui.error_timer.unwrap();
+        // Should be positioned in the bottom-left portion
+        assert!(popup_area.width < area.width);
+        assert!(popup_area.height < area.height);
+        assert!(popup_area.y > area.y);
+    }
 
-//         // Error should be recent
-//         assert!(error_time.elapsed().as_millis() < 100);
+    #[test]
+    fn test_error_timer_logic() {
+        let mut app = create_test_app();
 
-//         std::thread::sleep(Duration::from_secs_f32(5.01));
+        // No error initially
+        assert!(app.ui.error_timer.is_none());
 
-//         // it does not work since it gets None in render_error_message() but it cant be run without drawing ui
-//         // assert!(app.ui_settings.error_timer.is_none())
+        // Set error
+        app.handle_error("Test error".to_string());
+        let error_time = app.ui.error_timer.unwrap();
 
-//         assert!(error_time.elapsed().as_millis() > 5000);
-//     }
+        // Error should be recent
+        assert!(error_time.elapsed().as_millis() < 100);
 
-//     #[test]
-//     fn test_analyze_microphone_input_44100() {
-//         let (mut app, _, _) = create_test_app();
-//         app.settings.mode = Mode::Microphone;
-//         let sr = 44100;
-//         app.device_data.channels = 1;
-//         app.device_analyzer.create_loudness_meter(1, sr).unwrap();
+        std::thread::sleep(Duration::from_secs_f32(5.01));
 
-//         // Fill the buffer with test data
-//         {
-//             let mut buffer = app.microphone_ringbuffer.lock().unwrap();
-//             buffer.clear();
-//             for i in 0..sr * 30 {
-//                 let sample = (i as f32 * 500.0 * 2.0 * std::f32::consts::PI / sr as f32).sin();
-//                 buffer.enqueue(sample);
-//             }
-//         }
+        // it does not work since it gets None in render_error_message() but it cant be run without drawing ui
+        // assert!(app.ui_settings.error_timer.is_none())
 
-//         app.analyze_microphone_input();
-//         assert_spectrum_peak_near_500hz(&app);
-//         assert_side_is_silent(&app);
-//     }
+        assert!(error_time.elapsed().as_millis() > 5000);
+    }
 
-//     #[test]
-//     fn test_analyze_microphone_input_48000() {
-//         let (mut app, _, _) = create_test_app();
-//         app.settings.mode = Mode::Microphone;
-//         let sr = 48000;
-//         app.device_data.channels = 1;
-//         app.device_analyzer.create_loudness_meter(1, sr).unwrap();
+    #[test]
+    fn test_analyze_microphone_input_44100() {
+        let mut app = create_test_app();
+        let sr = 44100;
+        connect_test_microphone(&mut app, 1, sr);
+        push_sine(&app.microphone_ringbuffer, sr, 1, 15);
 
-//         // Fill the buffer with test data
-//         {
-//             let mut buffer = app.microphone_ringbuffer.lock().unwrap();
-//             buffer.clear();
-//             for i in 0..sr * 30 {
-//                 let sample = (i as f32 * 500.0 * 2.0 * std::f32::consts::PI / sr as f32).sin();
-//                 buffer.enqueue(sample);
-//             }
-//         }
+        app.analyze_microphone_input();
+        assert_spectrum_peak_near_500hz(&app);
+        assert_side_is_silent(&app);
+    }
 
-//         app.analyze_microphone_input();
-//         assert_spectrum_peak_near_500hz(&app);
-//         assert_side_is_silent(&app);
-//     }
+    #[test]
+    fn test_analyze_microphone_input_48000() {
+        let mut app = create_test_app();
+        let sr = 48000;
+        connect_test_microphone(&mut app, 1, sr);
+        push_sine(&app.microphone_ringbuffer, sr, 1, 15);
 
-//     #[test]
-//     fn test_analyze_microphone_input_96000() {
-//         let (mut app, _, _) = create_test_app();
-//         app.settings.mode = Mode::Microphone;
-//         let sr = 96000;
-//         app.device_data.channels = 1;
-//         app.device_analyzer.create_loudness_meter(1, sr).unwrap();
+        app.analyze_microphone_input();
+        assert_spectrum_peak_near_500hz(&app);
+        assert_side_is_silent(&app);
+    }
 
-//         // Fill the buffer with test data
-//         {
-//             let mut buffer = app.microphone_ringbuffer.lock().unwrap();
-//             buffer.clear();
-//             for i in 0..sr * 30 {
-//                 let sample = (i as f32 * 500.0 * 2.0 * std::f32::consts::PI / sr as f32).sin();
-//                 buffer.enqueue(sample);
-//             }
-//         }
+    #[test]
+    fn test_analyze_microphone_input_96000() {
+        let mut app = create_test_app();
+        let sr = 96000;
+        connect_test_microphone(&mut app, 1, sr);
+        push_sine(&app.microphone_ringbuffer, sr, 1, 15);
 
-//         app.analyze_microphone_input();
-//         assert_spectrum_peak_near_500hz(&app);
-//         assert_side_is_silent(&app);
-//     }
+        app.analyze_microphone_input();
+        assert_spectrum_peak_near_500hz(&app);
+        assert_side_is_silent(&app);
+    }
 
-//     #[test]
-//     fn test_analyze_microphone_input_16000() {
-//         let (mut app, _, _) = create_test_app();
-//         app.settings.mode = Mode::Microphone;
-//         let sr = 16000;
-//         app.device_data.channels = 1;
-//         app.device_analyzer.create_loudness_meter(1, sr).unwrap();
+    #[test]
+    fn test_analyze_microphone_input_16000() {
+        let mut app = create_test_app();
+        // 16 kHz device, e.g. a Bluetooth headset
+        let sr = 16000;
+        connect_test_microphone(&mut app, 1, sr);
+        push_sine(&app.microphone_ringbuffer, sr, 1, 15);
 
-//         // Fill the buffer with test data (16 kHz device, e.g. a Bluetooth headset)
-//         {
-//             let mut buffer = app.microphone_ringbuffer.lock().unwrap();
-//             buffer.clear();
-//             for i in 0..sr * 30 {
-//                 let sample = (i as f32 * 500.0 * 2.0 * std::f32::consts::PI / sr as f32).sin();
-//                 buffer.enqueue(sample);
-//             }
-//         }
+        app.analyze_microphone_input();
+        assert_spectrum_peak_near_500hz(&app);
+        assert_side_is_silent(&app);
+    }
 
-//         app.analyze_microphone_input();
-//         assert_spectrum_peak_near_500hz(&app);
-//         assert_side_is_silent(&app);
-//     }
+    #[test]
+    fn test_analyze_system_sound_input() {
+        let mut app = create_test_app();
+        let sr = 48000;
+        connect_test_system_sound(&mut app, 2, sr);
 
-//     #[test]
-//     fn test_analyze_system_sound_input() {
-//         let (mut app, _, _) = create_test_app();
-//         app.settings.mode = Mode::System;
-//         let sr = 48000;
-//         app.system_device_data.channels = 2;
-//         app.system_sound_analyzer
-//             .create_loudness_meter(2, sr)
-//             .unwrap();
+        // simulate a 16 kHz mono microphone being selected as the input device:
+        // system sound analysis must not depend on the microphone's config
+        app.device_data.channels = 1;
+        app.device_analyzer.create_loudness_meter(1, 16000).unwrap();
 
-//         // simulate a 16 kHz mono microphone being selected as the input device:
-//         // system sound analysis must not depend on the microphone's config
-//         app.device_data.channels = 1;
-//         app.device_analyzer.create_loudness_meter(1, 16000).unwrap();
+        // Fill the buffer with interleaved stereo: L = R = 500 Hz sine
+        push_sine(&app.system_sound_ringbuffer, sr, 2, 15);
 
-//         // Fill the buffer with interleaved stereo: L = R = 500 Hz sine
-//         {
-//             let mut buffer = app.system_sound_ringbuffer.lock().unwrap();
-//             buffer.clear();
-//             for frame in 0..sr * 15 {
-//                 let sample = (frame as f32 * 500.0 * 2.0 * std::f32::consts::PI / sr as f32).sin();
-//                 buffer.enqueue(sample);
-//                 buffer.enqueue(sample);
-//             }
-//         }
+        app.analyze_microphone_input();
+        // L = R means mid = signal and side = silence
+        assert_spectrum_peak_near_500hz(&app);
+        assert_side_is_silent(&app);
 
-//         app.analyze_microphone_input();
-//         // L = R means mid = signal and side = silence
-//         assert_spectrum_peak_near_500hz(&app);
-//         assert_side_is_silent(&app);
+        // the spectrum must span the full 20 Hz..20 kHz axis (48 kHz device),
+        // not be cut off at the microphone's Nyquist frequency
+        let last_chart_x = app.spectrum.mid_freq.last().unwrap().0;
+        assert!(
+            last_chart_x > 95.,
+            "Spectrum must reach 20 kHz, last chart_x = {last_chart_x}"
+        );
+    }
 
-//         // the spectrum must span the full 20 Hz..20 kHz axis (48 kHz device),
-//         // not be cut off at the microphone's Nyquist frequency
-//         let last_chart_x = app.spectrum.mid_freq.last().unwrap().0;
-//         assert!(
-//             last_chart_x > 95.,
-//             "Spectrum must reach 20 kHz, last chart_x = {last_chart_x}"
-//         );
-//     }
+    #[test]
+    fn test_analyze_microphone_input_stereo() {
+        let mut app = create_test_app();
+        let sr = 48000;
+        connect_test_microphone(&mut app, 2, sr);
 
-//     #[test]
-//     fn test_analyze_microphone_input_stereo() {
-//         let (mut app, _, _) = create_test_app();
-//         app.settings.mode = Mode::Microphone;
-//         let sr = 48000;
-//         app.device_data.channels = 2;
-//         app.device_analyzer.create_loudness_meter(2, sr).unwrap();
+        // Fill the buffer with interleaved stereo: L = R = 500 Hz sine
+        push_sine(&app.microphone_ringbuffer, sr, 2, 15);
 
-//         // Fill the buffer with interleaved stereo: L = R = 500 Hz sine
-//         {
-//             let mut buffer = app.microphone_ringbuffer.lock().unwrap();
-//             buffer.clear();
-//             for frame in 0..sr * 15 {
-//                 let sample = (frame as f32 * 500.0 * 2.0 * std::f32::consts::PI / sr as f32).sin();
-//                 buffer.enqueue(sample);
-//                 buffer.enqueue(sample);
-//             }
-//         }
+        app.analyze_microphone_input();
+        // L = R means mid = signal and side = silence
+        assert_spectrum_peak_near_500hz(&app);
+        assert_side_is_silent(&app);
+    }
 
-//         app.analyze_microphone_input();
-//         // L = R means mid = signal and side = silence
-//         assert_spectrum_peak_near_500hz(&app);
-//         assert_side_is_silent(&app);
-//     }
+    /// Finds the highest peak of the mid spectrum and checks that it is near 500 Hz.
+    fn assert_spectrum_peak_near_500hz(app: &App) {
+        assert!(!app.spectrum.mid_freq.is_empty());
 
-//     /// Finds the highest peak of the mid spectrum and checks that it is near 500 Hz.
-//     fn assert_spectrum_peak_near_500hz(app: &App) {
-//         assert!(!app.spectrum.mid_freq.is_empty());
+        let (_, (chart_x, val)) = app
+            .spectrum
+            .mid_freq
+            .iter()
+            .enumerate()
+            .max_by(|a, b| a.1.1.partial_cmp(&b.1.1).unwrap())
+            .unwrap();
 
-//         let (_, (chart_x, val)) = app
-//             .spectrum
-//             .mid_freq
-//             .iter()
-//             .enumerate()
-//             .max_by(|a, b| a.1.1.partial_cmp(&b.1.1).unwrap())
-//             .unwrap();
+        // chart_x is the logarithmic position on the 20 Hz..20000 Hz axis
+        let peak_freq = 20. * 1000f64.powf(chart_x / 100.);
+        assert!(
+            (450.0..=550.0).contains(&peak_freq),
+            "Expected spectrum peak near 500 Hz, got {peak_freq} Hz (val {val})"
+        );
+    }
 
-//         // chart_x is the logarithmic position on the 20 Hz..20000 Hz axis
-//         let peak_freq = 20. * 1000f64.powf(chart_x / 100.);
-//         assert!(
-//             (450.0..=550.0).contains(&peak_freq),
-//             "Expected spectrum peak near 500 Hz, got {peak_freq} Hz (val {val})"
-//         );
-//     }
-
-//     /// Checks that the side spectrum contains no signal.
-//     fn assert_side_is_silent(app: &App) {
-//         assert!(
-//             app.spectrum.side_freq.iter().all(|(_, val)| *val < -60.),
-//             "Expected silent side channel"
-//         );
-//     }
-// }
+    /// Checks that the side spectrum contains no signal.
+    fn assert_side_is_silent(app: &App) {
+        assert!(
+            app.spectrum.side_freq.iter().all(|(_, val)| *val < -60.),
+            "Expected silent side channel"
+        );
+    }
+}

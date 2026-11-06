@@ -453,41 +453,39 @@ mod tests {
         assert_eq!(fft_window_size(u32::MAX), 16384);
     }
 
-    // #[test]
-    // /// Tests the waveform generation
-    // fn test_get_waveform() {
-    //     let samples: Vec<f32> = (0..44100).map(|i| (i as f32 / 44100.0).sin()).collect();
+    #[test]
+    /// Tests the waveform generation
+    fn test_get_waveform() {
+        let samples: Vec<f32> = (0..44100).map(|i| (i as f32 / 44100.0).sin()).collect();
 
-    //     let waveform = Analyzer::get_waveform(&samples, 15.);
+        let bins = 1500;
+        let mut waveform = vec![(f64::NAN, f64::NAN); bins * 2];
+        Analyzer::get_waveform(&samples, &mut waveform, 0);
 
-    //     // Should have data points
-    //     assert!(!waveform.is_empty());
+        // Every bin must be filled
+        assert_eq!(waveform.len(), bins * 2);
+        assert!(waveform.iter().all(|p| !p.0.is_nan() && !p.1.is_nan()));
 
-    //     // With 15 seconds window, we expect 15000 points (15 * 1000)
-    //     // Each point has min and max, so total should be 30000
-    //     let expected_points = 15_000 * 2;
-    //     assert_eq!(waveform.len(), expected_points);
+        // Check that we have pairs of (x, min) and (x, max) for each x
+        for i in 0..bins {
+            let min_idx = i * 2;
+            let max_idx = i * 2 + 1;
 
-    //     // Check that we have pairs of (x, min) and (x, max) for each x
-    //     for i in 0..15_000 {
-    //         let min_idx = i * 2;
-    //         let max_idx = i * 2 + 1;
+            // Both points should have the same x coordinate
+            assert_eq!(waveform[min_idx].0, waveform[max_idx].0);
+            assert_eq!(waveform[min_idx].0, i as f64);
 
-    //         // Both points should have the same x coordinate
-    //         assert_eq!(waveform[min_idx].0, waveform[max_idx].0);
-    //         assert_eq!(waveform[min_idx].0, i as f64);
+            // Min should be <= max (or equal if constant)
+            assert!(waveform[min_idx].1 <= waveform[max_idx].1);
+        }
 
-    //         // Min should be <= max (or equal if constant)
-    //         assert!(waveform[min_idx].1 <= waveform[max_idx].1);
-    //     }
-
-    //     // x values should be sequential integers (starting from i=2 to avoid underflow)
-    //     for i in 2..15_000 {
-    //         let min_idx = i * 2;
-    //         let prev_min_idx = (i - 1) * 2;
-    //         assert_eq!(waveform[min_idx].0, waveform[prev_min_idx].0 + 1.0);
-    //     }
-    // }
+        // x values should be sequential integers
+        for i in 1..bins {
+            let min_idx = i * 2;
+            let prev_min_idx = (i - 1) * 2;
+            assert_eq!(waveform[min_idx].0, waveform[prev_min_idx].0 + 1.0);
+        }
+    }
 
     #[test]
     /// The same absolute samples must form the same bin no matter where the
