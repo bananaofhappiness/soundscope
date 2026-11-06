@@ -18,6 +18,12 @@ Soundscope is a crossplatform TUI tool for analyzing audio files, microphone inp
 sudo pacman -S soundscope
 ```
 
+### Using Homebrew (on macOS or Linux)
+
+```
+brew install bananaofhappiness/tap/soundscope
+```
+
 ### Using Cargo
 
 ```
