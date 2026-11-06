@@ -1,4 +1,4 @@
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use ratatui::{
     Frame,
@@ -24,11 +24,10 @@ pub struct Timer {
 
 /// Waveform data for the UI.
 pub struct WaveForm {
-    pub window: f64,
+    pub window: usize, // in seconds
     pub device_name: String,
     pub timer: Timer,
-    pub audio_file_chart: Vec<(f64, f64)>,
-    pub microphone_input_chart: Vec<(f64, f64)>,
+    pub waveform: Vec<(f64, f64)>,
     pub playhead: usize,
 }
 
@@ -41,6 +40,16 @@ impl WaveForm {
         audio_data: Option<&AudioData>,
         mode: &Mode,
     ) {
+        // Match the number of waveform bins to the number of dot columns of
+        // the chart. Minus 2 becasue the bordered block takes 2 cells
+        // times 2 since Braille gives 2 dot columns per cell.
+        let dots = usize::from(area.width.saturating_sub(2)) * 2;
+        if dots >= 2 && self.waveform.len() != dots * 2 {
+            self.waveform = vec![(0., 0.); dots * 2];
+        }
+        let bins = self.waveform.len() / 2;
+        let x_max = bins.saturating_sub(1).max(1) as f64;
+
         let s = Style::default().bg(theme.background.unwrap());
         let lb = s.fg(theme.labels.unwrap());
         let bd = s.fg(theme.borders.unwrap());
@@ -52,12 +61,39 @@ impl WaveForm {
 
         // playhead is just a function that looks like a vertical line
         let sample_rate = audio_data.map_or(44100, |d| d.sample_rate);
-        let samples_in_one_ms = sample_rate / 1000;
+        let duration = audio_data.map_or(Duration::ZERO, |d| d.duration);
 
         let playhead_chart = if !matches!(mode, Mode::Player) {
             [(-1., -1.), (-1., -1.)]
         } else {
-            let playhead_x = self.playhead as f64 / samples_in_one_ms as f64;
+            // just copy-pasted from tui/mod.rs:959
+            let pos_in_sec = self.playhead as f32 / sample_rate as f32;
+            enum Pos {
+                AtBeginning,
+                AtEnd,
+                InMiddle,
+            }
+            let relative_position = if pos_in_sec <= (self.window as f32 / 2.) {
+                Pos::AtBeginning
+            } else if pos_in_sec * 1000.
+                >= (duration.as_millis() - (self.window * 1000 / 2) as u128) as f32
+            {
+                Pos::AtEnd
+            } else {
+                Pos::InMiddle
+            };
+
+            // smooth playhead scrolling
+            let half_window = self.window as f32 / 2.;
+            let center = self.waveform.len() as f64 / 4.;
+            let playhead_x = match relative_position {
+                Pos::AtBeginning => (pos_in_sec / half_window) as f64 * center,
+                Pos::InMiddle => center,
+                Pos::AtEnd => {
+                    let secs_past_middle = pos_in_sec - (duration.as_secs_f32() - half_window);
+                    center + (secs_past_middle / half_window) as f64 * (x_max - center)
+                }
+            };
             [(playhead_x, 1.), (playhead_x, -1.)]
         };
 
@@ -75,25 +111,6 @@ impl WaveForm {
             _ => (String::new(), String::new()),
         };
 
-        let (x_min, x_max) = match mode {
-            Mode::Microphone | Mode::System => {
-                let window_millis = self.window as usize * 1000;
-                (15000. - window_millis as f64, 15000.)
-            }
-            Mode::Player => {
-                let half_window = self.window * 500.;
-                let playhead_millis = playhead_ms as f64;
-                let max_x = self.audio_file_chart.len() as f64 / 2.;
-                let min_bound = (playhead_millis - half_window)
-                    .min(max_x - self.window * 1000.)
-                    .max(0.);
-                let max_bound = (playhead_millis + half_window)
-                    .min(max_x)
-                    .max(self.window * 1000.);
-                (min_bound, max_bound)
-            }
-        };
-
         // make datasets
         // first one to render a waveform
         // the other one to render the playhead
@@ -102,13 +119,7 @@ impl WaveForm {
                 .marker(symbols::Marker::Braille)
                 .graph_type(GraphType::Line)
                 .style(wv)
-                .data({
-                    if matches!(mode, Mode::Player) {
-                        &self.audio_file_chart
-                    } else {
-                        &self.microphone_input_chart
-                    }
-                }),
+                .data(&self.waveform),
             Dataset::default()
                 .marker(symbols::Marker::Braille)
                 .graph_type(GraphType::Line)
@@ -138,6 +149,7 @@ impl WaveForm {
             .right_aligned(),
         };
 
+        // let x_min = 15000. - (self.window as usize * 1000) as f64 ;
         // build the chart widget
         let chart = Chart::new(datasets)
             .block(
@@ -151,7 +163,7 @@ impl WaveForm {
                     .style(bd),
             )
             .style(wv)
-            .x_axis(Axis::default().bounds([x_min, x_max]))
+            .x_axis(Axis::default().bounds([0., x_max]))
             .y_axis(Axis::default().bounds([-1., 1.]));
 
         frame.render_widget(chart, area);
@@ -196,10 +208,10 @@ impl WaveForm {
 impl Default for WaveForm {
     fn default() -> Self {
         Self {
-            audio_file_chart: vec![(0., 0.)],
-            microphone_input_chart: vec![(0., 0.)],
+            // resized to the chart area on the first render
+            waveform: vec![(0., 0.); 1000],
             playhead: 0,
-            window: 15.,
+            window: 15,
             device_name: String::new(),
             timer: Timer {
                 left_arrow: None,

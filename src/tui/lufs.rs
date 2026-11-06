@@ -24,7 +24,7 @@ impl Lufs {
         frame: &mut Frame,
         area: Rect,
         theme: &LufsTheme,
-        file_analyzer: &mut Analyzer,
+        analyzer: &mut Analyzer,
     ) -> Result<()> {
         let s = Style::default().bg(theme.background.unwrap());
         let fg = s.fg(theme.foreground.unwrap());
@@ -42,10 +42,11 @@ impl Lufs {
             .0
             .iter()
             .enumerate()
+            .filter(|&(_, &y)| y.is_finite() && (-50.0..=0.0).contains(&y))
             .map(|(x, &y)| (x as f64, y))
             .collect::<Vec<(f64, f64)>>();
 
-        let integrated_lufs = file_analyzer.get_integrated_lufs()?;
+        let integrated_lufs = analyzer.get_integrated_lufs()?;
 
         // it should not display `-inf`
         let integrated_lufs = if integrated_lufs.is_infinite() {
@@ -72,7 +73,7 @@ impl Lufs {
         let short_term_lufs_text = short_term.to_span().style(nb) + " LUFS".to_span();
 
         // get true peak
-        let (tp_left, tp_right) = file_analyzer.get_true_peak()?;
+        let (tp_left, tp_right) = analyzer.get_true_peak()?;
 
         // get true peak text
         let left = format!("{tp_left:.1}");
@@ -85,7 +86,7 @@ impl Lufs {
         ];
 
         //get range text
-        let range = file_analyzer.get_loudness_range()?;
+        let range = analyzer.get_loudness_range()?;
         let range_text = format!("{range:.1} LU");
 
         // paragraphs

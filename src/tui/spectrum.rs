@@ -27,8 +27,8 @@ pub struct Spectrum {
 impl Default for Spectrum {
     fn default() -> Self {
         Self {
-            mid_freq: Vec::with_capacity(22_050),
-            side_freq: Vec::with_capacity(22_050),
+            mid_freq: Vec::with_capacity(20000),
+            side_freq: Vec::with_capacity(20000),
             gain_compensation: 0.0,
             show_mid_freq: true,
             show_side_freq: false,
@@ -60,7 +60,7 @@ impl Spectrum {
                 .map(|(x, y)| (*x, y + gain_comp))
                 .collect()
         } else {
-            vec![(-1000.0, -1000.0)]
+            vec![]
         };
 
         let side_freq_normalized: Vec<(f64, f64)> = if self.show_side_freq {
@@ -69,7 +69,7 @@ impl Spectrum {
                 .map(|(x, y)| (*x, y + gain_comp))
                 .collect()
         } else {
-            vec![(-1000.0, -1000.0)]
+            vec![]
         };
 
         let datasets = vec![

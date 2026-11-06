@@ -7,6 +7,7 @@ use crate::{
     audio_capture::{self, AudioDevice, list_input_devices},
     audio_player::{AudioFile, PlayerCommand},
     builtin_themes::{self, list_themes},
+    ring_buffer::RingBuffer,
     system_sound_capture::SYSTEM_TAP_DEVICE_NAME,
     tui::{
         lufs::Lufs,
@@ -29,7 +30,6 @@ use ratatui::{
     },
 };
 use ratatui_explorer::{FileExplorer, FileExplorerBuilder};
-use ringbuffer::{AllocRingBuffer, RingBuffer};
 use rodio::Source;
 use std::path::Path;
 use std::{
@@ -37,19 +37,17 @@ use std::{
     fs::{self, File},
     io::Read,
     path::PathBuf,
-    sync::{Arc, Mutex},
+    sync::Arc,
     time::{Duration, Instant},
 };
 
 mod lufs;
 mod spectrum;
 pub mod theme;
-mod waveform;
+pub mod waveform;
 
 use theme::Theme;
 use waveform::WaveForm;
-
-pub type RBuffer = Arc<Mutex<AllocRingBuffer<f32>>>;
 
 /// Files with extensions listed here will be shown in the explorer
 const SUPPORTED_FORMATS: [&str; 22] = [
@@ -118,7 +116,7 @@ impl Default for UI {
 
 /// Mode of the [App]. Currently, only Player and Microphone are supported.
 #[derive(Default)]
-enum Mode {
+pub enum Mode {
     #[default]
     Player,
     Microphone,
@@ -158,11 +156,12 @@ struct App {
     is_playing_audio: bool,
     audio_file_rx: Receiver<AudioFile>,
     /// [`RingBuffer`] used to store the latest captured samples of a microphone.
-    latest_captured_microphone_samples: RBuffer,
+    microphone_ringbuffer: Arc<RingBuffer>,
     /// The stream that captures the audio through input device
     microphone_capture_stream: Option<Stream>,
+    last_captured_samples_from_ring_buffer: Vec<f32>,
     /// [`RingBuffer`] used to store the latest captured samples of system sound.
-    latest_captured_system_sound_samples: RBuffer,
+    system_sound_ringbuffer: Arc<RingBuffer>,
     /// The stream that captures system audio
     system_sound_capture_stream: Option<Stream>,
     /// Sends commands like pause and play to the player.
@@ -215,15 +214,17 @@ impl App {
         audio_file_rx: Receiver<AudioFile>,
         playback_position_rx: Receiver<usize>,
         error_rx: Receiver<String>,
-        latest_captured_microphone_samples: RBuffer,
-        latest_captured_system_sound_samples: RBuffer,
     ) -> Result<Self> {
+        let microphone_ringbuffer = Arc::new(RingBuffer::new());
+        let system_sound_ringbuffer = Arc::new(RingBuffer::new());
+        let last_captured_samples_from_ring_buffer = Vec::new();
         Ok(Self {
             audio_file,
             is_playing_audio: false,
             audio_file_rx,
-            latest_captured_microphone_samples,
-            latest_captured_system_sound_samples,
+            microphone_ringbuffer,
+            system_sound_ringbuffer,
+            last_captured_samples_from_ring_buffer,
             microphone_capture_stream: None,
             system_sound_capture_stream: None,
             player_command_tx,
@@ -232,7 +233,7 @@ impl App {
             file_analyzer: Analyzer::default(),
             device_analyzer: Analyzer::default(),
             system_sound_analyzer: Analyzer::default(),
-            device_data: DeviceData { channels: 1 },
+            device_data: DeviceData { channels: 2 },
             system_device_data: DeviceData { channels: 2 },
             spectrum: Spectrum::default(),
             waveform: WaveForm::default(),
@@ -269,6 +270,7 @@ impl App {
             .with_block(Block::bordered().border_type(BorderType::Rounded));
         self.explorer.set_theme(explorer_theme);
         self.ui.theme = theme;
+        self.ui.needs_render = true;
     }
 
     /// The function used to draw the UI.
@@ -357,13 +359,15 @@ impl App {
                     self.render_spectrum_info(f, x, y);
                 }
             }
+            let analyzer = match self.settings.mode {
+                Mode::Player => &mut self.file_analyzer,
+                Mode::Microphone => &mut self.device_analyzer,
+                Mode::System => &mut self.system_sound_analyzer,
+            };
             if self.ui.show_window.contains(ShowWindow::LUFS)
-                && let Err(err) = self.lufs.render(
-                    f,
-                    horizontal_chunks[1],
-                    &self.ui.theme.lufs,
-                    &mut self.file_analyzer,
-                )
+                && let Err(err) =
+                    self.lufs
+                        .render(f, horizontal_chunks[1], &self.ui.theme.lufs, analyzer)
             {
                 self.handle_error(format!("Error while computing loudness: {err}"));
             }
@@ -590,12 +594,8 @@ impl App {
 
     fn receive_audio_file(&mut self, audio_file: AudioFile) {
         if audio_file.data.duration.as_secs_f64() < 15. {
-            self.waveform.window = audio_file.data.duration.as_secs_f64();
+            self.waveform.window = audio_file.data.duration.as_secs() as usize;
         }
-        self.waveform.audio_file_chart = Analyzer::get_waveform(
-            &audio_file.data.samples,
-            audio_file.data.duration.as_secs_f64(),
-        );
         if let Err(err) = self
             .file_analyzer
             .create_loudness_meter(audio_file.channels() as u32, audio_file.sample_rate())
@@ -616,8 +616,7 @@ impl App {
             self.spectrum.gain_compensation = 0.0;
         }
         self.audio_file = Some(audio_file);
-
-        self.ui.needs_render = true;
+        self.update_waveform_data(0);
     }
 
     /// The main loop
@@ -674,21 +673,21 @@ impl App {
             std::thread::sleep(Duration::from_millis(8));
             self.ui.needs_render = false;
 
-            // receive playback position
-            let prev_playhead = self.waveform.playhead;
-            if let Ok(pos) = self.playback_position_rx.try_recv()
-                && self.audio_file.is_some()
-                && matches!(self.settings.mode, Mode::Player)
-            {
-                self.analyze_audio_file_samples(pos);
-                // render only if playhead position changed
-                self.ui.needs_render = prev_playhead != self.waveform.playhead;
-            }
-
-            // use ringbuf to analyze data if the `Mode` is not `Mode::Player`
-            if !matches!(self.settings.mode, Mode::Player) {
-                self.analyze_microphone_input();
-                self.ui.needs_render = true; // Always render in microphone mode
+            match self.settings.mode {
+                Mode::Player => {
+                    if let Ok(pos) = self.playback_position_rx.try_recv()
+                        && self.audio_file.is_some()
+                    {
+                        let prev_playhead = self.waveform.playhead;
+                        self.analyze_audio_file_samples(pos);
+                        // render only if playhead position changed
+                        self.ui.needs_render = prev_playhead != self.waveform.playhead;
+                    }
+                }
+                Mode::Microphone | Mode::System => {
+                    self.analyze_microphone_input();
+                    self.ui.needs_render = true; // Always render in microphone mode
+                }
             }
 
             // check if flashing controls need update (timers)
@@ -820,32 +819,37 @@ impl App {
     }
 
     fn analyze_microphone_input(&mut self) {
-        let (samples, sample_rate, channels) = match self.settings.mode {
-            Mode::Microphone => (
-                self.latest_captured_microphone_samples
-                    .lock()
-                    .unwrap()
-                    .to_vec(),
-                self.device_analyzer.sample_rate(),
-                self.device_data.channels,
-            ),
-            Mode::System => (
-                self.latest_captured_system_sound_samples
-                    .lock()
-                    .unwrap()
-                    .to_vec(),
-                self.system_sound_analyzer.sample_rate(),
-                self.system_device_data.channels,
-            ),
+        let (pos, sample_rate, channels);
+
+        match self.settings.mode {
+            Mode::Microphone => {
+                pos = self
+                    .microphone_ringbuffer
+                    .copy_latest(&mut self.last_captured_samples_from_ring_buffer);
+                sample_rate = self.device_analyzer.sample_rate();
+                channels = self.device_data.channels;
+            }
+            Mode::System => {
+                pos = self
+                    .system_sound_ringbuffer
+                    .copy_latest(&mut self.last_captured_samples_from_ring_buffer);
+                // dbg!(&self.last_captured_samples_from_ring_buffer);
+                sample_rate = self.system_sound_analyzer.sample_rate();
+                channels = self.system_device_data.channels;
+            }
             Mode::Player => unreachable!(),
-        };
+        }
+
         let sample_rate = sample_rate as usize;
 
         let (mid_samples, side_samples) = if channels == 2 {
-            analyzer::get_mid_and_side_samples(&samples)
+            analyzer::get_mid_and_side_samples(&self.last_captured_samples_from_ring_buffer)
         } else {
             // mono input: the signal itself is the mid channel, side is silence
-            (samples.clone(), vec![0.; samples.len()])
+            (
+                self.last_captured_samples_from_ring_buffer.clone(),
+                vec![0.; self.last_captured_samples_from_ring_buffer.len()],
+            )
         };
 
         // the mid/side buffers end at the most recent sample, so anchor the
@@ -876,24 +880,40 @@ impl App {
             }
         };
 
-        // get waveform of the last 15 seconds
-        let waveform_left_bound = mid_samples.len().saturating_sub(15 * sample_rate);
-        self.waveform.microphone_input_chart =
-            Analyzer::get_waveform(&mid_samples[waveform_left_bound..], 15.);
+        // get waveform of the last `window` seconds.
+        let available = pos.min(self.last_captured_samples_from_ring_buffer.len());
+        let waveform_left_bound =
+            available.saturating_sub(self.waveform.window * sample_rate * channels as usize);
+
+        let w = &self.last_captured_samples_from_ring_buffer[waveform_left_bound..available];
+        Analyzer::get_waveform(w, &mut self.waveform.waveform, pos - w.len());
 
         // get lufs
         for i in 0..self.lufs.0.len() - 1 {
             self.lufs.0[i] = self.lufs.0[i + 1];
         }
 
-        let lufs_right_bound = samples.len().min(30 * sample_rate);
-        let lb = lufs_right_bound.saturating_sub(2usize.pow(14));
-        let add_samples_result = self
-            .mode_analyzer_mut()
-            .add_samples(&samples[lb..lufs_right_bound]);
-        if let Err(err) = add_samples_result {
-            self.handle_error(format!("Could not get samples for LUFS analyzer: {err}"));
-        }
+        let current_ring_buffer_pos = match self.settings.mode {
+            Mode::Microphone => self.microphone_ringbuffer.get_pos(),
+            Mode::System => self.system_sound_ringbuffer.get_pos(),
+            Mode::Player => unreachable!(),
+        };
+        let (analyzer, samples) = match self.settings.mode {
+            Mode::Microphone => (
+                &mut self.device_analyzer,
+                &self.last_captured_samples_from_ring_buffer,
+            ),
+            Mode::System => (
+                &mut self.system_sound_analyzer,
+                &self.last_captured_samples_from_ring_buffer,
+            ),
+            Mode::Player => unreachable!(),
+        };
+        let len = samples.len() - 1;
+        let count = current_ring_buffer_pos.saturating_sub(analyzer.last_analyzed_sample) % len;
+
+        let _ = analyzer.add_samples(&samples[len - count..len]);
+        analyzer.last_analyzed_sample = current_ring_buffer_pos;
         let shortterm_lufs = self.mode_analyzer_mut().get_shortterm_lufs();
         self.lufs.0[299] = match shortterm_lufs {
             Ok(lufs) => lufs,
@@ -920,14 +940,70 @@ impl App {
         }
     }
 
-    fn analyze_audio_file_samples(&mut self, pos: usize) {
-        // if using mid side we must divide the position by 2
+    // had to factor it out so we can update waveform while resizing the window while at pause.
+    fn update_waveform_data(&mut self, raw_pos: usize) {
+        let Some(audio_file) = self.audio_file.as_ref() else {
+            return;
+        };
+        let pos = raw_pos / audio_file.channels() as usize;
+        self.waveform.playhead = pos;
+
+        let pos_in_sec = pos as f32 / audio_file.sample_rate() as f32;
+
+        enum Pos {
+            AtBeginning,
+            AtEnd,
+            InMiddle,
+        }
+        let relative_position = if pos_in_sec <= (self.waveform.window as f32 / 2.) {
+            Pos::AtBeginning
+        } else if pos_in_sec * 1000.
+            >= (audio_file.data.duration.as_millis() - (self.waveform.window * 1000 / 2) as u128)
+                as f32
+        {
+            Pos::AtEnd
+        } else {
+            Pos::InMiddle
+        };
+
+        let win = self.waveform.window
+            * audio_file.sample_rate() as usize
+            * audio_file.channels() as usize;
+        let all_samples = &audio_file.data.samples;
+        let (w, w_start) = match relative_position {
+            Pos::AtBeginning => (&all_samples[0..win], 0),
+            Pos::AtEnd => {
+                let start = all_samples.len() - win;
+                (&all_samples[start..], start)
+            }
+            Pos::InMiddle => {
+                let half = win / 2;
+                let start = raw_pos - half;
+                (&all_samples[start..start + win], start)
+            }
+        };
+
+        Analyzer::get_waveform(w, &mut self.waveform.waveform, w_start);
+    }
+
+    fn refresh_waveform(&mut self) {
+        let channels = self
+            .audio_file
+            .as_ref()
+            .map_or(1, |file| file.channels() as usize);
+        let pos = self.waveform.playhead * channels;
+        self.update_waveform_data(pos);
+    }
+
+    fn analyze_audio_file_samples(&mut self, raw_pos: usize) {
+        self.update_waveform_data(raw_pos);
+
+        // we must divide the position by number of channels
         let audio_file = self
             .audio_file
             .as_ref()
             .expect("guarded by is_some() in run()");
-        let pos = pos / audio_file.channels() as usize;
-        self.waveform.playhead = pos;
+        let pos = self.waveform.playhead;
 
         // get spectrum
         let spectrum_left_bound =
@@ -972,18 +1048,17 @@ impl App {
         }
 
         // get lufs lufs uses all channels (update every frame for accuracy)
-        let pos = pos * audio_file.channels() as usize;
-        let lufs_left_bound = pos.saturating_sub(16384);
+        let lufs_left_bound = raw_pos.saturating_sub(16384);
         if lufs_left_bound != 0 {
             for i in 0..self.lufs.0.len() - 1 {
                 self.lufs.0[i] = self.lufs.0[i + 1];
             }
             let samples_len = audio_file.data.samples.len();
             // check bounds to prevent panic when file was changed
-            if pos <= samples_len && lufs_left_bound < samples_len {
+            if raw_pos <= samples_len && lufs_left_bound < samples_len {
                 if let Err(err) = self
                     .file_analyzer
-                    .add_samples(&audio_file.data.samples[lufs_left_bound..pos])
+                    .add_samples(&audio_file.data.samples[lufs_left_bound..raw_pos])
                 {
                     self.handle_error(format!("Could not get samples for LUFS analyzer: {err}"));
                 }
@@ -1017,14 +1092,36 @@ impl App {
             KeyCode::Char('M') => self.spectrum.show_mid_freq = !self.spectrum.show_mid_freq,
             // pause/play
             KeyCode::Char(' ') => {
-                if let Err(_err) = self.player_command_tx.send(PlayerCommand::ChangeState) {
-                    //TODO: log sending error
-                }
-                self.is_playing_audio = !self.is_playing_audio;
-                // do this so lufs update only on play, not pause
-                if self.is_playing_audio {
-                    self.lufs.0 = [-100.; 300];
-                    self.file_analyzer.reset();
+                match self.settings.mode {
+                    Mode::Player => {
+                        if let Err(_err) = self.player_command_tx.send(PlayerCommand::ChangeState) {
+                            //TODO: log sending error
+                        }
+                        self.is_playing_audio = !self.is_playing_audio;
+                        // do this so lufs update only on play, not pause
+                        if self.is_playing_audio {
+                            self.lufs.0 = [-100.; 300];
+                            self.file_analyzer.reset();
+                        }
+                    }
+                    Mode::Microphone => {
+                        self.lufs.0 = [-100.; 300];
+                        self.device_analyzer
+                            .create_loudness_meter(
+                                self.device_data.channels as u32,
+                                self.device_analyzer.sample_rate(),
+                            )
+                            .unwrap();
+                    }
+                    Mode::System => {
+                        self.lufs.0 = [-100.; 300];
+                        self.system_sound_analyzer
+                            .create_loudness_meter(
+                                self.system_device_data.channels as u32,
+                                self.system_sound_analyzer.sample_rate(),
+                            )
+                            .unwrap();
+                    }
                 }
             }
             // move playhead right and left
@@ -1191,18 +1288,22 @@ impl App {
             }
             KeyCode::Char('=' | '+') => {
                 self.waveform.timer.plus_sign = Some(Instant::now());
-                self.waveform.window = f64::max(self.waveform.window - 1., 1.);
+                self.waveform.window = usize::max(self.waveform.window - 1, 1);
+                self.refresh_waveform();
+                self.ui.needs_render = true;
             }
             KeyCode::Char('-' | '_') => {
                 let bound = if let Some(file) = self.audio_file.as_ref()
-                    && file.data.duration.as_secs_f64() < 15.
+                    && file.data.duration.as_secs() < 15
                 {
-                    file.data.duration.as_secs_f64()
+                    file.data.duration.as_secs()
                 } else {
-                    15.
+                    15
                 };
                 self.waveform.timer.minus_sign = Some(Instant::now());
-                self.waveform.window = f64::min(self.waveform.window + 1., bound);
+                self.waveform.window = usize::min(self.waveform.window + 1, bound as usize);
+                self.refresh_waveform();
+                self.ui.needs_render = true;
             }
             KeyCode::Char('h' | '?') | KeyCode::F(1) => match self.ui.popup_state {
                 PopupState::None => self.ui.popup_state = PopupState::InHelpMessage,
@@ -1232,13 +1333,13 @@ impl App {
 
         self.device_data.channels = channels;
 
-        let mut buf = AllocRingBuffer::new(sr as usize * 30);
-        buf.fill(0.0);
-        let latest_captured_samples = Arc::new(Mutex::new(buf));
-        self.latest_captured_microphone_samples = latest_captured_samples;
+        let capacity = (sr * 15 * channels as u32).next_power_of_two() as usize;
+        let rbuffer = RingBuffer::with_capacity(capacity);
+        self.microphone_ringbuffer = Arc::new(rbuffer);
+        self.last_captured_samples_from_ring_buffer = vec![0.; capacity];
 
         let stream = match audio_capture::build_input_stream(
-            self.latest_captured_microphone_samples.clone(),
+            self.microphone_ringbuffer.clone(),
             &audio_device,
         ) {
             Ok(stream) => stream,
@@ -1260,6 +1361,7 @@ impl App {
         Ok(())
     }
 
+    // TODO: code is almost identical to the previous function. Maybe factor it out?
     fn connect_system_tap_device(&mut self) -> Result<()> {
         let devices = list_input_devices();
         let device = devices[0].1.clone();
@@ -1270,14 +1372,13 @@ impl App {
 
         self.system_device_data.channels = channels;
 
-        // the buffer must match the device's sample rate, otherwise the
-        // 30 s / 15 s window arithmetic is wrong (like for the microphone)
-        let mut buf = AllocRingBuffer::new(sr as usize * 30);
-        buf.fill(0.0);
-        self.latest_captured_system_sound_samples = Arc::new(Mutex::new(buf));
+        let capacity = (sr * 15 * channels as u32).next_power_of_two() as usize;
+        let rbuffer = RingBuffer::with_capacity(capacity);
+        self.system_sound_ringbuffer = Arc::new(rbuffer);
+        self.last_captured_samples_from_ring_buffer = vec![0.; capacity];
 
         let stream = match audio_capture::build_input_stream(
-            self.latest_captured_system_sound_samples.clone(),
+            self.system_sound_ringbuffer.clone(),
             &audio_device,
         ) {
             Ok(stream) => stream,
@@ -1401,6 +1502,7 @@ impl App {
         if let Ok(audio_file) = self.audio_file_rx.recv() {
             self.receive_audio_file(audio_file);
         }
+        self.ui.needs_render = true;
     }
 
     fn apply_theme_file(&mut self, file_path: &PathBuf) {
@@ -1461,7 +1563,7 @@ impl App {
         let bd = s.fg(self.ui.theme.help.borders.unwrap());
         let hl = s.fg(self.ui.theme.help.highlight.unwrap());
 
-        let area = Self::get_popup_area_with_lenght(f.area(), 22, 42);
+        let area = Self::get_popup_area_with_lenght(f.area(), 24, 38);
         f.render_widget(Clear, area);
         let rows = vec![
             help_message_row!["1", "Toggle waveform", hl],
@@ -1478,18 +1580,14 @@ impl App {
             help_message_row!["S", "Toggle side frequencies", hl],
             help_message_row!["Right", "Jump forward 5s", hl],
             help_message_row!["Left", "Jump back 5s", hl],
-            help_message_row!["Space", "Play/Pause", hl],
+            help_message_row!["Space", "Play/Pause (Player)", hl],
+            help_message_row!["Space", "Reset loudness meter", hl],
+            help_message_row!["", "(Microphone & System)", hl],
             help_message_row!["-/_", "Zoom waveform in", hl],
             help_message_row!["=/+", "Zoom waveform out", hl],
             help_message_row!["1-9", "Select device/theme", hl],
-            Row::new(vec![
-                Cell::new("Up/Down".to_line().style(hl).centered()),
-                Cell::new(vec![
-                    "Navigate in explorer,".to_line(),
-                    "device list and theme list".to_line(),
-                ]),
-            ])
-            .height(2),
+            help_message_row!["Up/Down", "Navigate in explorer", hl],
+            help_message_row!["", "device and theme lists", hl],
         ];
         let widths = [Constraint::Percentage(30), Constraint::Percentage(70)];
         let table = Table::new(rows, widths).style(s).block(
@@ -1503,12 +1601,13 @@ impl App {
     }
 
     fn reset_charts(&mut self) {
+        self.is_playing_audio = false;
+        self.waveform.waveform.clear();
+        self.waveform.playhead = 0;
         self.spectrum.mid_freq.clear();
         self.spectrum.side_freq.clear();
-        self.lufs.0 = [-100.; 300];
-        self.is_playing_audio = false;
-        self.waveform.playhead = 0;
         self.spectrum.gain_compensation = 0.0;
+        self.lufs.0 = [-100.; 300];
     }
 
     fn load_theme(&mut self, path: &PathBuf) -> Option<Theme> {
@@ -1668,21 +1767,12 @@ pub fn run(
         ratatui::crossterm::event::EnableMouseCapture
     )?;
 
-    let mut microphone_buf = AllocRingBuffer::new(44100usize * 30);
-    microphone_buf.fill(0.0);
-    let latest_captured_microphone_samples = Arc::new(Mutex::new(microphone_buf));
-    let mut system_buf = AllocRingBuffer::new(44100usize * 30);
-    system_buf.fill(0.0);
-    let latest_captured_system_sound_samples = Arc::new(Mutex::new(system_buf));
-
     let app_result = App::new(
         audio_file,
         player_command_tx,
         audio_file_rx,
         playback_position_rx,
         error_rx,
-        latest_captured_microphone_samples,
-        latest_captured_system_sound_samples,
     )?
     .run(terminal, startup_file);
     ratatui::restore();
@@ -1695,35 +1785,69 @@ mod tests {
     use super::*;
     use crossbeam::channel;
 
-    fn create_test_app() -> (App, Sender<PlayerCommand>, Receiver<PlayerCommand>) {
-        let (player_command_tx, player_command_rx) = channel::unbounded();
+    fn create_test_app() -> App {
+        let (player_command_tx, _) = channel::unbounded();
         let (_, audio_file_rx) = channel::unbounded();
-        let (playback_position_tx, playback_position_rx) = channel::unbounded();
+        let (_, playback_position_rx) = channel::unbounded();
         let (_, error_rx) = channel::unbounded();
 
-        let audio_file = AudioFile::new(playback_position_tx);
-        let latest_captured_microphone_samples =
-            Arc::new(Mutex::new(AllocRingBuffer::new(44100 * 30)));
-        let latest_captured_system_sound_samples =
-            Arc::new(Mutex::new(AllocRingBuffer::new(44100 * 30)));
-
-        let app = App::new(
-            Some(audio_file),
-            player_command_tx.clone(),
+        App::new(
+            None,
+            player_command_tx,
             audio_file_rx,
             playback_position_rx,
             error_rx,
-            latest_captured_microphone_samples,
-            latest_captured_system_sound_samples,
         )
-        .unwrap();
+        .unwrap()
+    }
 
-        (app, player_command_tx, player_command_rx)
+    /// Simulates selecting a microphone: sets up the mode, analyzer, ring
+    /// buffer and snapshot buffer the same way `select_device` does, but
+    /// without a real input device.
+    fn connect_test_microphone(app: &mut App, channels: u16, sample_rate: u32) {
+        app.settings.mode = Mode::Microphone;
+        app.device_data.channels = channels;
+        app.device_analyzer
+            .create_loudness_meter(channels as u32, sample_rate)
+            .unwrap();
+
+        let capacity = (sample_rate as usize * 15 * channels as usize).next_power_of_two();
+        app.microphone_ringbuffer = Arc::new(RingBuffer::with_capacity(capacity));
+        app.last_captured_samples_from_ring_buffer = vec![0.; capacity];
+    }
+
+    /// Same as [`connect_test_microphone`], but for system sound capture
+    /// (mirrors `connect_system_tap_device`).
+    fn connect_test_system_sound(app: &mut App, channels: u16, sample_rate: u32) {
+        app.settings.mode = Mode::System;
+        app.system_device_data.channels = channels;
+        app.system_sound_analyzer
+            .create_loudness_meter(channels as u32, sample_rate)
+            .unwrap();
+
+        let capacity = (sample_rate as usize * 15 * channels as usize).next_power_of_two();
+        app.system_sound_ringbuffer = Arc::new(RingBuffer::with_capacity(capacity));
+        app.last_captured_samples_from_ring_buffer = vec![0.; capacity];
+    }
+
+    /// Fills the ring buffer with `seconds` seconds of a 500 Hz sine,
+    /// interleaved and identical on every channel.
+    fn push_sine(ringbuffer: &RingBuffer, sample_rate: u32, channels: u16, seconds: usize) {
+        let frames = sample_rate as usize * seconds;
+        let mut samples = Vec::with_capacity(frames * channels as usize);
+        for frame in 0..frames {
+            let sample =
+                (frame as f32 * 500.0 * 2.0 * std::f32::consts::PI / sample_rate as f32).sin();
+            for _ in 0..channels {
+                samples.push(sample);
+            }
+        }
+        ringbuffer.push_slice(&samples);
     }
 
     #[test]
     fn test_handle_error() {
-        let (mut app, _, _) = create_test_app();
+        let mut app = create_test_app();
         let error_message = "Test error message";
 
         app.handle_error(error_message.to_string());
@@ -1757,7 +1881,7 @@ mod tests {
 
     #[test]
     fn test_error_timer_logic() {
-        let (mut app, _, _) = create_test_app();
+        let mut app = create_test_app();
 
         // No error initially
         assert!(app.ui.error_timer.is_none());
@@ -1779,21 +1903,10 @@ mod tests {
 
     #[test]
     fn test_analyze_microphone_input_44100() {
-        let (mut app, _, _) = create_test_app();
-        app.settings.mode = Mode::Microphone;
+        let mut app = create_test_app();
         let sr = 44100;
-        app.device_data.channels = 1;
-        app.device_analyzer.create_loudness_meter(1, sr).unwrap();
-
-        // Fill the buffer with test data
-        {
-            let mut buffer = app.latest_captured_microphone_samples.lock().unwrap();
-            buffer.clear();
-            for i in 0..sr * 30 {
-                let sample = (i as f32 * 500.0 * 2.0 * std::f32::consts::PI / sr as f32).sin();
-                buffer.enqueue(sample);
-            }
-        }
+        connect_test_microphone(&mut app, 1, sr);
+        push_sine(&app.microphone_ringbuffer, sr, 1, 15);
 
         app.analyze_microphone_input();
         assert_spectrum_peak_near_500hz(&app);
@@ -1802,21 +1915,10 @@ mod tests {
 
     #[test]
     fn test_analyze_microphone_input_48000() {
-        let (mut app, _, _) = create_test_app();
-        app.settings.mode = Mode::Microphone;
+        let mut app = create_test_app();
         let sr = 48000;
-        app.device_data.channels = 1;
-        app.device_analyzer.create_loudness_meter(1, sr).unwrap();
-
-        // Fill the buffer with test data
-        {
-            let mut buffer = app.latest_captured_microphone_samples.lock().unwrap();
-            buffer.clear();
-            for i in 0..sr * 30 {
-                let sample = (i as f32 * 500.0 * 2.0 * std::f32::consts::PI / sr as f32).sin();
-                buffer.enqueue(sample);
-            }
-        }
+        connect_test_microphone(&mut app, 1, sr);
+        push_sine(&app.microphone_ringbuffer, sr, 1, 15);
 
         app.analyze_microphone_input();
         assert_spectrum_peak_near_500hz(&app);
@@ -1825,21 +1927,10 @@ mod tests {
 
     #[test]
     fn test_analyze_microphone_input_96000() {
-        let (mut app, _, _) = create_test_app();
-        app.settings.mode = Mode::Microphone;
+        let mut app = create_test_app();
         let sr = 96000;
-        app.device_data.channels = 1;
-        app.device_analyzer.create_loudness_meter(1, sr).unwrap();
-
-        // Fill the buffer with test data
-        {
-            let mut buffer = app.latest_captured_microphone_samples.lock().unwrap();
-            buffer.clear();
-            for i in 0..sr * 30 {
-                let sample = (i as f32 * 500.0 * 2.0 * std::f32::consts::PI / sr as f32).sin();
-                buffer.enqueue(sample);
-            }
-        }
+        connect_test_microphone(&mut app, 1, sr);
+        push_sine(&app.microphone_ringbuffer, sr, 1, 15);
 
         app.analyze_microphone_input();
         assert_spectrum_peak_near_500hz(&app);
@@ -1848,21 +1939,11 @@ mod tests {
 
     #[test]
     fn test_analyze_microphone_input_16000() {
-        let (mut app, _, _) = create_test_app();
-        app.settings.mode = Mode::Microphone;
+        let mut app = create_test_app();
+        // 16 kHz device, e.g. a Bluetooth headset
         let sr = 16000;
-        app.device_data.channels = 1;
-        app.device_analyzer.create_loudness_meter(1, sr).unwrap();
-
-        // Fill the buffer with test data (16 kHz device, e.g. a Bluetooth headset)
-        {
-            let mut buffer = app.latest_captured_microphone_samples.lock().unwrap();
-            buffer.clear();
-            for i in 0..sr * 30 {
-                let sample = (i as f32 * 500.0 * 2.0 * std::f32::consts::PI / sr as f32).sin();
-                buffer.enqueue(sample);
-            }
-        }
+        connect_test_microphone(&mut app, 1, sr);
+        push_sine(&app.microphone_ringbuffer, sr, 1, 15);
 
         app.analyze_microphone_input();
         assert_spectrum_peak_near_500hz(&app);
@@ -1871,13 +1952,9 @@ mod tests {
 
     #[test]
     fn test_analyze_system_sound_input() {
-        let (mut app, _, _) = create_test_app();
-        app.settings.mode = Mode::System;
+        let mut app = create_test_app();
         let sr = 48000;
-        app.system_device_data.channels = 2;
-        app.system_sound_analyzer
-            .create_loudness_meter(2, sr)
-            .unwrap();
+        connect_test_system_sound(&mut app, 2, sr);
 
         // simulate a 16 kHz mono microphone being selected as the input device:
         // system sound analysis must not depend on the microphone's config
@@ -1885,15 +1962,7 @@ mod tests {
         app.device_analyzer.create_loudness_meter(1, 16000).unwrap();
 
         // Fill the buffer with interleaved stereo: L = R = 500 Hz sine
-        {
-            let mut buffer = app.latest_captured_system_sound_samples.lock().unwrap();
-            buffer.clear();
-            for frame in 0..sr * 15 {
-                let sample = (frame as f32 * 500.0 * 2.0 * std::f32::consts::PI / sr as f32).sin();
-                buffer.enqueue(sample);
-                buffer.enqueue(sample);
-            }
-        }
+        push_sine(&app.system_sound_ringbuffer, sr, 2, 15);
 
         app.analyze_microphone_input();
         // L = R means mid = signal and side = silence
@@ -1911,22 +1980,12 @@ mod tests {
 
     #[test]
     fn test_analyze_microphone_input_stereo() {
-        let (mut app, _, _) = create_test_app();
-        app.settings.mode = Mode::Microphone;
+        let mut app = create_test_app();
         let sr = 48000;
-        app.device_data.channels = 2;
-        app.device_analyzer.create_loudness_meter(2, sr).unwrap();
+        connect_test_microphone(&mut app, 2, sr);
 
         // Fill the buffer with interleaved stereo: L = R = 500 Hz sine
-        {
-            let mut buffer = app.latest_captured_microphone_samples.lock().unwrap();
-            buffer.clear();
-            for frame in 0..sr * 15 {
-                let sample = (frame as f32 * 500.0 * 2.0 * std::f32::consts::PI / sr as f32).sin();
-                buffer.enqueue(sample);
-                buffer.enqueue(sample);
-            }
-        }
+        push_sine(&app.microphone_ringbuffer, sr, 2, 15);
 
         app.analyze_microphone_input();
         // L = R means mid = signal and side = silence

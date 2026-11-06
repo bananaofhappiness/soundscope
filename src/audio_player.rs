@@ -168,7 +168,12 @@ impl AudioFile {
 
         // Create a probe hint using the file's extension.
         let mut hint = Hint::new();
-        hint.with_extension("mp3");
+        hint.with_extension(
+            path.extension()
+                .unwrap_or_default()
+                .to_str()
+                .unwrap_or_default(),
+        );
 
         // Use the default options for metadata and format readers.
         let meta_opts: MetadataOptions = MetadataOptions::default();

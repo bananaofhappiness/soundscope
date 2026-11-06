@@ -2,6 +2,7 @@ mod analyzer;
 mod audio_capture;
 mod audio_player;
 mod builtin_themes;
+mod ring_buffer;
 mod system_sound_capture;
 mod tui;
 use crate::audio_player::{AudioFile, AudioPlayer, PlaybackPosition, PlayerCommand};

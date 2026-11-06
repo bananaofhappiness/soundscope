@@ -28,6 +28,7 @@ fn scale_to_dbfs(val: f32, stats: &SpectrumDataStats) -> f32 {
 
 pub struct Analyzer {
     loudness_meter: EbuR128,
+    pub last_analyzed_sample: usize,
     sample_rate: u32,
 }
 
@@ -39,6 +40,7 @@ impl Default for Analyzer {
         };
         Self {
             loudness_meter,
+            last_analyzed_sample: 0,
             sample_rate: 44100,
         }
     }
@@ -106,36 +108,70 @@ impl Analyzer {
         Ok(spectrum_vec)
     }
 
-    pub fn get_waveform(samples: &[f32], waveform_window: f64) -> Vec<(f64, f64)> {
-        let window = (waveform_window * 1000.) as usize;
-        let samples_per_point = samples.len() as f64 / window as f64;
+    pub fn get_waveform(samples: &[f32], waveform: &mut [(f64, f64)], window_start: usize) {
+        // change algorithm. previously it combined samples to bins according to their relative position in
+        // samples. so in 1st frame we, e.g., took samples 0..100 into a bin, and in 2nd frame samples shifted
+        // 10 samples to the right, so now we take samples 0..100, that are actually samples 10..110 in absolute
+        // values, which causes jitter.
+        //
+        // new approach uses absolute values of samples. so in 2nd frame we'll take samples 0..90, that are samples
+        // 10..100 in absolute values, and samples 100.. (absolute) will be in the next bin. no jitter since now
+        // every bin contain consistent data, it just moves to the left in time every frame.
 
-        // pre-allocate with 2 points per window position
-        let mut points = Vec::with_capacity(window * 2);
-
-        // min-max decimation
-        let samples_len = samples.len();
-
-        for i in 0..window {
-            let start = (i as f64 * samples_per_point) as usize;
-            let end = ((i + 1) as f64 * samples_per_point).ceil() as usize;
-            let end = end.min(samples_len);
-
-            if start >= samples_len {
-                break;
-            }
-
-            let chunk = &samples[start..end];
-
-            let min = chunk.iter().copied().reduce(f32::min).unwrap_or(0.0);
-            let max = chunk.iter().copied().reduce(f32::max).unwrap_or(0.0);
-
-            let x = i as f64;
-            points.push((x, min as f64));
-            points.push((x, max as f64));
+        // we store (index, min) and (index, max), so logically capacity is 2 times smaller than vec's len.
+        let bins = waveform.len() / 2;
+        if bins == 0 {
+            return;
         }
 
-        points
+        let bin_size = samples.len() / bins;
+        if bin_size == 0 {
+            for i in 0..bins {
+                let x = i as f64;
+                waveform[i * 2] = (x, 0.);
+                waveform[i * 2 + 1] = (x, 0.);
+            }
+            return;
+        }
+
+        // the absolute index of samples[0]; bin boundaries are absolute
+        // (every sample at index bin_size - 1, 2*bin_size - 1, ... closes a
+        // bin), so the same samples form the same bin in every frame
+        let mut bin_index: usize = 0;
+        let mut min = f32::MAX;
+        let mut max = f32::MIN;
+
+        for (absolute_index, &sample) in (window_start..).zip(samples) {
+            if sample > max {
+                max = sample;
+            }
+            if sample < min {
+                min = sample;
+            }
+
+            if absolute_index % bin_size == bin_size - 1 {
+                // a bin that no longer fits into `waveform` (the window is
+                // slightly longer than bins * bin_size) is dropped, same as
+                // the trailing partial bin
+                if bin_index < bins {
+                    let x = bin_index as f64;
+                    waveform[bin_index * 2] = (x, min as f64);
+                    waveform[bin_index * 2 + 1] = (x, max as f64);
+                }
+                bin_index += 1;
+                min = f32::MAX;
+                max = f32::MIN;
+            }
+        }
+
+        // blank out bins that did not get enough samples so that stale
+        // values from previous frames don't linger (e.g. while the ring
+        // buffer is still filling up)
+        for i in bin_index..bins {
+            let x = i as f64;
+            waveform[i * 2] = (x, 0.);
+            waveform[i * 2 + 1] = (x, 0.);
+        }
     }
 
     pub fn add_samples(&mut self, samples: &[f32]) -> Result<(), ebur128::Error> {
@@ -422,18 +458,16 @@ mod tests {
     fn test_get_waveform() {
         let samples: Vec<f32> = (0..44100).map(|i| (i as f32 / 44100.0).sin()).collect();
 
-        let waveform = Analyzer::get_waveform(&samples, 15.);
+        let bins = 1500;
+        let mut waveform = vec![(f64::NAN, f64::NAN); bins * 2];
+        Analyzer::get_waveform(&samples, &mut waveform, 0);
 
-        // Should have data points
-        assert!(!waveform.is_empty());
-
-        // With 15 seconds window, we expect 15000 points (15 * 1000)
-        // Each point has min and max, so total should be 30000
-        let expected_points = 15_000 * 2;
-        assert_eq!(waveform.len(), expected_points);
+        // Every bin must be filled
+        assert_eq!(waveform.len(), bins * 2);
+        assert!(waveform.iter().all(|p| !p.0.is_nan() && !p.1.is_nan()));
 
         // Check that we have pairs of (x, min) and (x, max) for each x
-        for i in 0..15_000 {
+        for i in 0..bins {
             let min_idx = i * 2;
             let max_idx = i * 2 + 1;
 
@@ -445,8 +479,8 @@ mod tests {
             assert!(waveform[min_idx].1 <= waveform[max_idx].1);
         }
 
-        // x values should be sequential integers (starting from i=2 to avoid underflow)
-        for i in 2..15_000 {
+        // x values should be sequential integers
+        for i in 1..bins {
             let min_idx = i * 2;
             let prev_min_idx = (i - 1) * 2;
             assert_eq!(waveform[min_idx].0, waveform[prev_min_idx].0 + 1.0);
@@ -454,7 +488,76 @@ mod tests {
     }
 
     #[test]
-    /// Tests loudness measurement functionality
+    /// The same absolute samples must form the same bin no matter where the
+    /// capture window starts: this is what keeps the waveform from jittering
+    /// while the window slides.
+    fn test_get_waveform_stable_bins() {
+        let bins = 20;
+        let bin_size = 10;
+        let window_len = bins * bin_size;
+        // deterministic pseudo-signal with known min/max in any range
+        let sample_at = |abs: usize| ((abs * 7) % 13) as f32 - 6.0;
+
+        // frame A: window covers absolute samples [0, window_len)
+        let samples_a: Vec<f32> = (0..window_len).map(sample_at).collect();
+        let mut waveform_a = vec![(f64::NAN, f64::NAN); bins * 2];
+        Analyzer::get_waveform(&samples_a, &mut waveform_a, 0);
+
+        // frame B: the window slid by `slide` samples
+        let slide = 37;
+        let samples_b: Vec<f32> = (slide..slide + window_len).map(sample_at).collect();
+        let mut waveform_b = vec![(f64::NAN, f64::NAN); bins * 2];
+        Analyzer::get_waveform(&samples_b, &mut waveform_b, slide);
+
+        // both frames must fill every bin (the window is bins * bin_size long)
+        assert!(waveform_a.iter().all(|p| !p.0.is_nan() && !p.1.is_nan()));
+        assert!(waveform_b.iter().all(|p| !p.0.is_nan() && !p.1.is_nan()));
+
+        // bins that lie fully inside both windows must be identical. Bins
+        // close at absolute indices bin_size - 1, 2*bin_size - 1, ... For a
+        // bin closing at absolute `end`, frame A gives it index end /
+        // bin_size and frame B gives it index (end - slide - 1) / bin_size
+        // (frame B's window starts mid-bin, so its first bin is partial).
+        let shared_start = slide + bin_size; // first full bin of frame B starts after this
+        for end in (0..window_len).filter(|e| e % bin_size == bin_size - 1) {
+            if end < shared_start || end >= window_len {
+                continue;
+            }
+            let expected_min = ((end + 1 - bin_size..=end)
+                .map(sample_at)
+                .fold(f32::MAX, f32::min)) as f64;
+            let expected_max = ((end + 1 - bin_size..=end)
+                .map(sample_at)
+                .fold(f32::MIN, f32::max)) as f64;
+
+            let index_a = end / bin_size;
+            let index_b = (end - shared_start) / bin_size + 1;
+
+            assert_eq!(waveform_a[index_a * 2], (index_a as f64, expected_min));
+            assert_eq!(waveform_a[index_a * 2 + 1], (index_a as f64, expected_max));
+            assert_eq!(waveform_b[index_b * 2], (index_b as f64, expected_min));
+            assert_eq!(waveform_b[index_b * 2 + 1], (index_b as f64, expected_max));
+        }
+    }
+
+    #[test]
+    /// A window that is not evenly divisible into bins must not panic, must
+    /// not leave stale values behind, and every x must be its bin index.
+    fn test_get_waveform_uneven_window() {
+        let bins = 10;
+        for len in [95, 100, 105, 3] {
+            let mut waveform = vec![(-1., -1.); bins * 2];
+            let samples = vec![0.25_f32; len];
+            Analyzer::get_waveform(&samples, &mut waveform, 0);
+
+            for (i, &(x, y)) in waveform.iter().enumerate() {
+                assert_eq!(x, (i / 2) as f64, "x must be the bin index (len = {len})");
+                assert!(y == 0. || y == 0.25, "no stale values (len = {len})");
+            }
+        }
+    }
+
+    #[test]
     fn test_loudness_measurements() {
         let mut analyzer = Analyzer::default();
 
