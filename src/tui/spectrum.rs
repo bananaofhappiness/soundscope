@@ -37,7 +37,7 @@ impl Default for Spectrum {
 }
 
 impl Spectrum {
-    pub fn render(&mut self, frame: &mut Frame, area: Rect, theme: &SpectrumTheme) {
+    pub fn render(&mut self, frame: &mut Frame, area: Rect, theme: &SpectrumTheme, zen: &bool) {
         let s = Style::default().bg(theme.background.unwrap());
         let fg = s.fg(theme.axes_labels.unwrap());
         let ax = s.fg(theme.axes.unwrap());
@@ -88,7 +88,9 @@ impl Spectrum {
         ];
 
         let chart = Chart::new(datasets)
-            .block(
+            .block(if *zen {
+                Block::new()
+            } else {
                 Block::bordered()
                     .border_type(BorderType::Rounded)
                     .style(bd)
@@ -113,8 +115,8 @@ impl Spectrum {
                         };
                         mid.append(&mut side);
                         Line::from(mid).right_aligned()
-                    }),
-            )
+                    })
+            })
             .x_axis(
                 Axis::default()
                     .title("Hz")

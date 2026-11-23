@@ -39,6 +39,7 @@ impl WaveForm {
         theme: &WaveformTheme,
         audio_data: Option<&AudioData>,
         mode: &Mode,
+        zen: &bool,
     ) {
         // Match the number of waveform bins to the number of dot columns of
         // the chart. Minus 2 becasue the bordered block takes 2 cells
@@ -151,7 +152,9 @@ impl WaveForm {
         // let x_min = 15000. - (self.window as usize * 1000) as f64 ;
         // build the chart widget
         let chart = Chart::new(datasets)
-            .block(
+            .block(if *zen {
+                Block::new()
+            } else {
                 Block::bordered()
                     .border_type(BorderType::Rounded)
                     .title("¹".to_span().style(hl).bold() + title.to_span().style(lb))
@@ -159,8 +162,8 @@ impl WaveForm {
                     .title_bottom(Line::styled(current_time, ct).centered())
                     .title_bottom(Line::styled(total_duration, td).right_aligned())
                     .title(upper_right_title)
-                    .style(bd),
-            )
+                    .style(bd)
+            })
             .style(wv)
             .x_axis(Axis::default().bounds([0., x_max]))
             .y_axis(Axis::default().bounds([-1., 1.]));

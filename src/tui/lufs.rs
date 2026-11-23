@@ -25,6 +25,7 @@ impl Lufs {
         area: Rect,
         theme: &LufsTheme,
         analyzer: &mut Analyzer,
+        zen: &bool,
     ) -> Result<()> {
         let s = Style::default().bg(theme.background.unwrap());
         let fg = s.fg(theme.foreground.unwrap());
@@ -139,15 +140,17 @@ impl Lufs {
                 .data(&data),
         ];
         let chart = Chart::new(dataset)
-            .block(
+            .block(if *zen {
+                Block::new()
+            } else {
                 Block::bordered()
                     .border_type(BorderType::Rounded)
                     .style(bd)
                     .title(vec![
                         "³".to_span().style(hl).bold(),
                         "lufs".to_span().style(lb).bold(),
-                    ]),
-            )
+                    ])
+            })
             .x_axis(Axis::default().bounds([0., 300.]).style(ax))
             .y_axis(
                 Axis::default()
