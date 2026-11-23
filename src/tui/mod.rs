@@ -1234,6 +1234,7 @@ impl App {
                         Mode::Player
                     }
                 };
+                self.save_state();
             }
             // Select device using its index if the device list is shown
             KeyCode::Char(c)
@@ -1364,13 +1365,20 @@ impl App {
                 return;
             }
 
+            let mode_str = match self.settings.mode {
+                Mode::Player => "player",
+                Mode::Microphone => "microphone",
+                Mode::System => "system",
+            };
+
             let state_file = config_path.join("state");
             let contents = format!(
-                "waveform={}\nspectrum={}\nlufs={}\nzen={}\n",
+                "waveform={}\nspectrum={}\nlufs={}\nzen={}\nmode={}\n",
                 self.ui.show_window.contains(ShowWindow::WAVEFORM),
                 self.ui.show_window.contains(ShowWindow::SPECTRUM),
                 self.ui.show_window.contains(ShowWindow::LUFS),
                 self.zen,
+                mode_str,
             );
 
             if let Err(err) = fs::write(&state_file, contents) {
@@ -1877,15 +1885,37 @@ impl App {
             let Some((key, val)) = line.split_once('=') else {
                 continue;
             };
-            let Ok(enabled) = val.trim().parse::<bool>() else {
-                continue;
-            };
+            let val = val.trim();
 
             match key.trim() {
-                "waveform" => self.ui.show_window.set(ShowWindow::WAVEFORM, enabled),
-                "spectrum" => self.ui.show_window.set(ShowWindow::SPECTRUM, enabled),
-                "lufs" => self.ui.show_window.set(ShowWindow::LUFS, enabled),
-                "zen" => self.zen = enabled,
+                "waveform" => {
+                    if let Ok(enabled) = val.parse::<bool>() {
+                        self.ui.show_window.set(ShowWindow::WAVEFORM, enabled);
+                    }
+                }
+                "spectrum" => {
+                    if let Ok(enabled) = val.parse::<bool>() {
+                        self.ui.show_window.set(ShowWindow::SPECTRUM, enabled);
+                    }
+                }
+                "lufs" => {
+                    if let Ok(enabled) = val.parse::<bool>() {
+                        self.ui.show_window.set(ShowWindow::LUFS, enabled);
+                    }
+                }
+                "zen" => {
+                    if let Ok(enabled) = val.parse::<bool>() {
+                        self.zen = enabled;
+                    }
+                }
+                "mode" => {
+                    self.settings.mode = match val {
+                        "player" => Mode::Player,
+                        "microphone" => Mode::Microphone,
+                        "system" => Mode::System,
+                        _ => continue,
+                    };
+                }
                 _ => {}
             }
         }
