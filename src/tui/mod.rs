@@ -1,6 +1,5 @@
 //! This module contains the implementation of the terminal user interface (TUI) used to display audio analysis results.
 //! It uses `ratatui` under the hood.
-#[cfg(target_os = "macos")]
 use crate::system_sound_capture;
 use crate::{
     analyzer::{self, Analyzer},
@@ -1202,16 +1201,10 @@ impl App {
                         self.reset_charts();
                         Mode::Microphone
                     }
-                    #[cfg(target_os = "macos")]
                     Mode::Microphone => {
                         self.reset_charts();
                         system_sound_capture::ensure_screen_capture_permission();
                         Mode::System
-                    }
-                    #[cfg(not(target_os = "macos"))]
-                    Mode::Microphone => {
-                        self.reset_charts();
-                        Mode::Player
                     }
                     Mode::System => {
                         self.reset_charts();
@@ -1384,8 +1377,15 @@ impl App {
 
     // TODO: code is almost identical to the previous function. Maybe factor it out?
     fn connect_system_tap_device(&mut self) -> Result<()> {
-        let devices = list_input_devices();
-        let device = devices[0].1.clone();
+        #[cfg(target_os = "macos")]
+        let device = {
+            let devices = list_input_devices();
+            devices[0].1.clone();
+        };
+
+        #[cfg(not(target_os = "macos"))]
+        let device = system_sound_capture::system_capture_device()?;
+
         let audio_device = AudioDevice::new(Some(device));
 
         let sr = audio_device.config().sample_rate.0;
@@ -1398,15 +1398,31 @@ impl App {
         self.system_sound_ringbuffer = Arc::new(rbuffer);
         self.last_captured_samples_from_ring_buffer = vec![0.; capacity];
 
+        #[cfg(target_os = "linux")]
+        let set_pw_props = std::env::var_os("PIPEWIRE_NODE").is_none()
+            && std::env::var_os("PIPEWIRE_PROPS").is_none();
+
+        #[cfg(target_os = "linux")]
+        if set_pw_props {
+            unsafe { std::env::set_var("PIPEWIRE_PROPS", "{ stream.capture.sink=true }") };
+        }
+
         let stream = match audio_capture::build_input_stream(
             self.system_sound_ringbuffer.clone(),
             &audio_device,
         ) {
             Ok(stream) => stream,
             Err(err) => {
+                let _ = std::fs::write("/tmp/soundscope_err.log", format!("{err:#}"));
                 return Err(eyre!("Failed to create audio capture stream: {}", err));
             }
         };
+
+        #[cfg(target_os = "linux")]
+        if set_pw_props {
+            unsafe { std::env::remove_var("PIPEWIRE_PROPS") };
+        }
+
         self.system_sound_capture_stream = Some(stream);
         self.system_sound_capture_stream.as_ref().unwrap().play()?;
         if let Err(err) = self
