@@ -4,7 +4,7 @@ use ratatui::{
     layout::{Alignment, Constraint, Direction, Layout, Rect},
     style::{Style, Stylize},
     symbols,
-    text::ToSpan,
+    text::{Span, ToSpan},
     widgets::{Axis, Block, BorderType, Chart, Dataset, GraphType, Paragraph},
 };
 
@@ -25,6 +25,7 @@ impl Lufs {
         area: Rect,
         theme: &LufsTheme,
         analyzer: &mut Analyzer,
+        zen: &bool,
     ) -> Result<()> {
         let s = Style::default().bg(theme.background.unwrap());
         let fg = s.fg(theme.foreground.unwrap());
@@ -139,20 +140,22 @@ impl Lufs {
                 .data(&data),
         ];
         let chart = Chart::new(dataset)
-            .block(
+            .block(if *zen {
+                Block::new()
+            } else {
                 Block::bordered()
                     .border_type(BorderType::Rounded)
                     .style(bd)
                     .title(vec![
                         "³".to_span().style(hl).bold(),
                         "lufs".to_span().style(lb).bold(),
-                    ]),
-            )
+                    ])
+            })
             .x_axis(Axis::default().bounds([0., 300.]).style(ax))
             .y_axis(
                 Axis::default()
                     .bounds([-50., 0.])
-                    .labels(["-50".bold(), "0".bold()])
+                    .labels([Span::styled("-50", fg), Span::styled("0", fg)])
                     .style(ax),
             )
             .style(s);

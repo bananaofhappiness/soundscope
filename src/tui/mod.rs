@@ -182,6 +182,8 @@ struct App {
     device_data: DeviceData,
     /// Device data like channels of the system sound capture device
     system_device_data: DeviceData,
+    /// Zen mode (no borders)
+    zen: bool,
 
     // Charts data
     /// Data used to render spectrum chart.
@@ -257,6 +259,7 @@ impl App {
                     .with_block(Block::bordered().border_type(BorderType::Rounded)),
             )?,
             ui: UI::default(),
+            zen: false,
             current_directory: PathBuf::from(""),
             mouse_position: None,
         })
@@ -291,7 +294,7 @@ impl App {
         // split the area into waveform part and charts parts
         let area = f.area();
         // make the background black
-        let background = Paragraph::new("").style(self.ui.theme.global.background);
+        let background = Paragraph::new("").style(Style::new().bg(self.ui.theme.global.background));
         f.render_widget(background, area);
 
         // if we should show top window (waveform)
@@ -337,6 +340,7 @@ impl App {
                 &self.ui.theme.waveform,
                 self.audio_file.as_ref().map(|f| f.data.as_ref()),
                 &self.settings.mode,
+                &self.zen,
             );
         }
 
@@ -367,7 +371,7 @@ impl App {
             if self.ui.show_window.contains(ShowWindow::SPECTRUM) {
                 self.ui.chart_rect = Some(horizontal_chunks[0]);
                 self.spectrum
-                    .render(f, horizontal_chunks[0], &self.ui.theme.spectrum);
+                    .render(f, horizontal_chunks[0], &self.ui.theme.spectrum, &self.zen);
                 if let Some((x, y)) = self.mouse_position {
                     self.render_spectrum_info(f, x, y);
                 }
@@ -378,9 +382,13 @@ impl App {
                 Mode::System => &mut self.system_sound_analyzer,
             };
             if self.ui.show_window.contains(ShowWindow::LUFS)
-                && let Err(err) =
-                    self.lufs
-                        .render(f, horizontal_chunks[1], &self.ui.theme.lufs, analyzer)
+                && let Err(err) = self.lufs.render(
+                    f,
+                    horizontal_chunks[1],
+                    &self.ui.theme.lufs,
+                    analyzer,
+                    &self.zen,
+                )
             {
                 self.handle_error(format!("Error while computing loudness: {err}"));
             }
@@ -648,6 +656,11 @@ impl App {
                 let mut theme = Theme::default();
                 theme.apply_global_as_default();
                 self.set_theme(theme);
+            }
+
+            let state_file = path.join("state");
+            if state_file.exists() {
+                self.load_state(&state_file);
             }
         } else {
             self.handle_error("Config directory does not exist. Could not load theme.".to_string());
@@ -1165,12 +1178,15 @@ impl App {
             }
             KeyCode::Char('1') if matches!(self.ui.popup_state, PopupState::None) => {
                 self.ui.show_window.toggle(ShowWindow::WAVEFORM);
+                self.save_state();
             }
             KeyCode::Char('2') if matches!(self.ui.popup_state, PopupState::None) => {
                 self.ui.show_window.toggle(ShowWindow::SPECTRUM);
+                self.save_state();
             }
             KeyCode::Char('3') if matches!(self.ui.popup_state, PopupState::None) => {
                 self.ui.show_window.toggle(ShowWindow::LUFS);
+                self.save_state();
             }
             // Quick selection with numbers 0-9 when themes list is open
             KeyCode::Char(c)
@@ -1218,6 +1234,7 @@ impl App {
                         Mode::Player
                     }
                 };
+                self.save_state();
             }
             // Select device using its index if the device list is shown
             KeyCode::Char(c)
@@ -1331,7 +1348,42 @@ impl App {
                 PopupState::InInfo => self.ui.popup_state = PopupState::None,
                 _ => (),
             },
+            KeyCode::Char('z') => {
+                self.zen = !self.zen;
+                self.save_state();
+            }
             _ => (),
+        }
+    }
+
+    /// Save UI state
+    fn save_state(&mut self) {
+        if let Some(mut config_path) = config_dir() {
+            config_path.push("soundscope");
+            if let Err(err) = fs::create_dir_all(&config_path) {
+                self.handle_error(format!("Error saving state: {err}"));
+                return;
+            }
+
+            let mode_str = match self.settings.mode {
+                Mode::Player => "player",
+                Mode::Microphone => "microphone",
+                Mode::System => "system",
+            };
+
+            let state_file = config_path.join("state");
+            let contents = format!(
+                "waveform={}\nspectrum={}\nlufs={}\nzen={}\nmode={}\n",
+                self.ui.show_window.contains(ShowWindow::WAVEFORM),
+                self.ui.show_window.contains(ShowWindow::SPECTRUM),
+                self.ui.show_window.contains(ShowWindow::LUFS),
+                self.zen,
+                mode_str,
+            );
+
+            if let Err(err) = fs::write(&state_file, contents) {
+                self.handle_error(format!("Error saving state: {err}"));
+            }
         }
     }
 
@@ -1584,8 +1636,6 @@ impl App {
         let bd = s.fg(self.ui.theme.help.borders.unwrap());
         let hl = s.fg(self.ui.theme.help.highlight.unwrap());
 
-        let area = Self::get_popup_area_with_lenght(f.area(), 24, 38);
-        f.render_widget(Clear, area);
         let rows = vec![
             table_row!["1", "Toggle waveform", hl],
             table_row!["2", "Toggle spectrum", hl],
@@ -1594,6 +1644,7 @@ impl App {
             table_row!["m", "Change mode", hl],
             table_row!["d", "Toggle device list", hl],
             table_row!["t", "Select theme", hl],
+            table_row!["z", "Toggle zen mode", hl],
             table_row!["?/h/F1", "Show this window", hl],
             table_row!["q/Ctrl+c", "Quit", hl],
             table_row!["q/Escape", "Close pop-up window", hl],
@@ -1610,6 +1661,9 @@ impl App {
             table_row!["Up/Down", "Navigate in explorer", hl],
             table_row!["", "device and theme lists", hl],
         ];
+        let area = Self::get_popup_area_with_lenght(f.area(), (rows.len() + 2) as u16, 38);
+        f.render_widget(Clear, area);
+
         let widths = [Constraint::Percentage(30), Constraint::Percentage(70)];
         let table = Table::new(rows, widths).style(s).block(
             Block::bordered()
@@ -1820,6 +1874,51 @@ impl App {
                 let mut theme = Theme::default();
                 theme.apply_global_as_default();
                 self.set_theme(theme);
+            }
+        }
+    }
+
+    fn load_state(&mut self, state_file: &std::path::Path) {
+        let Ok(contents) = fs::read_to_string(state_file) else {
+            return;
+        };
+
+        for line in contents.lines() {
+            let Some((key, val)) = line.split_once('=') else {
+                continue;
+            };
+            let val = val.trim();
+
+            match key.trim() {
+                "waveform" => {
+                    if let Ok(enabled) = val.parse::<bool>() {
+                        self.ui.show_window.set(ShowWindow::WAVEFORM, enabled);
+                    }
+                }
+                "spectrum" => {
+                    if let Ok(enabled) = val.parse::<bool>() {
+                        self.ui.show_window.set(ShowWindow::SPECTRUM, enabled);
+                    }
+                }
+                "lufs" => {
+                    if let Ok(enabled) = val.parse::<bool>() {
+                        self.ui.show_window.set(ShowWindow::LUFS, enabled);
+                    }
+                }
+                "zen" => {
+                    if let Ok(enabled) = val.parse::<bool>() {
+                        self.zen = enabled;
+                    }
+                }
+                "mode" => {
+                    self.settings.mode = match val {
+                        "player" => Mode::Player,
+                        "microphone" => Mode::Microphone,
+                        "system" => Mode::System,
+                        _ => continue,
+                    };
+                }
+                _ => {}
             }
         }
     }
