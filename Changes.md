@@ -4,6 +4,17 @@ All notable changes to this project will be documented in this file.
 
 ---
 
+## [1.12.0] - 2026-11-24
+
+### Added
+- **Added** zen mode. When in zen mode, charts aren't boxed. Thanks @lex6i!
+- **Added** state config. Shown windows and selected mode (Player, Microphone, System) are preserved between sessions. Thanks @lex6i!
+
+### Fixes
+- **Fixed** a crash when loading a custom toml theme that is missing optional sections a panic occurs. @lex6i, thank you again!
+
+---
+
 ## [1.11.0] - 2026-11-06
 
 ### Improvements
