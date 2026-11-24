@@ -148,7 +148,7 @@ impl Lufs {
                     .style(bd)
                     .title(vec![
                         "³".to_span().style(hl).bold(),
-                        "lufs".to_span().style(lb).bold(),
+                        "loudness".to_span().style(lb).bold(),
                     ])
             })
             .x_axis(Axis::default().bounds([0., 300.]).style(ax))

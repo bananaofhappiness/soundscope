@@ -34,7 +34,7 @@ or
 cargo install --git https://github.com/bananaofhappiness/soundscope
 ```
 
-### Precompiled Binaries
+### Precompiled binaries
 
 Grab the latest release for your platform from the [**Releases page**](https://github.com/bananaofhappiness/soundscope/releases).
 
@@ -117,7 +117,7 @@ controls = "Yellow"
 controls_highlight = "LightRed"
 labels = "Yellow"
 
-[fft]
+[spectrum]
 foreground = "Yellow"
 background = "Black"
 borders = "Yellow"
@@ -128,7 +128,7 @@ axes_labels = "Yellow"
 mid_fft = "Yellow"
 side_fft = "LightRed"
 
-[lufs]
+[loudness]
 axis = "Yellow"
 chart = "Yellow"
 # Frequencies and LUFS tabs text
@@ -194,11 +194,9 @@ Color separators `-`, `_`, and ` ` are supported and names are case insensitive.
 After saving your theme into `.toml` file and placing it into `{YOUR_CONFIG_DIRECTORY}/soundscope`, press `t` to open up the theme selection list and choose yours.
 
 ---
-## 🐛 Known Issues
+## 🐛 Known issues and limitations
 
-- Rapidly seeking through an audio file may cause lag, resulting in the playhead being in an incorrect position. Pausing playback and waiting for the playhead to return to the correct spot before resuming usually resolves the issue.
-- In some audio files the playhead may gradually drift slightly to the right of the waveform center over time.
-- Some files with high sample rate play back normally, but real-time visualization (waveform, spectrum, LUFS) lags significantly behind. For example, this occurs with `.wav` files with a sample rate > 48000, while `.mp3` files at 92000 play without noticeable lag.
+- Some files with high sample rate play back normally, but real-time visualization (waveform, spectrum, loudness) lags significantly behind. For example, this occurs with `.wav` files with a sample rate > 48000, while `.mp3` files at 92000 play without noticeable lag.
 
 ---
 ## 🤝 Contributing
@@ -216,10 +214,6 @@ This project is licensed under the **MIT License** — see [LICENSE](LICENSE) fo
 If you like **Soundscope** and want to support its development:
 
 - [Buy Me a Coffee](https://buymeacoffee.com/bananaofhappiness)
-- Ethereum (ERC-20): 0xe8f2dd8a2d3a6ba9c571aadc720b6f1bea47fe4a
-- Bitcoin: bc1qype09urnpfztgrw6af83a2g86jrfhf5tr8dwp8
-- Solana: 9YmZXS7uYJSY9AwLmVmbDTgAAp987W3mQ1P3U5MUQ9Sv
-- Tron: TSwN6uW67KrmwvGUmXjJVAykmaWQ5wRZnM
-- [Boosty](https://boosty.to/bananaofhappiness)
+- [PayPal](https://paypal.me/EgorKurtashkin)
 
-Your support helps keep this project alive ❤️
+Your support is greatly appreciated ❤️
