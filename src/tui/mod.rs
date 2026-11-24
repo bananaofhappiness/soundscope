@@ -71,14 +71,14 @@ enum PopupState {
 bitflags::bitflags! {
     struct ShowWindow: u8 {
         const SPECTRUM = 1 << 0;
-        const LUFS = 1 << 1;
+        const LOUDNESS = 1 << 1;
         const WAVEFORM = 1 << 2;
     }
 }
 
 impl Default for ShowWindow {
     fn default() -> Self {
-        Self::SPECTRUM | Self::LUFS | Self::WAVEFORM
+        Self::SPECTRUM | Self::LOUDNESS | Self::WAVEFORM
     }
 }
 
@@ -302,7 +302,7 @@ impl App {
             if self
                 .ui
                 .show_window
-                .intersects(ShowWindow::SPECTRUM | ShowWindow::LUFS)
+                .intersects(ShowWindow::SPECTRUM | ShowWindow::LOUDNESS)
             {
                 Constraint::Percentage(30)
             } else {
@@ -316,7 +316,7 @@ impl App {
         let bottom_constraint = if self
             .ui
             .show_window
-            .intersects(ShowWindow::SPECTRUM | ShowWindow::LUFS)
+            .intersects(ShowWindow::SPECTRUM | ShowWindow::LOUDNESS)
         {
             if self.ui.show_window.contains(ShowWindow::WAVEFORM) {
                 Constraint::Percentage(70)
@@ -348,7 +348,7 @@ impl App {
         if self
             .ui
             .show_window
-            .intersects(ShowWindow::SPECTRUM | ShowWindow::LUFS)
+            .intersects(ShowWindow::SPECTRUM | ShowWindow::LOUDNESS)
         {
             // if we should split bottom part to lufs and spectrum
             // or fill the bottom part with only 1 of them
@@ -357,7 +357,7 @@ impl App {
             } else {
                 Constraint::Length(0)
             };
-            let right_constraint = if self.ui.show_window.contains(ShowWindow::LUFS) {
+            let right_constraint = if self.ui.show_window.contains(ShowWindow::LOUDNESS) {
                 Constraint::Min(0)
             } else {
                 Constraint::Length(0)
@@ -381,11 +381,11 @@ impl App {
                 Mode::Microphone => &mut self.device_analyzer,
                 Mode::System => &mut self.system_sound_analyzer,
             };
-            if self.ui.show_window.contains(ShowWindow::LUFS)
+            if self.ui.show_window.contains(ShowWindow::LOUDNESS)
                 && let Err(err) = self.lufs.render(
                     f,
                     horizontal_chunks[1],
-                    &self.ui.theme.lufs,
+                    &self.ui.theme.loudness,
                     analyzer,
                     &self.zen,
                 )
@@ -444,7 +444,7 @@ impl App {
             "No open windows!".to_line().centered(),
             "1 | Toggle waveform".to_line().centered(),
             "2 | Toggle spectrum".to_line().centered(),
-            "3 | Toggle LUFS   ".to_line().centered(),
+            "3 | Toggle loudness".to_line().centered(),
         ])
         .block(Block::bordered().border_type(BorderType::Rounded))
         .style(s);
@@ -1185,7 +1185,7 @@ impl App {
                 self.save_state();
             }
             KeyCode::Char('3') if matches!(self.ui.popup_state, PopupState::None) => {
-                self.ui.show_window.toggle(ShowWindow::LUFS);
+                self.ui.show_window.toggle(ShowWindow::LOUDNESS);
                 self.save_state();
             }
             // Quick selection with numbers 0-9 when themes list is open
@@ -1373,10 +1373,10 @@ impl App {
 
             let state_file = config_path.join("state");
             let contents = format!(
-                "waveform={}\nspectrum={}\nlufs={}\nzen={}\nmode={}\n",
+                "waveform={}\nspectrum={}\nloudness={}\nzen={}\nmode={}\n",
                 self.ui.show_window.contains(ShowWindow::WAVEFORM),
                 self.ui.show_window.contains(ShowWindow::SPECTRUM),
-                self.ui.show_window.contains(ShowWindow::LUFS),
+                self.ui.show_window.contains(ShowWindow::LOUDNESS),
                 self.zen,
                 mode_str,
             );
@@ -1639,7 +1639,7 @@ impl App {
         let rows = vec![
             table_row!["1", "Toggle waveform", hl],
             table_row!["2", "Toggle spectrum", hl],
-            table_row!["3", "Toggle LUFS", hl],
+            table_row!["3", "Toggle loudness", hl],
             table_row!["e", "Toggle explorer", hl],
             table_row!["m", "Change mode", hl],
             table_row!["d", "Toggle device list", hl],
@@ -1900,9 +1900,9 @@ impl App {
                         self.ui.show_window.set(ShowWindow::SPECTRUM, enabled);
                     }
                 }
-                "lufs" => {
+                "loudness" => {
                     if let Ok(enabled) = val.parse::<bool>() {
-                        self.ui.show_window.set(ShowWindow::LUFS, enabled);
+                        self.ui.show_window.set(ShowWindow::LOUDNESS, enabled);
                     }
                 }
                 "zen" => {

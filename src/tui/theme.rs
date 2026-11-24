@@ -8,7 +8,7 @@ pub struct Theme {
     pub global: GlobalTheme,
     pub waveform: WaveformTheme,
     pub spectrum: SpectrumTheme,
-    pub lufs: LufsTheme,
+    pub loudness: LufsTheme,
     pub devices: DeviceListTheme,
     pub explorer: ExplorerTheme,
     pub error: ErrorTheme,
@@ -51,7 +51,7 @@ impl Theme {
             highlight <- hl,
         );
 
-        fill_fields!(self.lufs.
+        fill_fields!(self.loudness.
             axis <- fg,
             chart <- fg,
             foreground <- fg,
@@ -229,7 +229,7 @@ fn test_fill_macro() {
         global: GlobalTheme::default(),
         waveform: WaveformTheme::default(),
         spectrum: SpectrumTheme::default(),
-        lufs: LufsTheme::default(),
+        loudness: LufsTheme::default(),
         devices: DeviceListTheme::default(),
         explorer: ExplorerTheme::default(),
         error: ErrorTheme::default(),
@@ -246,7 +246,7 @@ fn test_fill_macro() {
     theme.waveform.highlight = None;
     theme.waveform.current_time = None;
 
-    theme.lufs.numbers = None;
+    theme.loudness.numbers = None;
 
     theme.devices.background = None;
 
@@ -262,7 +262,7 @@ fn test_fill_macro() {
     assert!(theme.waveform.highlight == Some(Color::Indexed(160)));
     assert!(theme.waveform.current_time == Some(Color::LightCyan));
 
-    assert!(theme.lufs.numbers == Some(Color::LightCyan));
+    assert!(theme.loudness.numbers == Some(Color::LightCyan));
 
     assert!(theme.devices.background == Some(Color::Magenta));
 
