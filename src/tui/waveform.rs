@@ -41,10 +41,15 @@ impl WaveForm {
         mode: &Mode,
         zen: &bool,
     ) {
-        // Match the number of waveform bins to the number of dot columns of
-        // the chart. Minus 2 becasue the bordered block takes 2 cells
-        // times 2 since Braille gives 2 dot columns per cell.
-        let dots = usize::from(area.width.saturating_sub(2)) * 2;
+        // Match the number of waveform bins to the number of dot columns of the chart.
+        // Multiply waveform area width by 2 since Braille gives 2 dot columns per cell.
+        // Substract 2 becasue the bordered block takes 2 cells (left and right borders).
+        // In zen mode there's no bordered block.
+        let dots = if !*zen {
+            usize::from(area.width.saturating_sub(2)) * 2
+        } else {
+            area.width as usize * 2
+        };
         if dots >= 2 && self.waveform.len() != dots * 2 {
             self.waveform = vec![(0., 0.); dots * 2];
         }

@@ -294,7 +294,7 @@ impl App {
         // split the area into waveform part and charts parts
         let area = f.area();
         // make the background black
-        let background = Paragraph::new("").style(self.ui.theme.global.background);
+        let background = Paragraph::new("").style(Style::new().bg(self.ui.theme.global.background));
         f.render_widget(background, area);
 
         // if we should show top window (waveform)

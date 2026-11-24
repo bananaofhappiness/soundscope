@@ -4,7 +4,7 @@ use ratatui::{
     layout::{Alignment, Constraint, Direction, Layout, Rect},
     style::{Style, Stylize},
     symbols,
-    text::ToSpan,
+    text::{Span, ToSpan},
     widgets::{Axis, Block, BorderType, Chart, Dataset, GraphType, Paragraph},
 };
 
@@ -155,7 +155,7 @@ impl Lufs {
             .y_axis(
                 Axis::default()
                     .bounds([-50., 0.])
-                    .labels(["-50".bold(), "0".bold()])
+                    .labels([Span::styled("-50", fg), Span::styled("0", fg)])
                     .style(ax),
             )
             .style(s);

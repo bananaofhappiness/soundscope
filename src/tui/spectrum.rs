@@ -119,14 +119,14 @@ impl Spectrum {
             })
             .x_axis(
                 Axis::default()
-                    .title("Hz")
+                    .title("Hz".to_span().style(fg))
                     .labels(x_labels)
                     .style(ax)
                     .bounds([0., 100.]),
             )
             .y_axis(
                 Axis::default()
-                    .title("dBFS")
+                    .title("dBFS".to_span().style(fg))
                     .labels(vec![
                         Span::raw(SPECTRUM_LOWER_BOUND.to_string()).style(fg),
                         Span::raw(
