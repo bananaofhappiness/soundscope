@@ -1636,8 +1636,6 @@ impl App {
         let bd = s.fg(self.ui.theme.help.borders.unwrap());
         let hl = s.fg(self.ui.theme.help.highlight.unwrap());
 
-        let area = Self::get_popup_area_with_lenght(f.area(), 24, 38);
-        f.render_widget(Clear, area);
         let rows = vec![
             table_row!["1", "Toggle waveform", hl],
             table_row!["2", "Toggle spectrum", hl],
@@ -1646,6 +1644,7 @@ impl App {
             table_row!["m", "Change mode", hl],
             table_row!["d", "Toggle device list", hl],
             table_row!["t", "Select theme", hl],
+            table_row!["z", "Toggle zen mode", hl],
             table_row!["?/h/F1", "Show this window", hl],
             table_row!["q/Ctrl+c", "Quit", hl],
             table_row!["q/Escape", "Close pop-up window", hl],
@@ -1662,6 +1661,9 @@ impl App {
             table_row!["Up/Down", "Navigate in explorer", hl],
             table_row!["", "device and theme lists", hl],
         ];
+        let area = Self::get_popup_area_with_lenght(f.area(), (rows.len() + 2) as u16, 38);
+        f.render_widget(Clear, area);
+
         let widths = [Constraint::Percentage(30), Constraint::Percentage(70)];
         let table = Table::new(rows, widths).style(s).block(
             Block::bordered()
