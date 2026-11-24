@@ -1848,7 +1848,18 @@ impl App {
                 } else {
                     let theme_file = path.join(&theme_file);
                     let theme = if theme_file.exists() {
-                        self.load_theme(&theme_file).unwrap_or_default()
+                        let mut theme = match self.load_theme(&theme_file) {
+                            Some(theme) => theme,
+                            None => {
+                                self.handle_error(format!(
+                                    "Error loading theme {}, Applying default",
+                                    theme_file.display()
+                                ));
+                                Theme::default()
+                            }
+                        };
+                        theme.apply_global_as_default();
+                        theme
                     } else {
                         self.handle_error(format!(
                             "Theme file {} not found. Applying default theme.",
