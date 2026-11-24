@@ -12,6 +12,7 @@ All notable changes to this project will be documented in this file.
 
 ### Fixes
 - **Fixed** a crash when loading a custom toml theme that is missing optional sections a panic occurs. @lex6i, thank you again!
+- **Fixed** a crash that occurred when resizing the terminal while the cursor was hovering over the spectrum, displaying frequency and amplitude under the cursor.
 
 ---
 

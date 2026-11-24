@@ -585,10 +585,10 @@ impl App {
         let lower_bound = upper_bound + rect_height - 4;
 
         let (hz, db) = Self::map_mouse_position_to_chart_point(
-            x - left_bound,
-            right_bound - left_bound,
-            y - upper_bound,
-            lower_bound - upper_bound,
+            u16::saturating_sub(x, left_bound),
+            u16::saturating_sub(right_bound, left_bound),
+            u16::saturating_sub(y, upper_bound),
+            u16::saturating_sub(lower_bound, upper_bound),
         );
         let hz_text = format!("{hz:.2} Hz");
         let db_text = format!("{db:.2} Db");
